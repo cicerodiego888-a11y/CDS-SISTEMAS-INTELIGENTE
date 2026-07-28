@@ -35,6 +35,8 @@ const centralEntradasState = {
     ultimoDashboardContadores: null,
     operacional: null,
     sefazOperacional: null,
+    saudeCentral: null,
+    saudeFiltroNivel: null,
     alertas: null,
     pendencias: null,
     atencao: null,
@@ -63,18 +65,19 @@ const centralEntradasState = {
 };
 
 const CENTRAL_STATUS_META = {
-    RECEBIDA: { cor: '#94a3b8', bg: 'rgba(148,163,184,.12)', icone: 'fa-envelope', badge: 'central-badge-light', descricao: 'Documento recebido' },
-    SINCRONIZADA: { cor: '#0d6efd', bg: 'rgba(13,110,253,.10)', icone: 'fa-inbox', badge: 'bg-primary', descricao: 'Nova nota encontrada' },
-    EM_PROCESSAMENTO: { cor: '#f59e0b', bg: 'rgba(245,158,11,.12)', icone: 'fa-cog', badge: 'bg-warning text-dark', descricao: 'Pipeline em execução' },
-    AGUARDANDO_REVISAO: { cor: '#fd7e14', bg: 'rgba(253,126,20,.12)', icone: 'fa-user-check', badge: 'central-badge-orange', descricao: 'Produtos aguardando revisão' },
-    AGUARDANDO_XML_COMPLETO: { cor: '#64748b', bg: 'rgba(100,116,139,.12)', icone: 'fa-file-import', badge: 'bg-secondary', descricao: 'Aguardando a disponibilização do XML completo pela SEFAZ.' },
-    REVISADA: { cor: '#0dcaf0', bg: 'rgba(13,202,240,.12)', icone: 'fa-clipboard-check', badge: 'bg-info', descricao: 'Revisão concluída' },
-    PRONTA_PARA_COMPRA: { cor: '#198754', bg: 'rgba(25,135,84,.12)', icone: 'fa-check-circle', badge: 'bg-success', descricao: 'Pronta para lançamento' },
-    EM_COMPRA: { cor: '#6610f2', bg: 'rgba(102,16,242,.12)', icone: 'fa-shopping-cart', badge: 'bg-info', descricao: 'Aberta na tela de Compras' },
-    GRAVADA: { cor: '#6c757d', bg: 'rgba(108,117,125,.12)', icone: 'fa-archive', badge: 'bg-secondary', descricao: 'Compra concluída' },
+    RECEBIDA: { cor: '#94a3b8', bg: 'rgba(148,163,184,.12)', icone: 'fa-envelope', badge: 'central-badge-light', descricao: 'Recebendo documento' },
+    SINCRONIZADA: { cor: '#0d6efd', bg: 'rgba(13,110,253,.10)', icone: 'fa-inbox', badge: 'bg-primary', descricao: 'Documento sincronizado' },
+    EM_PROCESSAMENTO: { cor: '#f59e0b', bg: 'rgba(245,158,11,.12)', icone: 'fa-cog', badge: 'bg-warning text-dark', descricao: 'Processando XML / identificando produtos' },
+    AGUARDANDO_REVISAO: { cor: '#fd7e14', bg: 'rgba(253,126,20,.12)', icone: 'fa-user-check', badge: 'central-badge-orange', descricao: 'Aguardando revisão MIIP' },
+    AGUARDANDO_XML_COMPLETO: { cor: '#64748b', bg: 'rgba(100,116,139,.12)', icone: 'fa-file-import', badge: 'bg-secondary', descricao: 'Recuperação automática do XML agendada. O MIRX recupera no horário programado.' },
+    REVISADA: { cor: '#0dcaf0', bg: 'rgba(13,202,240,.12)', icone: 'fa-clipboard-check', badge: 'bg-info', descricao: 'Revisão MIIP concluída' },
+    PRONTA_PARA_COMPRA: { cor: '#198754', bg: 'rgba(25,135,84,.12)', icone: 'fa-check-circle', badge: 'bg-success', descricao: 'Pronto para importar compra' },
+    EM_COMPRA: { cor: '#6610f2', bg: 'rgba(102,16,242,.12)', icone: 'fa-shopping-cart', badge: 'bg-info', descricao: 'Importando compra' },
+    GRAVADA: { cor: '#6c757d', bg: 'rgba(108,117,125,.12)', icone: 'fa-archive', badge: 'bg-secondary', descricao: 'Finalizado' },
     DESCARTADA: { cor: '#212529', bg: 'rgba(33,37,41,.10)', icone: 'fa-trash-alt', badge: 'bg-dark', descricao: 'Documento descartado' },
     ERRO: { cor: '#dc3545', bg: 'rgba(220,53,69,.12)', icone: 'fa-exclamation-triangle', badge: 'bg-danger', descricao: 'Consulta temporariamente indisponível.' },
-    DUPLICADA: { cor: '#dc3545', bg: 'rgba(220,53,69,.12)', icone: 'fa-copy', badge: 'bg-danger', descricao: 'Nota já lançada no sistema' }
+    DUPLICADA: { cor: '#dc3545', bg: 'rgba(220,53,69,.12)', icone: 'fa-copy', badge: 'bg-danger', descricao: 'Nota já lançada no sistema' },
+    XML_INDISPONIVEL: { cor: '#dc3545', bg: 'rgba(220,53,69,.12)', icone: 'fa-file-excel', badge: 'bg-danger', descricao: 'XML indisponível' }
 };
 
 function metaStatusCentral(status) {
@@ -1218,8 +1221,17 @@ function mostrarViewCentral(view) {
 
     if (view === 'config') carregarConfigCentral();
     if (view === 'log') carregarLogCentral();
-    if (view === 'ciclo-dfe' && typeof carregarHomologacaoCentral === 'function') {
-        carregarHomologacaoCentral();
+    if (view === 'ciclo-dfe') {
+        if (typeof carregarHomologacaoCentral === 'function') {
+            carregarHomologacaoCentral();
+        } else if (window.CdsErpLazyLoader) {
+            window.CdsErpLazyLoader.loadFeature('central-homologacao')
+                .then(() => carregarHomologacaoCentral())
+                .catch((error) => {
+                    console.error('[ERP LAZY] Falha ao carregar homologação da Central:', error);
+                    mostrarToastCentral('Não foi possível carregar a homologação.', 'error');
+                });
+        }
     }
 }
 
@@ -2584,8 +2596,8 @@ function renderAcoesPipelineCentral(doc) {
 
     let acoesHtml = '';
     if (doc.status === 'AGUARDANDO_XML_COMPLETO') {
-        acoesHtml += `<button type="button" class="btn btn-outline-primary btn-sm w-100 mb-2" id="centralBtnSolicitarXmlCompleto" data-doc-id="${doc.id}" title="Enviar Ciência da Emissão e consultar o XML completo">
-            <i class="fas fa-file-import me-1"></i> Solicitar XML completo
+        acoesHtml += `<button type="button" class="btn btn-outline-secondary btn-sm w-100 mb-2" id="centralBtnSolicitarXmlCompleto" data-doc-id="${doc.id}" title="Exceção manual — na rotina o MIRX recupera o XML automaticamente">
+            <i class="fas fa-file-import me-1"></i> Solicitar XML completo <small class="opacity-75">(manual)</small>
         </button>`;
     }
     if (podeProcessar) {
@@ -2619,12 +2631,21 @@ function renderAbaResumoCentral(doc) {
         ? `<div class="text-center mb-3">${UX.renderGaugeScoreCentral(doc.scoreGeral, doc.scoreCor, { tamanho: 108 })}</div>`
         : '';
 
-    const modelo = UX.montarEtapasOperacionaisCentral?.(doc, detalhe?.historico, wait) || null;
+    const modelo = UX.montarEtapasOperacionaisCentral?.(doc, detalhe?.historico, wait, detalhe?.eventosMirx) || null;
     const barraHtml = modelo && UX.renderBarraProgressoOperacionalCentral
         ? UX.renderBarraProgressoOperacionalCentral(modelo)
         : '';
+    const explicaHtml = UX.renderExplicacaoStatusCentral?.(doc, wait) || '';
+    const mirxHtml = UX.renderEventosMirxCentral?.(detalhe?.eventosMirx || []) || '';
+    const auditHtml = UX.renderAuditoriaDocumentalCentral?.(detalhe?.auditoriaDocumental || {
+        quantidadeTentativas: wait?.tentativas,
+        ultimoMetodo: wait?.ultimoMetodo,
+        ultimoRetornoSefaz: wait?.ultimoCStat ? `cStat ${wait.ultimoCStat}` : null,
+        tempoAteXmlLabel: wait?.tempoAguardandoLabel,
+        dormindo: wait?.dormindo
+    }) || '';
     const timelineOpHtml = modelo && UX.renderTimelineOperacionalCentral
-        ? `<div class="mb-3"><label class="central-entradas-label">Linha do tempo operacional</label>${UX.renderTimelineOperacionalCentral(modelo)}</div>`
+        ? `<div class="mb-3"><label class="central-entradas-label">Linha do tempo do documento</label>${UX.renderTimelineOperacionalCentral(modelo)}</div>`
         : '';
     const cardXmlHtml = UX.renderCardXmlWaitOperacionalCentral?.(doc, wait, {
         ultimoCStat: sefaz.ultimoCStat,
@@ -2638,11 +2659,10 @@ function renderAbaResumoCentral(doc) {
         statusBg: centralEntradasState.statusServico || {}
     }) || '';
 
-    const descricaoResumo = doc.status === 'AGUARDANDO_XML_COMPLETO'
-        ? (UX.mensagemAmigavelCentral?.('AGUARDANDO_XML_COMPLETO')
-            || 'Aguardando a disponibilização do XML completo pela SEFAZ.')
-        : (doc.status === 'ERRO'
-            ? (UX.mensagemAmigavelCentral?.('ERRO') || meta.descricao)
+    const statusReal = UX.resolverStatusRealCentral?.(doc, wait) || obterLabelStatusCentral(doc.status);
+    const descricaoResumo = UX.explicarStatusCentral?.(doc, wait)
+        || (doc.status === 'AGUARDANDO_XML_COMPLETO'
+            ? (UX.mensagemAmigavelCentral?.('AGUARDANDO_XML_COMPLETO') || meta.descricao)
             : meta.descricao);
 
     return `
@@ -2650,17 +2670,26 @@ function renderAbaResumoCentral(doc) {
 
         <div class="mb-2 d-flex flex-wrap gap-2 align-items-center">${chipHtml}</div>
 
+        ${explicaHtml}
+
         ${cardXmlHtml}
 
         ${barraHtml ? `<div class="mb-3">${barraHtml}</div>` : ''}
 
+        ${UX.renderCardSaudeDocumentoCentral?.(doc.saude || detalhe?.saude) || ''}
+
+        ${auditHtml}
+
+        ${mirxHtml}
+
         ${timelineOpHtml}
 
         <div class="central-entradas-resumo-executivo mb-3 central-entradas-anim-in"
-             style="border-left-color:${meta.cor}; background:${meta.bg}">
+             style="border-left-color:${meta.cor}; background:${meta.bg}"
+             title="${escapeHtmlCentralEntradas(descricaoResumo)}">
             <div class="d-flex align-items-center gap-2 mb-1">
                 <i class="fas ${meta.icone}" style="color:${meta.cor}" aria-hidden="true"></i>
-                <strong>${escapeHtmlCentralEntradas(obterLabelStatusCentral(doc.status))}</strong>
+                <strong>${escapeHtmlCentralEntradas(statusReal)}</strong>
             </div>
             <div class="small text-muted">${escapeHtmlCentralEntradas(descricaoResumo)}</div>
         </div>
@@ -2823,9 +2852,9 @@ function renderAbaTimelineCentral(detalhe) {
     const UX = centralUx();
     const doc = detalhe.documento;
     const wait = doc?.xmlWait || null;
-    const modelo = UX.montarEtapasOperacionaisCentral?.(doc, detalhe.historico, wait);
+    const modelo = UX.montarEtapasOperacionaisCentral?.(doc, detalhe.historico, wait, detalhe.eventosMirx);
     const op = modelo && UX.renderTimelineOperacionalCentral
-        ? `<div class="mb-3">${UX.renderBarraProgressoOperacionalCentral?.(modelo) || ''}${UX.renderTimelineOperacionalCentral(modelo)}</div>`
+        ? `<div class="mb-3">${UX.renderBarraProgressoOperacionalCentral?.(modelo) || ''}${UX.renderExplicacaoStatusCentral?.(doc, wait) || ''}${UX.renderAuditoriaDocumentalCentral?.(detalhe.auditoriaDocumental) || ''}${UX.renderEventosMirxCentral?.(detalhe.eventosMirx) || ''}${UX.renderTimelineOperacionalCentral(modelo)}</div>`
         : '';
     const legado = UX.renderPipelineTimelineUx1?.(doc, detalhe.historico)
         || renderTimelineCentral(detalhe.historico);
@@ -2846,6 +2875,38 @@ function renderPainelSaudeSefazUxCentral() {
     );
 }
 
+/** RC3.4.6 — Saúde da Central (documentos). */
+function renderPainelSaudeCentralUx() {
+    const wrap = document.getElementById('centralSaudeWrap');
+    if (!wrap) return;
+    const UX = centralUx();
+    if (!UX.renderPainelSaudeDocumentalCentral) {
+        wrap.innerHTML = '';
+        return;
+    }
+    wrap.innerHTML = UX.renderPainelSaudeDocumentalCentral(
+        centralEntradasState.saudeCentral || {},
+        { filtroNivel: centralEntradasState.saudeFiltroNivel }
+    );
+}
+
+async function filtrarAlertasSaudeCentral(nivel) {
+    centralEntradasState.saudeFiltroNivel = nivel || null;
+    renderPainelSaudeCentralUx();
+    if (!nivel) return;
+    try {
+        const lista = await centralEntradasFetch(`/saude/alertas?nivel=${encodeURIComponent(nivel)}`);
+        const ids = (lista.alertas || []).map((a) => a.documentoId).filter(Boolean);
+        if (ids.length === 1) {
+            await selecionarDocumentoCentral(ids[0]);
+        } else if (ids.length > 1) {
+            showNotification(`${ids.length} documento(s) em ${nivel}. Selecione na lista de alertas.`, 'info');
+        }
+    } catch (e) {
+        console.warn('[Central] Saúde alertas:', e.message);
+    }
+}
+
 /** RC7.5 — atualiza countdown/tempo sem redesenhar tabela. */
 function tickLiveUxCentral() {
     const UX = centralUx();
@@ -2864,9 +2925,23 @@ async function softRefreshDocumentoSelecionadoCentral() {
     if (!doc || doc.status !== 'AGUARDANDO_XML_COMPLETO') return;
     if (centralEntradasState.softRefreshEmAndamento) return;
     centralEntradasState.softRefreshEmAndamento = true;
+    const statusAnterior = doc.status;
     try {
         const detalhe = await centralEntradasFetch(`/${id}`);
         if (centralEntradasState.documentoSelecionadoId !== id) return;
+
+        const novoStatus = detalhe.documento?.status;
+        // RC3.4.2 — XML recuperado automaticamente: atualiza Central completa.
+        if (novoStatus && novoStatus !== statusAnterior) {
+            showNotification('🟢 XML recuperado automaticamente pelo MIRX.', 'success');
+            await Promise.all([
+                carregarDashboardCentral(),
+                carregarDocumentosCentral()
+            ]);
+            await selecionarDocumentoCentral(id);
+            return;
+        }
+
         centralEntradasState.detalheAtual = {
             ...centralEntradasState.detalheAtual,
             ...detalhe,
@@ -2879,16 +2954,14 @@ async function softRefreshDocumentoSelecionadoCentral() {
             centralEntradasState.sefazOperacional = detalhe.sefazOperacional;
             renderPainelSaudeSefazUxCentral();
         }
-        // Atualização parcial: só aba resumo / timeline se ativas
-        if (['resumo', 'timeline'].includes(centralEntradasState.abaAtiva)) {
+        // Atualização parcial: resumo / timeline / produtos
+        if (['resumo', 'timeline', 'produtos', 'itens'].includes(centralEntradasState.abaAtiva)) {
             const corpo = document.getElementById('centralEntradasAbaConteudo')
                 || document.querySelector('.central-ux1-painel-body');
             if (corpo && centralEntradasState.detalheAtual) {
-                // Re-render apenas o painel lateral (documento único), sem grid.
                 renderPainelLateralCentral(centralEntradasState.detalheAtual);
             }
         } else {
-            // Atualiza só o card XML live se existir no DOM
             const card = document.getElementById('centralRc75XmlCard');
             if (card && centralEntradasState.detalheAtual) {
                 renderPainelLateralCentral(centralEntradasState.detalheAtual);
@@ -3142,9 +3215,11 @@ async function carregarDashboardCentral() {
         centralEntradasState.sefazOperacional = dashboard.sefazOperacional
             || dashboard.xmlWait?.painelOperacional
             || null;
+        centralEntradasState.saudeCentral = dashboard.saude || null;
 
         renderCabecalhoUx1Central();
         renderPainelSaudeSefazUxCentral();
+        renderPainelSaudeCentralUx();
 
         if (cardsContainer) {
             cardsContainer.className = 'central-ux1-kpis';
@@ -3260,25 +3335,7 @@ async function abrirCentralRevisaoMiip(documentoId, dadosImportacao) {
         apiUrl: API_URL,
         produtos,
         obterUsuario: obterUsuarioLogadoCentral,
-        abrirCadastroProduto: function (item, callback) {
-            if (typeof showProdutoModal !== 'function') {
-                showNotification('Cadastre o produto em Produtos e retorne à revisão.', 'info');
-                if (typeof callback === 'function') callback(null);
-                return;
-            }
-            showProdutoModal(null);
-            $('#produtoModal').one('shown.bs.modal', function () {
-                $('#nome').val(item.produto_nome || '');
-                if ($('#codigo_barras').length) $('#codigo_barras').val(item.codigo_barras || '');
-                if ($('#ncm').length) $('#ncm').val(item.ncm || '');
-                if ($('#unidade').length) $('#unidade').val(item.unidade || 'UN');
-            });
-            $('#produtoModal').one('hidden.bs.modal', async function () {
-                const lista = await carregarProdutosParaRevisaoCentral();
-                const ultimo = lista[lista.length - 1];
-                if (typeof callback === 'function') callback(ultimo || null);
-            });
-        },
+        // Cadastro: modal empilhado + prefill do XML (miip-central-revisao.js).
         onConcluir: async function (resultado) {
             try {
                 const itens = resultado?.itens || dadosImportacao.itens;
@@ -3351,23 +3408,44 @@ async function processarDocumentoCentral(documentoId) {
 
 async function solicitarXmlCompletoCentral(documentoId) {
     const confirmado = window.confirm(
-        'Enviar Ciência da Emissão (210210) à SEFAZ para solicitar o XML completo desta NF-e?'
+        'Solicitar recuperação manual do XML completo?\n\n'
+        + 'Na rotina normal o MIRX já acompanha automaticamente.\n'
+        + 'Use esta opção apenas em casos excepcionais.'
     );
     if (!confirmado) return;
 
     try {
-        const resultado = await centralEntradasFetch(`/${documentoId}/ciclo-dfe`, {
+        const resultado = await centralEntradasFetch(`/${documentoId}/solicitar-xml-completo`, {
             method: 'POST',
             body: JSON.stringify({
-                confirmado: true,
                 usuario_id: obterUsuarioLogadoCentral()?.id
             })
         });
+
+        if (resultado.gateBloqueado || resultado.naoEnfileirado) {
+            const msg = resultado.mensagem
+                || [
+                    'Consulta temporariamente bloqueada pela SEFAZ (cStat 656).',
+                    '',
+                    `Próxima tentativa automática: ${resultado.proximaTentativaLabel || 'em breve'}`,
+                    '',
+                    'Nenhuma ação é necessária. O MIRX fará uma nova tentativa automaticamente.'
+                ].join('\n');
+            showNotification(msg, 'warning');
+            await softRefreshDocumentoSelecionadoCentral();
+            return;
+        }
+
+        const mensagem = resultado.mensagem
+            || (resultado.xmlCompleto
+                ? '🟢 XML recuperado automaticamente.'
+                : 'Solicitação aceita. O MIRX continua o acompanhamento automático.');
+        const tipoNotificacao = resultado.xmlCompleto
+            ? 'success'
+            : (resultado.sucesso === false ? 'warning' : 'info');
         showNotification(
-            resultado.mensagem || (resultado.xmlCompleto
-                ? 'XML completo recebido.'
-                : 'Aguardando disponibilização do XML completo pela SEFAZ.'),
-            resultado.xmlCompleto ? 'success' : 'info'
+            resultado.cStat ? `[cStat ${resultado.cStat}] ${mensagem}` : mensagem,
+            tipoNotificacao
         );
         await Promise.all([
             carregarDashboardCentral(),
@@ -3793,6 +3871,35 @@ function bindEventosCentralEntradas() {
         ]).then(() => showNotification('Central atualizada.', 'info'));
     });
 
+    $(document).on('click.centralEntradas', '[data-health-nivel]', function () {
+        const nivel = $(this).attr('data-health-nivel') || '';
+        filtrarAlertasSaudeCentral(nivel || null);
+    });
+
+    $(document).on('click.centralEntradas', '[data-health-doc]', async function () {
+        const id = Number($(this).data('health-doc'));
+        if (id) await selecionarDocumentoCentral(id);
+    });
+
+    $(document).on('click.centralEntradas', '#centralBtnSaudeAnalisar', async function () {
+        const btn = this;
+        btn.disabled = true;
+        try {
+            const painel = await centralEntradasFetch('/saude/analisar', {
+                method: 'POST',
+                body: JSON.stringify({ autoRecuperar: true }),
+                headers: { 'Content-Type': 'application/json' }
+            });
+            centralEntradasState.saudeCentral = painel;
+            renderPainelSaudeCentralUx();
+            showNotification('Análise de saúde concluída (sem consulta à SEFAZ).', 'success');
+        } catch (e) {
+            showNotification(e.message || 'Falha na análise de saúde.', 'error');
+        } finally {
+            btn.disabled = false;
+        }
+    });
+
     $(document).on('click.centralEntradas', '#centralBtnAtualizarDashboard', function () {
         carregarDashboardCentral().then(() => showNotification('Dashboard atualizado.', 'info'));
     });
@@ -4052,6 +4159,8 @@ function loadCentralEntradas() {
             <div id="centralEntradasViewInbox">
 
             <div id="centralEntradasAtencao"></div>
+
+            <div id="centralSaudeWrap" class="mb-3"></div>
 
             <div id="centralEntradasCards" class="central-ux1-kpis" aria-busy="true">
                 ${Array.from({ length: 8 }, () => `

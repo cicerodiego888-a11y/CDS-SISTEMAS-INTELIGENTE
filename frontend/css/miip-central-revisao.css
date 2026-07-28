@@ -7,6 +7,20 @@
   border-radius: 0;
 }
 
+/* Cadastro de produto empilhado sobre a Central MIIP (fullscreen). */
+.miip-central-modal.show {
+  z-index: 1055;
+}
+
+#produtoModal.produto-modal-sobre-miip,
+#produtoModal.produto-modal-sobre-miip.show {
+  z-index: 22000 !important;
+}
+
+.modal-backdrop.produto-modal-sobre-miip-backdrop {
+  z-index: 21990 !important;
+}
+
 .miip-central-header {
   background: linear-gradient(135deg, #312e81 0%, #4338ca 100%);
   color: #fff;

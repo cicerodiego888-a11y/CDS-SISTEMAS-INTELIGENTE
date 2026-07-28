@@ -754,6 +754,72 @@
   color: #94a3b8;
 }
 .central-rc75-progress-labels .is-on { color: #0f172a; font-weight: 600; }
+.central-rc75-progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.35rem;
+  font-size: 0.78rem;
+  color: #64748b;
+}
+.central-rc343-pct { color: #0f172a; font-size: 1rem; }
+.central-rc343-progress-text {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  color: #334155;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.35rem;
+}
+.central-rc343-explica {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 0.75rem 0.9rem;
+  background: linear-gradient(180deg, #f8fafc 0%, #fff 100%);
+  margin-bottom: 0.85rem;
+}
+.central-rc343-explica__title {
+  font-weight: 600;
+  color: #0f172a;
+  margin-bottom: 0.25rem;
+}
+.central-rc343-explica__txt {
+  font-size: 0.85rem;
+  color: #475569;
+  line-height: 1.4;
+}
+.central-rc343-mirx,
+.central-rc343-audit {
+  margin-bottom: 0.85rem;
+}
+.central-rc343-mirx-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.central-rc343-mirx-list li {
+  display: flex;
+  gap: 0.55rem;
+  align-items: flex-start;
+  padding: 0.45rem 0.55rem;
+  border-radius: 8px;
+  background: #f8fafc;
+  border: 1px solid #eef2f7;
+}
+.central-rc343-mirx-ico { width: 1.1rem; text-align: center; margin-top: 0.15rem; }
+.central-rc343-audit-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem 0.75rem;
+  font-size: 0.8rem;
+}
+.central-rc343-audit-grid .central-rc75-k { display: block; color: #64748b; font-size: 0.7rem; }
+.central-rc343-audit-grid .central-rc75-v { font-weight: 600; color: #0f172a; }
+@media (max-width: 576px) {
+  .central-rc343-audit-grid { grid-template-columns: 1fr; }
+}
 .central-rc75-timeline { display: flex; flex-direction: column; gap: 0.15rem; }
 .central-rc75-timeline-gap {
   display: flex;
@@ -840,6 +906,47 @@
 .central-rc75-loading-step { font-size: 0.82rem; opacity: .45; }
 .central-rc75-loading-step.is-active { opacity: 1; font-weight: 600; color: #0d6efd; }
 .central-rc75-loading-step.is-done { opacity: .85; color: #198754; }
+
+/* RC3.4.6 — Saúde da Central */
+.central-health-panel {
+  background: linear-gradient(180deg, #f8fafc 0%, #fff 100%);
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 0.85rem 1rem;
+}
+.central-health-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+.central-health-chip {
+  border: 1px solid color-mix(in srgb, var(--health-cor, #64748b) 35%, #e2e8f0);
+  background: color-mix(in srgb, var(--health-cor, #64748b) 12%, #fff);
+  color: #0f172a;
+  border-radius: 999px;
+  padding: 0.28rem 0.7rem;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.central-health-chip.ativa {
+  outline: 2px solid var(--health-cor, #0d6efd);
+}
+.central-health-alerta {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  border-radius: 8px;
+  padding: 0.55rem 0.7rem;
+  margin-bottom: 0.4rem;
+  text-align: left;
+  cursor: pointer;
+}
+.central-health-alerta:hover { border-color: #94a3b8; }
+.central-health-stats { display: flex; flex-wrap: wrap; align-items: center; }
+.central-health-doc { background: #f8fafc; border-radius: 0 8px 8px 0; padding: 0.65rem 0.75rem; }
 
 @media (max-width: 1600px) {
   .central-rc75-saude__grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }

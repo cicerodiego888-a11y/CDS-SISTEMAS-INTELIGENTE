@@ -1,6 +1,9 @@
 /**
- * Central de Revisão MIIP — Sprint 6B
- * Módulo independente do fluxo de Compras.
+ * Central de Revisão MIIP — Sprint 6B / RC7.5
+ * Módulo independente do fluxo de Compras/Pedido.
+ *
+ * RC7.5 — "Confirmar Produto" apenas confirma, aprende e avança.
+ * Nunca abre Pedido, Compra ou Cadastro a partir desse botão.
  *
  * Uso:
  *   MiipCentralRevisao.iniciar({ dadosImportacao, apiUrl, produtos, onConcluir, onCancelar, ... })
@@ -121,6 +124,10 @@
   }
 
   function notificar(mensagem, tipo) {
+    const container = document.getElementById('notification-container');
+    if (container) {
+      container.style.zIndex = '23000';
+    }
     if (typeof showNotification === 'function') {
       showNotification(mensagem, tipo || 'info');
     }
@@ -157,7 +164,8 @@
         unidade: item.unidade,
         usuarioId: usuario?.id ?? null,
         operacaoId: pendencia.operacaoId || sessao.operacaoId,
-        origem: 'central_revisao_miip',
+        origem: 'Confirmacao Manual',
+        origemDetalhe: 'central_revisao_miip',
         item
       })
     }).then(() => true).catch(() => false);
@@ -177,15 +185,11 @@
     `;
   }
 
-  function statusPendencia(sessao, pendencia) {
-    if (sessao.resolvidas.includes(pendencia.indice)) return 'resolvida';
-    if (sessao.ignoradas.includes(pendencia.indice)) return 'ignorada';
-    return 'aberta';
-  }
-
   function renderListaPendencias(sessao) {
+    // RC7.5 — lista lateral só com pendências abertas (resolvidas saem imediatamente).
     return sessao.pendencias.map((pendencia, idx) => {
-      const status = statusPendencia(sessao, pendencia);
+      if (!pendenciaAberta(sessao, pendencia)) return '';
+
       const ativo = idx === sessao.indiceAtual ? ' miip-central-lista-item--ativo' : '';
       const tipo = pendencia.precisaCadastro && !pendencia.produtoEncontrado ? 'cadastro' : 'confirmacao';
       const nome = pendencia.produtoXML?.produto_nome || 'Item sem nome';
@@ -197,8 +201,6 @@
           <div class="miip-central-lista-meta">
             <span class="miip-central-tag miip-central-tag--${tipo}">${tipo === 'cadastro' ? 'Cadastro' : 'Confirmação'}</span>
             <span>${score > 0 ? `${score}%` : 'Sem candidato'}</span>
-            ${status === 'resolvida' ? '<i class="fas fa-check-circle text-success"></i>' : ''}
-            ${status === 'ignorada' ? '<i class="fas fa-ban text-muted"></i>' : ''}
           </div>
         </button>
       `;
@@ -254,45 +256,40 @@
 
   function renderTelaRevisao() {
     const { sessao } = estado;
-    const pendencia = sessao.pendencias[sessao.indiceAtual];
     const abertas = contarAbertas(sessao);
+
+    if (abertas === 0) {
+      encerrarRevisaoAutomaticamente('todas_pendencias_resolvidas');
+      return;
+    }
+
+    if (!pendenciaAberta(sessao, sessao.pendencias[sessao.indiceAtual])) {
+      proximaAberta(sessao, 1);
+    }
+
+    const pendencia = sessao.pendencias[sessao.indiceAtual];
+    const totalPend = sessao.pendencias.length;
+    const resolvidas = sessao.resolvidas.length + sessao.ignoradas.length;
 
     $('#miipCentralResumo').html(renderResumoTopo(sessao));
     $('#miipCentralLista').html(renderListaPendencias(sessao));
     $('#miipCentralDetalhes').html(renderDetalhes(pendencia, sessao));
     $('#miipCentralCandidato').html(renderCandidato(pendencia));
-    $('#miipCentralContador').text(`${sessao.indiceAtual + 1} / ${sessao.pendencias.length} pendências (${abertas} abertas)`);
-
-    if (abertas === 0) {
-      mostrarTelaFinal();
-    }
+    $('#miipCentralContador').text(
+      `${resolvidas + 1} / ${totalPend} · ${abertas} pendente${abertas === 1 ? '' : 's'}`
+    );
   }
 
-  function renderTelaFinal() {
-    const { sessao } = estado;
-    sessao.fase = 'final';
-    const precisao = calcularPrecisao(sessao.resumo, sessao.confirmadosManualmente);
-
-    $('#miipCentralCorpo').html(`
-      <div class="miip-central-final">
-        ${renderResumoTopo(sessao)}
-        <div class="miip-central-final-msg">
-          <i class="fas fa-check-circle"></i>
-          <h4>Importação concluída.</h4>
-          <p>MIIP identificou automaticamente: <strong>${sessao.resumo.identificadosAutomaticamente}</strong> produtos</p>
-          <p>Aprendeu: <strong>${sessao.aprendizados}</strong> novas associações.</p>
-          <p>Precisão desta importação: <strong>${precisao}%</strong></p>
-          <p class="miip-central-final-sub">Agora a compra será aberta para conferência final.</p>
-          <button type="button" class="btn btn-primary btn-lg" id="miipCentralBtnConcluir">Abrir tela de Compras</button>
-        </div>
-      </div>
-    `);
-  }
-
-  function renderSemPendencias() {
-    const { sessao } = estado;
-    sessao.fase = 'final';
-    renderTelaFinal();
+  /**
+   * RC7.5 — encerra a Central MIIP e devolve o controle ao caller (Central de Entradas).
+   * Nunca navega para Pedido/Compra daqui.
+   */
+  function encerrarRevisaoAutomaticamente(motivo) {
+    if (!estado || estado._encerrando) return;
+    estado._encerrando = true;
+    estado.sessao.fase = 'final';
+    notificar('Revisão MIIP concluída. Retornando à Central de Entradas…', 'success');
+    concluirRevisao({ motivoEncerramento: motivo || 'auto' });
   }
 
   function renderModal() {
@@ -372,30 +369,55 @@
     if (estado?.modal) estado.modal.hide();
     $('#miipCentralRevisaoRoot').remove();
     $(document).off('.miipCentral');
+    $(document).off('.miipCentralCadastro');
   }
 
+  /**
+   * RC7.5 — "Confirmar Produto" só confirma/aprende/avança.
+   * Nunca abre Pedido, Compra, Cadastro ou fluxo comercial.
+   */
   function confirmarAtual() {
     const pendencia = estado.sessao.pendencias[estado.sessao.indiceAtual];
     if (!pendencia || !pendenciaAberta(estado.sessao, pendencia)) return;
 
     const produtoId = pendencia.produtoEncontrado?.id;
     if (!produtoId) {
-      notificar('Nenhum candidato para confirmar. Use F2 ou cadastre um novo produto.', 'warning');
+      notificar('Selecione um produto para continuar.', 'warning');
       return;
     }
 
     aplicarConfirmacao(pendencia, produtoId, pendencia.produtoEncontrado);
   }
 
+  function atualizarIndicadoresAposResolucao(pendencia) {
+    const resumo = estado.sessao.resumo;
+    if (pendencia.precisaConfirmacao && Number(resumo.precisamConfirmacao) > 0) {
+      resumo.precisamConfirmacao -= 1;
+    }
+    if (pendencia.precisaCadastro && Number(resumo.precisamCadastro) > 0) {
+      resumo.precisamCadastro -= 1;
+    }
+  }
+
   function aplicarConfirmacao(pendencia, produtoId, produto, aprendeuExplicito) {
+    if (!pendencia || !produtoId) {
+      notificar('Selecione um produto para continuar.', 'warning');
+      return;
+    }
+
     const item = estado.sessao.itens[pendencia.indice];
     if (item) {
       item.produto_id = Number(produtoId);
       item.miip_revisao_status = 'confirmado';
+      item.miip_revisao_origem = 'Confirmacao Manual';
+      if (produto?.nome) item.produto_nome_associado = produto.nome;
     }
 
-    estado.sessao.resolvidas.push(pendencia.indice);
-    estado.sessao.confirmadosManualmente += 1;
+    if (!estado.sessao.resolvidas.includes(pendencia.indice)) {
+      estado.sessao.resolvidas.push(pendencia.indice);
+      estado.sessao.confirmadosManualmente += 1;
+      atualizarIndicadoresAposResolucao(pendencia);
+    }
 
     const promessa = aprendeuExplicito === false
       ? Promise.resolve(false)
@@ -406,6 +428,12 @@
         estado.sessao.aprendizados += 1;
         mostrarAprendizado();
       }
+
+      if (contarAbertas(estado.sessao) === 0) {
+        encerrarRevisaoAutomaticamente('ultimo_item_resolvido');
+        return;
+      }
+
       proximaAberta(estado.sessao, 1);
       renderTelaRevisao();
     });
@@ -415,6 +443,13 @@
     const pendencia = estado.sessao.pendencias[estado.sessao.indiceAtual];
     if (!pendencia || !pendenciaAberta(estado.sessao, pendencia)) return;
     estado.sessao.ignoradas.push(pendencia.indice);
+    atualizarIndicadoresAposResolucao(pendencia);
+
+    if (contarAbertas(estado.sessao) === 0) {
+      encerrarRevisaoAutomaticamente('ultimo_item_ignorado');
+      return;
+    }
+
     proximaAberta(estado.sessao, 1);
     renderTelaRevisao();
   }
@@ -422,7 +457,9 @@
   function abrirBuscaProduto() {
     const produtos = estado.opcoes.produtos || [];
     const modalEl = document.getElementById('miipCentralBuscaModal');
+    if (!modalEl) return;
     const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+    elevarModalSobreMiip(modalEl);
     const renderBusca = (termo) => {
       const lower = String(termo || '').toLowerCase().trim();
       const filtrados = produtos.filter((p) => {
@@ -459,23 +496,334 @@
     setTimeout(() => $('#miipCentralBuscaInput').trigger('focus'), 200);
   }
 
-  function cadastrarNovo() {
-    const pendencia = estado.sessao.pendencias[estado.sessao.indiceAtual];
-    const item = estado.sessao.itens[pendencia?.indice] || pendencia?.produtoXML;
-    if (!item) return;
+  function elevarModalSobreMiip(modalEl) {
+    if (!modalEl) return;
 
-    if (typeof estado.opcoes.abrirCadastroProduto === 'function') {
-      estado.opcoes.abrirCadastroProduto(item, (produto) => {
-        if (produto?.id) aplicarConfirmacao(pendencia, produto.id, produto, false);
+    // Garante que o modal não fique preso em stacking context da página.
+    if (modalEl.parentElement !== document.body) {
+      document.body.appendChild(modalEl);
+    }
+
+    modalEl.classList.add('produto-modal-sobre-miip');
+    modalEl.style.zIndex = '22000';
+
+    requestAnimationFrame(() => {
+      const backdrops = document.querySelectorAll('.modal-backdrop');
+      const last = backdrops[backdrops.length - 1];
+      if (last) {
+        last.classList.add('produto-modal-sobre-miip-backdrop');
+        last.style.zIndex = '21990';
+      }
+    });
+  }
+
+  /**
+   * Une produtoXML + item da nota + fornecedor da sessão (UI usa produtoXML).
+   */
+  function montarItemCadastroXml(pendencia) {
+    const sessao = estado?.sessao || {};
+    const doXml = pendencia?.produtoXML || {};
+    const doItem = sessao.itens?.[pendencia?.indice] || {};
+    const precoUnitario = primeiroNumero(
+      doXml.preco_unitario, doXml.precoUnitario, doXml.valor_unitario, doXml.valorUnitario,
+      doItem.preco_unitario, doItem.precoUnitario, doItem.valor_unitario, doItem.valorUnitario
+    );
+    const margem = primeiroNumero(
+      doXml.margem_lucro, doXml.margemLucro,
+      doItem.margem_lucro, doItem.margemLucro,
+      30
+    );
+    const precoVenda = primeiroNumero(
+      doXml.preco_venda_sugerido, doXml.precoVendaSugerido,
+      doItem.preco_venda_sugerido, doItem.precoVendaSugerido,
+      precoUnitario != null && margem != null ? precoUnitario * (1 + margem / 100) : null
+    );
+    const quantidade = primeiroNumero(
+      doXml.quantidade, doXml.qtd, doItem.quantidade, doItem.qtd
+    );
+
+    return {
+      ...doItem,
+      ...doXml,
+      produto_nome: doXml.produto_nome || doXml.produtoNome || doItem.produto_nome
+        || doXml.descricao || doItem.descricao || doItem.nome || '',
+      descricao: doXml.descricao || doXml.produto_nome || doXml.produtoNome
+        || doItem.descricao || doItem.produto_nome || '',
+      codigo_fornecedor: doXml.codigo_fornecedor || doXml.codigoFornecedor
+        || doItem.codigo_fornecedor || doItem.codigoFornecedor || '',
+      codigo_barras: doXml.codigo_barras || doXml.codigoBarras || doXml.gtin
+        || doItem.codigo_barras || doItem.codigoBarras || doItem.gtin || '',
+      gtin: doXml.gtin || doItem.gtin || doXml.codigo_barras || doItem.codigo_barras || '',
+      ncm: doXml.ncm || doItem.ncm || '',
+      cest: doXml.cest || doItem.cest || '',
+      cfop: doXml.cfop || doItem.cfop || '',
+      unidade: doXml.unidade || doItem.unidade || 'UN',
+      quantidade,
+      preco_unitario: precoUnitario,
+      valor_unitario: precoUnitario,
+      margem_lucro: margem,
+      preco_venda_sugerido: precoVenda,
+      fornecedor: sessao.fornecedor || doItem.fornecedor || doXml.fornecedor || ''
+    };
+  }
+
+  function primeiroNumero(...candidatos) {
+    for (const c of candidatos) {
+      if (c == null || c === '') continue;
+      const n = Number(String(c).replace(/\s/g, '').replace(',', '.'));
+      if (Number.isFinite(n)) return n;
+    }
+    return null;
+  }
+
+  /** Campos type=number do cadastro exigem ponto decimal (não vírgula). */
+  function formatarPrecoCadastro(valor, casas = 4) {
+    const n = Number(String(valor ?? '').replace(/\s/g, '').replace(',', '.'));
+    if (!Number.isFinite(n)) return '';
+    const fixed = n.toFixed(casas);
+    return fixed.replace(/\.?0+$/, '') || '0';
+  }
+
+  function setCampoNumero($el, valor, casas = 4) {
+    if (!$el || !$el.length) return false;
+    const formatado = formatarPrecoCadastro(valor, casas);
+    if (formatado === '') return false;
+    $el.val(formatado);
+    $el.trigger('input').trigger('change');
+    return true;
+  }
+
+  function preencherCamposCadastroProduto(item) {
+    const xml = item || {};
+    const nome = String(xml.produto_nome || xml.descricao || xml.nome || '').trim();
+    const $modal = $('#produtoModal');
+    if (!$modal.length) return;
+
+    if (nome && $('#nome').length) $('#nome').val(nome);
+
+    const barras = String(xml.codigo_barras || xml.gtin || '').trim();
+    if (barras && $('#codigo_barras').length) {
+      $('#codigo_barras').val(barras).trigger('input.espelhoCodigo');
+    }
+
+    if ($('#ncm').length && xml.ncm) $('#ncm').val(String(xml.ncm).trim());
+    if ($('#cest').length && xml.cest) $('#cest').val(String(xml.cest).trim());
+    if ($('#cfop').length && xml.cfop) $('#cfop').val(String(xml.cfop).trim());
+
+    if ($('#unidade').length) {
+      const und = String(xml.unidade || 'UN').trim().toUpperCase() || 'UN';
+      const $und = $('#unidade');
+      if ($und.find(`option[value="${und}"]`).length) $und.val(und);
+      else $und.val('UN');
+      $und.trigger('change');
+    }
+
+    const preco = xml.preco_unitario ?? xml.valor_unitario ?? xml.precoUnitario ?? xml.valorUnitario;
+    const precoOk = setCampoNumero($('#preco_compra'), preco, 4);
+
+    const margem = xml.margem_lucro ?? xml.margemLucro;
+    if ($('#lucro_percentual').length && margem != null && margem !== '') {
+      setCampoNumero($('#lucro_percentual'), margem, 2);
+    } else if (precoOk && $('#lucro_percentual').length && String($('#lucro_percentual').val() || '').trim() === '') {
+      setCampoNumero($('#lucro_percentual'), 30, 2);
+    }
+
+    const precoVenda = xml.preco_venda_sugerido ?? xml.precoVendaSugerido;
+    if (precoVenda != null && precoVenda !== '') {
+      setCampoNumero($('#preco_venda'), precoVenda, 2);
+    }
+
+    if (typeof sincronizarFormacaoPrecoProduto === 'function') {
+      sincronizarFormacaoPrecoProduto(precoVenda != null ? 'venda' : 'compra');
+    } else {
+      $('#preco_compra').trigger('input.precoMotor').trigger('change.precoMotor');
+    }
+
+    if ($('#fornecedor').length && xml.fornecedor) {
+      $('#fornecedor').val(String(xml.fornecedor).trim());
+    }
+
+    // Código do fornecedor no XML → código interno (associação MIIP).
+    // Só preenche se ainda vazio / ainda for a sugestão automática.
+    const codForn = String(xml.codigo_fornecedor || xml.codigoFornecedor || '').trim();
+    if (codForn && $('#codigo').length) {
+      const atual = String($('#codigo').val() || '').trim();
+      const auto = String($modal.data('codigoAutoSugerido') || '').trim();
+      if (!atual || (auto && atual === auto)) {
+        $('#codigo').val(codForn);
+      }
+    }
+
+    $modal.data('miipPrefillXml', xml);
+  }
+
+  async function resolverProdutoRecemCadastrado(nomeHint) {
+    try {
+      const token = localStorage.getItem('token') || '';
+      const resp = await fetch(`${estado.opcoes.apiUrl}/produtos`, {
+        headers: { Authorization: `Bearer ${token}` }
       });
+      if (!resp.ok) return null;
+      const lista = await resp.json().catch(() => []);
+      if (!Array.isArray(lista) || !lista.length) return null;
+
+      const hint = String(nomeHint || '').trim().toLowerCase();
+      if (hint) {
+        const porNome = [...lista].reverse().find((p) =>
+          String(p.nome || '').trim().toLowerCase() === hint
+        );
+        if (porNome) return porNome;
+      }
+
+      return lista.reduce((a, b) => (Number(a?.id || 0) > Number(b?.id || 0) ? a : b));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /**
+   * Garante o script de cadastro de produtos (lazy) antes de abrir o modal.
+   */
+  async function garantirShowProdutoModal() {
+    if (typeof showProdutoModal === 'function') return true;
+
+    try {
+      if (typeof window.CdsErpLazyLoader?.loadPageScripts === 'function') {
+        await window.CdsErpLazyLoader.loadPageScripts('produtos');
+      } else if (typeof window.CdsErpLazyLoader?.loadFeatureScript === 'function') {
+        await window.CdsErpLazyLoader.loadFeatureScript('/erp/js/categorias.js').catch(() => {});
+        await window.CdsErpLazyLoader.loadFeatureScript('/erp/js/subcategorias.js').catch(() => {});
+        await window.CdsErpLazyLoader.loadFeatureScript('/erp/js/produtos.js');
+      } else {
+        const carregarScript = (src) => new Promise((resolve, reject) => {
+          const el = document.createElement('script');
+          el.src = src;
+          el.async = false;
+          el.onload = () => resolve();
+          el.onerror = () => reject(new Error(`Falha ao carregar ${src}`));
+          document.head.appendChild(el);
+        });
+        await carregarScript('/erp/js/categorias.js').catch(() => {});
+        await carregarScript('/erp/js/subcategorias.js').catch(() => {});
+        await carregarScript('/erp/js/produtos.js');
+      }
+      return typeof showProdutoModal === 'function';
+    } catch (err) {
+      console.warn('[MIIP] Não foi possível carregar produtos.js:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Abre o cadastro de produto na frente da Central MIIP (sem sair da revisão),
+   * já com os dados do XML preenchidos.
+   */
+  async function abrirCadastroProdutoPadrao(item, callback) {
+    const ok = await garantirShowProdutoModal();
+    if (!ok || typeof showProdutoModal !== 'function') {
+      notificar('Módulo de Produtos indisponível. Atualize a página (Ctrl+F5) e tente novamente.', 'danger');
+      if (typeof callback === 'function') callback(null);
       return;
     }
 
-    abrirBuscaProduto();
-    notificar('Cadastre o produto em Produtos e selecione-o na busca (F2).', 'info');
+    showProdutoModal(null);
+
+    const el = document.getElementById('produtoModal');
+    if (!el) {
+      notificar('Não foi possível abrir o cadastro de produto.', 'danger');
+      if (typeof callback === 'function') callback(null);
+      return;
+    }
+
+    elevarModalSobreMiip(el);
+
+    try {
+      bootstrap.Modal.getOrCreateInstance(el, { backdrop: true, keyboard: true, focus: true }).show();
+    } catch (_) {
+      try { $(el).modal('show'); } catch (__) { /* ignore */ }
+    }
+
+    const aplicarPrefill = () => {
+      elevarModalSobreMiip(el);
+      preencherCamposCadastroProduto(item);
+    };
+
+    const onShown = () => {
+      aplicarPrefill();
+      // Reaplica após init async (código interno sugerido, cálculo de preço, etc.).
+      setTimeout(aplicarPrefill, 120);
+      setTimeout(aplicarPrefill, 350);
+      setTimeout(() => {
+        const campo = document.getElementById('nome');
+        if (campo) {
+          campo.focus();
+          campo.select();
+        }
+      }, 180);
+    };
+
+    el.addEventListener('shown.bs.modal', onShown, { once: true });
+    if (el.classList.contains('show')) onShown();
+    else setTimeout(aplicarPrefill, 50);
+
+    el.addEventListener('hidden.bs.modal', async () => {
+      el.classList.remove('produto-modal-sobre-miip');
+      document.querySelectorAll('.produto-modal-sobre-miip-backdrop').forEach((b) => {
+        b.classList.remove('produto-modal-sobre-miip-backdrop');
+      });
+
+      const $modal = $('#produtoModal');
+      const salvoDireto = $modal.data('produtoRecemSalvo') || null;
+      const salvouOk = $modal.data('produtoSalvoComSucesso') === true;
+      $modal.removeData('produtoRecemSalvo');
+      $modal.removeData('produtoSalvoComSucesso');
+
+      // Cancelou sem salvar → não confirma pendência.
+      if (!salvouOk && !salvoDireto?.id) {
+        if (typeof callback === 'function') callback(null);
+        return;
+      }
+
+      const nomeHint = item?.produto_nome || item?.descricao || item?.nome || '';
+      let produto = salvoDireto && salvoDireto.id ? salvoDireto : null;
+      if (!produto) {
+        produto = await resolverProdutoRecemCadastrado(nomeHint);
+      }
+
+      if (produto?.id && Array.isArray(estado?.opcoes?.produtos)) {
+        const ja = estado.opcoes.produtos.some((p) => Number(p.id) === Number(produto.id));
+        if (!ja) estado.opcoes.produtos.unshift(produto);
+      }
+
+      if (typeof callback === 'function') callback(produto || null);
+      if (!produto) {
+        notificar('Produto salvo, mas não foi possível vinculá-lo automaticamente. Use F2 para selecioná-lo.', 'warning');
+      } else {
+        notificar('Produto cadastrado e vinculado ao item da NF.', 'success');
+      }
+    }, { once: true });
   }
 
-  function concluirRevisao() {
+  async function cadastrarNovo() {
+    const pendencia = estado.sessao.pendencias[estado.sessao.indiceAtual];
+    if (!pendencia || !pendenciaAberta(estado.sessao, pendencia)) {
+      notificar('Selecione um item pendente para cadastrar.', 'warning');
+      return;
+    }
+
+    const item = montarItemCadastroXml(pendencia);
+    const aoCadastrar = (produto) => {
+      if (produto?.id) {
+        aplicarConfirmacao(pendencia, produto.id, produto, false);
+      }
+    };
+
+    // Sempre usa o fluxo empilhado sobre a Central (não abre a busca F2).
+    await abrirCadastroProdutoPadrao(item, aoCadastrar);
+  }
+
+  function concluirRevisao(meta) {
+    if (!estado) return;
     const { sessao, opcoes } = estado;
     const resultado = {
       itens: sessao.itens,
@@ -484,6 +832,13 @@
         aprendeu: sessao.aprendizados,
         precisao: calcularPrecisao(sessao.resumo, sessao.confirmadosManualmente),
         confirmadosManualmente: sessao.confirmadosManualmente
+      },
+      // RC7.5 — caller (Central) decide o próximo passo; MIIP não abre Compra/Pedido.
+      navegacao: {
+        abrirCompra: false,
+        abrirPedido: false,
+        permanecerNaCentral: true,
+        motivo: meta?.motivoEncerramento || 'manual'
       }
     };
 
@@ -501,6 +856,9 @@
 
   function onKeydown(event) {
     if (!estado || !document.getElementById('miipCentralRevisaoModal')?.classList.contains('show')) return;
+
+    // Cadastro de produto aberto na frente: não interceptar atalhos da revisão.
+    if (document.getElementById('produtoModal')?.classList.contains('show')) return;
 
     if (event.key === 'Escape') {
       event.preventDefault();
@@ -537,11 +895,15 @@
 
   function bindEventos() {
     $(document).off('.miipCentral');
+    $(document).off('.miipCentralCadastro');
     $(document).on('keydown.miipCentral', onKeydown);
 
     $('#miipCentralBtnConfirmar').on('click', confirmarAtual);
     $('#miipCentralBtnEscolher').on('click', abrirBuscaProduto);
-    $('#miipCentralBtnCadastrar').on('click', cadastrarNovo);
+    $(document).off('click.miipCentralCadastro').on('click.miipCentralCadastro', '#miipCentralBtnCadastrar', function (e) {
+      e.preventDefault();
+      cadastrarNovo();
+    });
     $('#miipCentralBtnIgnorar').on('click', ignorarAtual);
     $('#miipCentralBtnCancelar').on('click', cancelarRevisao);
 
@@ -550,7 +912,6 @@
       renderTelaRevisao();
     });
 
-    $(document).on('click.miipCentral', '#miipCentralBtnConcluir', concluirRevisao);
   }
 
   function iniciar(opcoes) {
@@ -571,16 +932,17 @@
         onCancelar: opcoes.onCancelar
       },
       sessao: montarSessao(opcoes.dadosImportacao),
-      modal: null
+      modal: null,
+      _encerrando: false
     };
 
-    abrirModal();
-
+    // RC7.5 — sem pendências: conclui e devolve à Central (sem UI de Compra).
     if (estado.sessao.pendencias.length === 0) {
-      renderSemPendencias();
+      encerrarRevisaoAutomaticamente('xml_sem_pendencias');
       return;
     }
 
+    abrirModal();
     renderTelaRevisao();
   }
 
@@ -590,7 +952,15 @@
       montarSessao,
       ordenarPendencias,
       extrairPendencias,
-      calcularPrecisao
+      calcularPrecisao,
+      /** RC7.5 — validação pura do botão Confirmar Produto */
+      validarConfirmacao(pendencia) {
+        const produtoId = pendencia?.produtoEncontrado?.id;
+        if (!produtoId) {
+          return { ok: false, mensagem: 'Selecione um produto para continuar.' };
+        }
+        return { ok: true, produtoId: Number(produtoId) };
+      }
     }
   };
 })(typeof window !== 'undefined' ? window : global);

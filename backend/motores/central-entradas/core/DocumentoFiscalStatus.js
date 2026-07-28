@@ -14,6 +14,11 @@ const DocumentoFiscalStatus = Object.freeze({
   AGUARDANDO_REVISAO: 'AGUARDANDO_REVISAO',
   /** Resumo DF-e (resNFe) — aguarda nfeProc/NFe completo. Sem Parser/MIIP. */
   AGUARDANDO_XML_COMPLETO: 'AGUARDANDO_XML_COMPLETO',
+  /**
+   * RC7.4.7 — XML completo jamais será disponibilizado (ex.: cStat 596 prazo expirado).
+   * Estado terminal: sem XML_WAIT / sem nova Ciência.
+   */
+  XML_INDISPONIVEL: 'XML_INDISPONIVEL',
   REVISADA: 'REVISADA',
   PRONTA_PARA_COMPRA: 'PRONTA_PARA_COMPRA',
   EM_COMPRA: 'EM_COMPRA',
@@ -28,7 +33,8 @@ const TODOS = Object.freeze(Object.values(DocumentoFiscalStatus));
 const ESTADOS_TERMINAIS = Object.freeze([
   DocumentoFiscalStatus.GRAVADA,
   DocumentoFiscalStatus.DESCARTADA,
-  DocumentoFiscalStatus.DUPLICADA
+  DocumentoFiscalStatus.DUPLICADA,
+  DocumentoFiscalStatus.XML_INDISPONIVEL
 ]);
 
 const LABELS_UI = Object.freeze({
@@ -36,7 +42,8 @@ const LABELS_UI = Object.freeze({
   [DocumentoFiscalStatus.SINCRONIZADA]: 'Nova',
   [DocumentoFiscalStatus.EM_PROCESSAMENTO]: 'Processando',
   [DocumentoFiscalStatus.AGUARDANDO_REVISAO]: 'Revisar produtos',
-  [DocumentoFiscalStatus.AGUARDANDO_XML_COMPLETO]: 'Aguardando XML Completo',
+  [DocumentoFiscalStatus.AGUARDANDO_XML_COMPLETO]: 'Recuperação automática do XML agendada',
+  [DocumentoFiscalStatus.XML_INDISPONIVEL]: 'XML Indisponível',
   [DocumentoFiscalStatus.REVISADA]: 'Revisada',
   [DocumentoFiscalStatus.PRONTA_PARA_COMPRA]: 'Pronta',
   [DocumentoFiscalStatus.EM_COMPRA]: 'Em compra',

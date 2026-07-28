@@ -54,6 +54,49 @@ router.get('/health', async (req, res) => {
   }
 });
 
+/** RC3.4.6 — Saúde documental (monitor contínuo, sem SEFAZ). */
+router.get('/saude', async (req, res) => {
+  try {
+    const painel = await centralEntradasService.obterSaudeCentral({
+      forcar: req.query.forcar === '1'
+    });
+    return res.json(painel);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/saude/alertas', async (req, res) => {
+  try {
+    const lista = await centralEntradasService.listarAlertasSaude({
+      nivel: req.query.nivel || null
+    });
+    return res.json(lista);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/saude/documento/:id', async (req, res) => {
+  try {
+    const saude = await centralEntradasService.obterSaudeDocumento(req.params.id);
+    return res.json(saude);
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+router.post('/saude/analisar', async (req, res) => {
+  try {
+    const painel = await centralEntradasService.analisarSaudeCentral({
+      autoRecuperar: req.body?.autoRecuperar !== false
+    });
+    return res.json(painel);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 /**
  * RC6.5 — Migração idempotente de documentos legados (RES_NFE pré-RC6.2).
  * Não altera Orchestrator/Parser/MIIP/Compras.
@@ -492,6 +535,17 @@ router.post('/:id/processar', async (req, res) => {
   }
 });
 
+/**
+ * RC7.4.6 — HTTP do ciclo DF-e: resultado de negócio ≠ erro técnico.
+ * - 409: requer confirmação do operador
+ * - 200: sucesso, aguardando XML, rejeição SEFAZ (ex. cStat 596), demais resultados
+ * - 4xx/5xx: apenas no catch (exceção / statusCode do domínio)
+ */
+function statusHttpCicloDfe(resultado) {
+  if (resultado && resultado.requerConfirmacao) return 409;
+  return 200;
+}
+
 router.post('/:id/ciclo-dfe', async (req, res) => {
   try {
     const { usuario_id: usuarioId, confirmado } = req.body || {};
@@ -502,10 +556,25 @@ router.post('/:id/ciclo-dfe', async (req, res) => {
         confirmado: confirmado === true
       }
     );
-    const statusCode = resultado.sucesso || resultado.aguardandoDisponibilizacao
-      ? 200
-      : (resultado.requerConfirmacao ? 409 : 422);
-    return res.status(statusCode).json(resultado);
+    return res.status(statusHttpCicloDfe(resultado)).json(resultado);
+  } catch (error) {
+    const code = error.statusCode || 500;
+    return res.status(code).json({ error: error.message, sucesso: false });
+  }
+});
+
+/**
+ * RC3.4.2 — Solicitar XML Completo (exceção manual via MIRX + Gate).
+ * Não consulta SEFAZ se Gate bloqueado (656); não reenfileira em SLEEP.
+ */
+router.post('/:id/solicitar-xml-completo', async (req, res) => {
+  try {
+    const { usuario_id: usuarioId } = req.body || {};
+    const resultado = await centralEntradasService.solicitarXmlCompletoManual(
+      req.params.id,
+      { usuarioId }
+    );
+    return res.status(200).json(resultado);
   } catch (error) {
     const code = error.statusCode || 500;
     return res.status(code).json({ error: error.message, sucesso: false });

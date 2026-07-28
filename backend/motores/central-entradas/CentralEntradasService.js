@@ -50,6 +50,23 @@ class CentralEntradasService {
     return this._orchestrator.obterDashboard();
   }
 
+  /** RC3.4.6 — Health Monitor (somente diagnóstico local). */
+  obterSaudeCentral(opcoes = {}) {
+    return this._orchestrator.obterSaudeCentral(opcoes);
+  }
+
+  listarAlertasSaude(filtros = {}) {
+    return this._orchestrator.listarAlertasSaude(filtros);
+  }
+
+  obterSaudeDocumento(id) {
+    return this._orchestrator.obterSaudeDocumento(id);
+  }
+
+  analisarSaudeCentral(opcoes = {}) {
+    return this._orchestrator.analisarSaudeCentral(opcoes);
+  }
+
   alterarStatus(id, novoStatus, opcoes = {}) {
     return this._orchestrator.alterarStatusManual(id, novoStatus, opcoes);
   }
@@ -84,6 +101,23 @@ class CentralEntradasService {
 
   processarCicloDfeDocumento(id, opcoes = {}) {
     return this._orchestrator.processarCicloDfeDocumento(id, opcoes);
+  }
+
+  /**
+   * RC3.4.2 — recuperação manual excepcional (respeita Gate / SLEEP).
+   */
+  async solicitarXmlCompletoManual(id, opcoes = {}) {
+    const xmlWait = require('./services/CentralXmlWaitScheduler');
+    if (typeof xmlWait.solicitarXmlManual !== 'function') {
+      return this.processarCicloDfeDocumento(id, {
+        ...opcoes,
+        confirmado: true
+      });
+    }
+    return xmlWait.solicitarXmlManual(id, {
+      usuarioId: opcoes.usuarioId,
+      correlationId: opcoes.correlationId
+    });
   }
 
   concluirRevisao(id, dados = {}) {

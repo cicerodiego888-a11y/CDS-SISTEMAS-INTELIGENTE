@@ -92,5 +92,23 @@ test('AGUARDANDO_XML_COMPLETO → EM_PROCESSAMENTO é bloqueada (RC6.2)', () => 
   );
 });
 
+test('AGUARDANDO_XML_COMPLETO → XML_INDISPONIVEL é permitida (RC7.4.7)', () => {
+  assert.strictEqual(
+    podeTransicionar(
+      DocumentoFiscalStatus.AGUARDANDO_XML_COMPLETO,
+      DocumentoFiscalStatus.XML_INDISPONIVEL
+    ),
+    true
+  );
+});
+
+test('XML_INDISPONIVEL é terminal e não reinicia ciclo (RC7.4.7)', () => {
+  const r = validarTransicao(
+    DocumentoFiscalStatus.XML_INDISPONIVEL,
+    DocumentoFiscalStatus.AGUARDANDO_XML_COMPLETO
+  );
+  assert.strictEqual(r.valido, false);
+});
+
 console.log(`\nResultado: ${passou} passou, ${falhou} falhou\n`);
 process.exit(falhou > 0 ? 1 : 0);

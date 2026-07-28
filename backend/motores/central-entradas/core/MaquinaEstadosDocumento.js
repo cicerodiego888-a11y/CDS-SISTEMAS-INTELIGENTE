@@ -32,7 +32,9 @@ const TRANSICOES_PERMITIDAS = Object.freeze({
   ],
   [DocumentoFiscalStatus.AGUARDANDO_XML_COMPLETO]: [
     DocumentoFiscalStatus.SINCRONIZADA,
-    DocumentoFiscalStatus.DESCARTADA
+    DocumentoFiscalStatus.DESCARTADA,
+    /** RC7.4.7 — cStat 596 / prazo SEFAZ: XML jamais será disponibilizado. */
+    DocumentoFiscalStatus.XML_INDISPONIVEL
   ],
   [DocumentoFiscalStatus.EM_PROCESSAMENTO]: [
     DocumentoFiscalStatus.AGUARDANDO_REVISAO,
@@ -62,7 +64,8 @@ const TRANSICOES_PERMITIDAS = Object.freeze({
   ],
   [DocumentoFiscalStatus.GRAVADA]: [],
   [DocumentoFiscalStatus.DESCARTADA]: [],
-  [DocumentoFiscalStatus.DUPLICADA]: []
+  [DocumentoFiscalStatus.DUPLICADA]: [],
+  [DocumentoFiscalStatus.XML_INDISPONIVEL]: []
 });
 
 /**

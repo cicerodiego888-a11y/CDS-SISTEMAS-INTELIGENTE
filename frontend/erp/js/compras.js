@@ -1038,12 +1038,25 @@ function miipNovoProdutoItemCompra(index) {
         showProdutoModal(null);
         $('#produtoModal').one('shown.bs.modal', function preencherNovoProdutoMiip() {
             $('#nome').val(item.produto_nome || '');
-            if ($('#codigo_barras').length) $('#codigo_barras').val(item.codigo_barras || '');
+            if ($('#codigo_barras').length) $('#codigo_barras').val(item.codigo_barras || '').trigger('input.espelhoCodigo');
             if ($('#ncm').length) $('#ncm').val(item.ncm || '');
-            if ($('#unidade').length) $('#unidade').val(item.unidade || 'UN');
-            if ($('#preco_compra').length) $('#preco_compra').val(formatNumberInput(item.preco_unitario || 0));
-            if ($('#preco_venda').length) $('#preco_venda').val(formatNumberInput(item.preco_venda_sugerido || 0));
-            if ($('#lucro_percentual').length) $('#lucro_percentual').val(formatNumberInput(item.margem_lucro || 30));
+            if ($('#unidade').length) $('#unidade').val(item.unidade || 'UN').trigger('change');
+            const custo = Number(item.preco_unitario ?? item.valor_unitario ?? 0);
+            const margem = Number(item.margem_lucro ?? 30);
+            const venda = Number(item.preco_venda_sugerido ?? (custo > 0 ? custo * (1 + margem / 100) : 0));
+            if ($('#preco_compra').length) {
+                $('#preco_compra').val(formatNumberInput(custo, 4));
+            }
+            if ($('#lucro_percentual').length) $('#lucro_percentual').val(formatNumberInput(margem));
+            if ($('#preco_venda').length) $('#preco_venda').val(formatNumberInput(venda));
+            if (typeof sincronizarFormacaoPrecoProduto === 'function') {
+                sincronizarFormacaoPrecoProduto('venda');
+            } else {
+                $('#preco_compra').trigger('input').trigger('change');
+            }
+            if (item.codigo_fornecedor && $('#codigo').length && !String($('#codigo').val() || '').trim()) {
+                $('#codigo').val(String(item.codigo_fornecedor).trim());
+            }
         });
         showNotification('Preencha o cadastro do novo produto e selecione-o no item.', 'info');
         return;
@@ -2189,20 +2202,54 @@ function abrirCadastroProdutoCentralMiip(item, callback) {
     }
 
     showProdutoModal(null);
-    $('#produtoModal').one('shown.bs.modal', function preencherNovoProdutoCentralMiip() {
-        $('#nome').val(item.produto_nome || '');
-        if ($('#codigo_barras').length) $('#codigo_barras').val(item.codigo_barras || '');
-        if ($('#ncm').length) $('#ncm').val(item.ncm || '');
-        if ($('#unidade').length) $('#unidade').val(item.unidade || 'UN');
-        if ($('#preco_compra').length) $('#preco_compra').val(formatNumberInput(item.preco_unitario || 0));
-        if ($('#preco_venda').length) $('#preco_venda').val(formatNumberInput(item.preco_venda_sugerido || 0));
-        if ($('#lucro_percentual').length) $('#lucro_percentual').val(formatNumberInput(item.margem_lucro || 30));
-    });
 
-    $('#produtoModal').one('hidden.bs.modal', function aposCadastroCentralMiip() {
+    const el = document.getElementById('produtoModal');
+    if (!el) {
+        if (typeof callback === 'function') callback(null);
+        return;
+    }
+
+    try {
+        bootstrap.Modal.getOrCreateInstance(el).show();
+    } catch (_) { /* ignore */ }
+
+    const elevar = () => {
+        el.style.zIndex = '21000';
+        const backdrops = document.querySelectorAll('.modal-backdrop');
+        const last = backdrops[backdrops.length - 1];
+        if (last) last.style.zIndex = '20990';
+    };
+    elevar();
+
+    el.addEventListener('shown.bs.modal', function preencherNovoProdutoCentralMiip() {
+        elevar();
+        $('#nome').val(item.produto_nome || '');
+        if ($('#codigo_barras').length) $('#codigo_barras').val(item.codigo_barras || '').trigger('input.espelhoCodigo');
+        if ($('#ncm').length) $('#ncm').val(item.ncm || '');
+        if ($('#unidade').length) $('#unidade').val(item.unidade || 'UN').trigger('change');
+        const custo = Number(item.preco_unitario ?? item.valor_unitario ?? 0);
+        const margem = Number(item.margem_lucro ?? 30);
+        const venda = Number(item.preco_venda_sugerido ?? (custo > 0 ? custo * (1 + margem / 100) : 0));
+        if ($('#preco_compra').length) $('#preco_compra').val(formatNumberInput(custo, 4));
+        if ($('#lucro_percentual').length) $('#lucro_percentual').val(formatNumberInput(margem));
+        if ($('#preco_venda').length) $('#preco_venda').val(formatNumberInput(venda));
+        if (typeof sincronizarFormacaoPrecoProduto === 'function') {
+            sincronizarFormacaoPrecoProduto('venda');
+        } else {
+            $('#preco_compra').trigger('input').trigger('change');
+        }
+        if (item.codigo_fornecedor && $('#codigo').length && !String($('#codigo').val() || '').trim()) {
+            $('#codigo').val(String(item.codigo_fornecedor).trim());
+        }
+        if (item.fornecedor && $('#fornecedor').length) {
+            $('#fornecedor').val(String(item.fornecedor).trim());
+        }
+    }, { once: true });
+
+    el.addEventListener('hidden.bs.modal', function aposCadastroCentralMiip() {
         const ultimo = produtosCompraList[produtosCompraList.length - 1];
         if (typeof callback === 'function') callback(ultimo || null);
-    });
+    }, { once: true });
 }
 
 function finalizarImportacaoXmlCompra(data) {

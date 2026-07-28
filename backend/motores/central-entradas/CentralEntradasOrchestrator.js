@@ -293,6 +293,11 @@ class CentralEntradasOrchestrator {
       const estado = xmlWait.obterEstadoDocumento(id);
       if (estado && detalhe.documento) {
         detalhe.documento.xmlWait = estado;
+        // RC3.4.4 — statusLabel coerente com SLEEP/Gate (não “SEFAZ sem XML”).
+        try {
+          const { resolverStatusReal } = require('./utils/centralDocumentalInteligente');
+          detalhe.documento.statusLabel = resolverStatusReal(detalhe.documento, estado);
+        } catch { /* ignore */ }
       }
       detalhe.xmlWaitTelemetria = xmlWait.obterTelemetria();
       detalhe.sefazOperacional = gate.obterPainelOperacional({
@@ -301,6 +306,38 @@ class CentralEntradasOrchestrator {
         quantidadeTentativas: detalhe.xmlWaitTelemetria?.numeroTentativas || null
       });
     } catch { /* ignore */ }
+
+    // RC3.4.3 — eventos + auditoria documental (somente leitura; sem SEFAZ).
+    try {
+      const {
+        mapearEventosMirx,
+        montarAuditoriaDocumental
+      } = require('./utils/centralDocumentalInteligente');
+      const log = await this._eventosService.listarLog({
+        documentoId: id,
+        limite: 80
+      });
+      detalhe.eventos = log.eventos || [];
+      detalhe.eventosMirx = mapearEventosMirx(detalhe.eventos);
+      detalhe.auditoriaDocumental = montarAuditoriaDocumental({
+        doc: detalhe.documento,
+        wait: detalhe.documento?.xmlWait || {},
+        historico,
+        eventosMirx: detalhe.eventosMirx
+      });
+    } catch {
+      detalhe.eventos = detalhe.eventos || [];
+      detalhe.eventosMirx = detalhe.eventosMirx || [];
+    }
+
+    // RC3.4.6 — saúde documental (somente leitura local).
+    try {
+      const health = require('./health');
+      detalhe.saude = await health.obterMonitor().analisarDocumento(id);
+      if (detalhe.documento) detalhe.documento.saude = detalhe.saude;
+    } catch {
+      detalhe.saude = null;
+    }
 
     return detalhe;
   }
@@ -311,6 +348,30 @@ class CentralEntradasOrchestrator {
 
   async obterDashboard() {
     return this._dashboardService.obterResumo();
+  }
+
+  /** RC3.4.6 — painel Saúde da Central (sem SEFAZ). */
+  async obterSaudeCentral(opcoes = {}) {
+    const health = require('./health');
+    return health.obterMonitor().obterPainel(opcoes);
+  }
+
+  async listarAlertasSaude(filtros = {}) {
+    const health = require('./health');
+    await health.obterMonitor().obterPainel({});
+    return health.obterMonitor().listarAlertas(filtros);
+  }
+
+  async obterSaudeDocumento(id) {
+    const health = require('./health');
+    const cached = health.obterMonitor().obterDocumento(id);
+    if (cached) return cached;
+    return health.obterMonitor().analisarDocumento(id);
+  }
+
+  async analisarSaudeCentral(opcoes = {}) {
+    const health = require('./health');
+    return health.forcarScan(opcoes);
   }
 
   /**

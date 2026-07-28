@@ -39,6 +39,14 @@ class CentralDashboardService {
 
     const total = Object.values(contadores).reduce((acc, n) => acc + Number(n || 0), 0);
 
+    let saude = null;
+    try {
+      const health = require('../health');
+      saude = await health.obterMonitor().obterPainel({ forcar: false });
+    } catch {
+      saude = null;
+    }
+
     return CentralDashboardDTO.create({
       contadores: {
         novas: contadores[DocumentoFiscalStatus.SINCRONIZADA] || 0,
@@ -85,7 +93,8 @@ class CentralDashboardService {
         } catch {
           return null;
         }
-      })()
+      })(),
+      saude
     }).toJSON();
   }
 }
