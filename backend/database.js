@@ -238,6 +238,7 @@ function aplicarAlteracoesPosCriacao() {
     `ALTER TABLE compras ADD COLUMN data_vencimento DATE`,
     `ALTER TABLE compras ADD COLUMN parcelas INTEGER DEFAULT 1`,
     `ALTER TABLE compras ADD COLUMN valor_entrada DECIMAL(10,2) DEFAULT 0`,
+    `ALTER TABLE compras ADD COLUMN dias_entre_parcelas INTEGER DEFAULT 30`,
     `ALTER TABLE compras ADD COLUMN observacao TEXT`,
     `ALTER TABLE compras ADD COLUMN numero_nf TEXT`,
     `ALTER TABLE compras ADD COLUMN serie_nf TEXT`,
@@ -249,6 +250,9 @@ function aplicarAlteracoesPosCriacao() {
     `ALTER TABLE compras ADD COLUMN valor_desconto DECIMAL(10,2) DEFAULT 0`,
     `ALTER TABLE compras ADD COLUMN valor_frete DECIMAL(10,2) DEFAULT 0`,
     `ALTER TABLE compras ADD COLUMN valor_outras_despesas DECIMAL(10,2) DEFAULT 0`,
+    // RC COMPRAS 5.4.1 — IPI e seguro do XML
+    `ALTER TABLE compras ADD COLUMN valor_ipi DECIMAL(10,2) DEFAULT 0`,
+    `ALTER TABLE compras ADD COLUMN valor_seguro DECIMAL(10,2) DEFAULT 0`,
     `ALTER TABLE compras ADD COLUMN valor_total_nota DECIMAL(10,2) DEFAULT 0`,
     `ALTER TABLE compras ADD COLUMN cancelada_em DATETIME`,
     `ALTER TABLE compras ADD COLUMN motivo_cancelamento TEXT`,
@@ -256,7 +260,29 @@ function aplicarAlteracoesPosCriacao() {
     `ALTER TABLE compras ADD COLUMN total_xml DECIMAL(10,2) DEFAULT 0`,
     `ALTER TABLE compras ADD COLUMN total_itens_calculado DECIMAL(10,2) DEFAULT 0`,
     `ALTER TABLE compras ADD COLUMN diferenca_total DECIMAL(10,2) DEFAULT 0`,
-    `ALTER TABLE compras ADD COLUMN fornecedor_cnpj TEXT`
+    `ALTER TABLE compras ADD COLUMN fornecedor_cnpj TEXT`,
+    // RC9.0 — política operacional de entrada
+    `ALTER TABLE compras ADD COLUMN tipo_entrada TEXT DEFAULT 'REVENDA'`,
+    // RC9.1 — auditoria da classificação inteligente
+    `ALTER TABLE compras ADD COLUMN tipo_entrada_sugerido TEXT`,
+    `ALTER TABLE compras ADD COLUMN tipo_entrada_confianca INTEGER`,
+    `ALTER TABLE compras ADD COLUMN tipo_entrada_motivo TEXT`,
+    `ALTER TABLE compras ADD COLUMN tipo_entrada_alterado INTEGER DEFAULT 0`,
+    // Validação fiscal / escrituração interna (XML imutável)
+    `ALTER TABLE compras ADD COLUMN natureza_operacao TEXT`,
+    `ALTER TABLE compras ADD COLUMN natureza_operacao_xml TEXT`,
+    `ALTER TABLE compras ADD COLUMN cfop TEXT`,
+    `ALTER TABLE compras ADD COLUMN cfop_xml TEXT`,
+    `ALTER TABLE compras ADD COLUMN csosn_cst TEXT`,
+    `ALTER TABLE compras ADD COLUMN csosn_cst_xml TEXT`,
+    `ALTER TABLE compras ADD COLUMN cst_pis TEXT`,
+    `ALTER TABLE compras ADD COLUMN cst_pis_xml TEXT`,
+    `ALTER TABLE compras ADD COLUMN cst_cofins TEXT`,
+    `ALTER TABLE compras ADD COLUMN cst_cofins_xml TEXT`,
+    `ALTER TABLE compras ADD COLUMN cst_ipi TEXT`,
+    `ALTER TABLE compras ADD COLUMN cst_ipi_xml TEXT`,
+    `ALTER TABLE compras ADD COLUMN escrituracao_alterada INTEGER DEFAULT 0`,
+    `ALTER TABLE compras ADD COLUMN escrituracao_motivo TEXT`
   ];
 
   const alteracoesFinanceiro = [
@@ -390,6 +416,8 @@ function aplicarAlteracoesPosCriacao() {
   // Sprint 3.1 — Faturamento / Pedido → Venda
   aplicarAlteracaoSegura('vendas', `ALTER TABLE vendas ADD COLUMN origem TEXT DEFAULT 'PDV'`);
   aplicarAlteracaoSegura('vendas', `ALTER TABLE vendas ADD COLUMN pedido_id INTEGER`);
+  // RC8.2 — snapshot imutável da Política Fiscal Comercial (MPFC)
+  aplicarAlteracaoSegura('vendas', `ALTER TABLE vendas ADD COLUMN mpfc_politica_snapshot TEXT`);
   aplicarAlteracaoSegura(
     'vendas',
     `CREATE INDEX IF NOT EXISTS idx_vendas_pedido_id ON vendas(pedido_id)`
@@ -397,6 +425,11 @@ function aplicarAlteracoesPosCriacao() {
   aplicarAlteracaoSegura(
     'vendas',
     `CREATE INDEX IF NOT EXISTS idx_vendas_origem ON vendas(origem)`
+  );
+  // RC8.3.2 — performance indicadores fiscais por competência (data_venda)
+  aplicarAlteracaoSegura(
+    'vendas',
+    `CREATE INDEX IF NOT EXISTS idx_vendas_data_venda ON vendas(data_venda)`
   );
 
   // Sprint 3.2 — campos fiscais do Pedido / NF-e
@@ -1524,7 +1557,11 @@ function criarTabelas() {
       "ALTER TABLE produtos ADD COLUMN produto_fracionado INTEGER DEFAULT 0",
       "ALTER TABLE produtos ADD COLUMN peso_total_compra DECIMAL(10,3) DEFAULT 0",
       "ALTER TABLE produtos ADD COLUMN valor_total_compra DECIMAL(10,2) DEFAULT 0",
-      "ALTER TABLE produtos ADD COLUMN custo_por_kg DECIMAL(10,2) DEFAULT 0"
+      "ALTER TABLE produtos ADD COLUMN custo_por_kg DECIMAL(10,2) DEFAULT 0",
+      "ALTER TABLE produtos ADD COLUMN unidade_comercial TEXT DEFAULT 'UN'",
+      "ALTER TABLE produtos ADD COLUMN quantidade_por_embalagem REAL DEFAULT 0",
+      "ALTER TABLE produtos ADD COLUMN compra_por_embalagem INTEGER DEFAULT 0",
+      "ALTER TABLE produtos ADD COLUMN valor_compra_embalagem REAL DEFAULT 0"
     ];
 
     let migracaoConversaoUnidadesPendente = colunasProdutoPeso.length;
@@ -1551,6 +1588,18 @@ function criarTabelas() {
         }
         migracaoConversaoUnidadesPendente -= 1;
         if (migracaoConversaoUnidadesPendente === 0) {
+          // RC8.4.2 — produtos RC8.4.0 com embalagem comercial passam a ter o flag opt-in
+          db.run(
+            `UPDATE produtos SET compra_por_embalagem = 1
+             WHERE COALESCE(compra_por_embalagem, 0) = 0
+               AND COALESCE(quantidade_por_embalagem, 0) > 0
+               AND UPPER(COALESCE(unidade_comercial, 'UN')) != 'UN'`,
+            (migEmbErr) => {
+              if (migEmbErr) {
+                console.warn('[RC8.4.2] backfill compra_por_embalagem:', migEmbErr.message);
+              }
+            }
+          );
           dispararMigracaoConversaoUnidades();
         }
       });
@@ -1771,6 +1820,30 @@ function criarTabelas() {
       if (err) console.error('Erro ao criar tabela financeiro:', err);
       else console.log('Tabela financeiro criada/verificada');
     });
+
+    // RC8.5.1 — Condições de pagamento reutilizáveis
+    try {
+      const { garantirTabelaCondicoesPagamento } = require('./services/compras/CondicoesPagamentoService');
+      garantirTabelaCondicoesPagamento(db, (condErr, stats) => {
+        if (condErr) {
+          console.error('Erro ao criar condições de pagamento:', condErr.message);
+        } else if (stats && stats.seeded > 0) {
+          console.log(`Condições de pagamento: ${stats.seeded} modelo(s) padrão inserido(s).`);
+        }
+      });
+    } catch (condReqErr) {
+      console.error('Erro ao carregar CondicoesPagamentoService:', condReqErr.message);
+    }
+
+    // RC8.5.2 — Aprendizado MIE
+    try {
+      const { garantirTabelaAprendizado } = require('./services/embalagens');
+      garantirTabelaAprendizado(db, (mieErr) => {
+        if (mieErr) console.error('Erro ao criar tabela mie_aprendizado:', mieErr.message);
+      });
+    } catch (mieReqErr) {
+      console.error('Erro ao carregar MIE:', mieReqErr.message);
+    }
 
     // Tabela de contas a receber (parcelas de vendas a prazo)
     db.run(`
@@ -2098,6 +2171,46 @@ function criarTabelas() {
       else console.log('Tabela central_entradas_eventos criada/verificada');
     });
 
+    // RC3.6.E — Auditoria DistDFe (somente observabilidade)
+    db.run(`
+      CREATE TABLE IF NOT EXISTS dfe_auditoria (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        correlation_id TEXT,
+        empresa_id INTEGER,
+        cnpj TEXT,
+        ambiente INTEGER,
+        nsu TEXT,
+        tipo TEXT,
+        schema TEXT,
+        chave TEXT,
+        resultado TEXT NOT NULL,
+        motivo TEXT,
+        tempo_ms INTEGER,
+        detalhe_json TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `, (err) => {
+      if (err) console.error('Erro ao criar tabela dfe_auditoria:', err);
+      else console.log('Tabela dfe_auditoria criada/verificada');
+    });
+    db.run(`CREATE INDEX IF NOT EXISTS idx_dfe_auditoria_correlation ON dfe_auditoria(correlation_id)`, () => {});
+    db.run(`CREATE INDEX IF NOT EXISTS idx_dfe_auditoria_nsu ON dfe_auditoria(nsu)`, () => {});
+    db.run(`CREATE INDEX IF NOT EXISTS idx_dfe_auditoria_chave ON dfe_auditoria(chave)`, () => {});
+    db.run(`CREATE INDEX IF NOT EXISTS idx_dfe_auditoria_resultado ON dfe_auditoria(resultado)`, () => {});
+    db.run(`CREATE INDEX IF NOT EXISTS idx_dfe_auditoria_created ON dfe_auditoria(created_at)`, () => {});
+
+    // RC3.7.1 — migração idempotente de status legados → canônicos
+    try {
+      const { migrarStatusDocumentos } = require('./motores/central-entradas/services/CentralStatusMigracaoService');
+      migrarStatusDocumentos(db).then((r) => {
+        if (r?.atualizados > 0) {
+          console.log(`[RC3.7.1] Migração de status concluída: ${r.atualizados} documento(s)`);
+        }
+      }).catch((e) => console.error('[RC3.7.1] Migração de status:', e.message));
+    } catch (e) {
+      console.error('[RC3.7.1] Migração de status indisponível:', e.message);
+    }
+
     db.run(`
       CREATE TABLE IF NOT EXISTS central_entradas_notificacoes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2357,6 +2470,7 @@ function garantirColunasCompras() {
       !colunas.includes('data_vencimento') && `ALTER TABLE compras ADD COLUMN data_vencimento DATE`,
       !colunas.includes('parcelas') && `ALTER TABLE compras ADD COLUMN parcelas INTEGER DEFAULT 1`,
       !colunas.includes('valor_entrada') && `ALTER TABLE compras ADD COLUMN valor_entrada DECIMAL(10,2) DEFAULT 0`,
+      !colunas.includes('dias_entre_parcelas') && `ALTER TABLE compras ADD COLUMN dias_entre_parcelas INTEGER DEFAULT 30`,
       !colunas.includes('observacao') && `ALTER TABLE compras ADD COLUMN observacao TEXT`,
       !colunas.includes('numero_nf') && `ALTER TABLE compras ADD COLUMN numero_nf TEXT`,
       !colunas.includes('serie_nf') && `ALTER TABLE compras ADD COLUMN serie_nf TEXT`,
@@ -2602,7 +2716,7 @@ function migrarUrlsFiscalProducao() {
 
 function inserirConfiguracoesPadrao() {
   const configs = [
-    ['nome_empresa', 'Mercadão da Economia', 'string', 'Nome da empresa'],
+    ['nome_empresa', 'CDS Sistemas', 'string', 'Nome da empresa'],
     ['nome_fantasia', '', 'string', 'Nome fantasia'],
     ['razao_social', '', 'string', 'Razão social'],
     ['cnpj', '', 'string', 'CNPJ da empresa'],
@@ -2674,6 +2788,20 @@ function inserirConfiguracoesPadrao() {
   });
   
   console.log('Configurações padrão inseridas/verificadas');
+
+  // RC0.1.0 — remove identidade de demonstração (não altera schema nem regras de negócio)
+  db.run(
+    `UPDATE configuracoes
+     SET valor = 'CDS Sistemas', updated_at = datetime('now', 'localtime')
+     WHERE chave = 'nome_empresa'
+       AND valor IN ('Mercadão da Economia', 'Mercadao da Economia', 'Mercadão da Economia - Sistema de Gestão')`,
+    [],
+    (errIdent) => {
+      if (errIdent) {
+        console.error('Erro ao padronizar nome_empresa (identidade CDS):', errIdent);
+      }
+    }
+  );
 
   db.get(
     `SELECT valor FROM configuracoes WHERE chave = 'migracao_modo_fiscal_padrao_ativo'`,

@@ -29,6 +29,24 @@ const { logCentralErro } = require('../motores/central-entradas/utils/centralLog
 const EntradasProdutoIdentificacaoService = require('../motores/produto-identidade/services/EntradasProdutoIdentificacaoService');
 const { espelharIdentificadoresSafe } = require('../motores/produto-identidade');
 const { isProdutoIdentidadeEnabled } = require('../motores/produto-identidade/config/produtoIdentidadeFlags');
+const {
+  normalizarTipoEntrada,
+  TIPO_ENTRADA_PADRAO
+} = require('../services/compras/PoliticaEntradaCompra');
+const {
+  classificarFluxoCompra
+} = require('../services/compras/MotorPoliticaEntradaCompra');
+const { classificarEntrada } = require('../services/compras/ClassificadorEntradaCompra');
+const {
+  montarResumoFiscalEntrada,
+  normalizarEscrituracaoParaPersistencia
+} = require('../services/compras/EscrituracaoEntradaCompra');
+const {
+  gerarGradeParcelas,
+  validarSomaParcelas,
+  normalizarParcelasDetalhe,
+  moeda: moedaParcela
+} = require('../services/compras/MotorParcelamentoCompra');
 
 const itemCompraEhFracionado = itemCompraUsaConversaoUnidades;
 const obterTotalConvertidoItemCompraBackend = obterTotalConvertidoItemCompra;
@@ -89,6 +107,10 @@ function toDate(value, fallback = agoraLocalBrasil().slice(0, 10)) {
 
 function addMonths(date, months) {
   return moment(date).add(months, 'months').format('YYYY-MM-DD');
+}
+
+function addDays(date, days) {
+  return moment(date).add(Number(days) || 0, 'days').format('YYYY-MM-DD');
 }
 
 function digitsOnly(value) {
@@ -188,13 +210,18 @@ function criarFinanceiroCompra(compra, callback) {
     data_vencimento,
     parcelas,
     valor_entrada,
-    observacao
+    observacao,
+    numero_nf,
+    dias_entre_parcelas,
+    parcelas_detalhe
   } = compra;
 
   const qtdParcelas = Math.max(1, Number(parcelas) || 1);
   const valorTotal = Number(total) || 0;
   const descricaoBase = `Compra ${id}${fornecedor ? ` - ${fornecedor}` : ''}`;
   const vencimentoBase = toDate(data_vencimento, data_compra);
+  const documentoNf = numero_nf ? String(numero_nf) : null;
+  const gradeCliente = normalizarParcelasDetalhe(parcelas_detalhe);
 
   db.run('DELETE FROM financeiro WHERE compra_id = ?', [id], (deleteErr) => {
     if (deleteErr) return callback(deleteErr);
@@ -217,7 +244,7 @@ function criarFinanceiroCompra(compra, callback) {
         'compra',
         payload.status,
         'compra',
-        null,
+        documentoNf,
         payload.vencimento,
         payload.numero_parcela,
         payload.total_parcelas,
@@ -228,6 +255,70 @@ function criarFinanceiroCompra(compra, callback) {
       ], done);
     };
 
+    const inserirGrade = (grade, statusResolver) => {
+      if (!grade.length) {
+        return callback(new Error('Grade de parcelas vazia.'));
+      }
+      const validacao = validarSomaParcelas(grade, valorTotal);
+      if (!validacao.ok) {
+        return callback(new Error(validacao.mensagem || 'Total das parcelas diverge do valor da nota.'));
+      }
+      let pendentes = grade.length;
+      grade.forEach((p) => {
+        const status = typeof statusResolver === 'function'
+          ? statusResolver(p)
+          : 'pendente';
+        const rotulo = p.tipo === 'entrada'
+          ? `${descricaoBase} - Entrada`
+          : `${descricaoBase} - Parcela ${p.numero}/${grade.length}`;
+        inserir({
+          descricao: rotulo,
+          valor: moedaParcela(p.valor),
+          vencimento: toDate(p.vencimento, vencimentoBase),
+          numero_parcela: p.numero,
+          total_parcelas: grade.length,
+          status
+        }, (err) => {
+          if (err) return callback(err);
+          pendentes -= 1;
+          if (pendentes === 0) callback(null);
+        });
+      });
+    };
+
+    // RC8.5.0 — grade explícita do cliente (vencimentos/valores editáveis)
+    if (gradeCliente.length > 0 && condicao_pagamento !== 'avista') {
+      return inserirGrade(gradeCliente, (p) => (
+        p.tipo === 'entrada' || condicao_pagamento === 'avista' ? 'pago' : 'pendente'
+      ));
+    }
+
+    if (condicao_pagamento === 'parcelado' || condicao_pagamento === 'prazo') {
+      if (qtdParcelas > 1 || condicao_pagamento === 'prazo') {
+        const dias = Math.max(0, Number(dias_entre_parcelas) || 30);
+        const gerada = gerarGradeParcelas({
+          valorTotal,
+          quantidadeParcelas: qtdParcelas,
+          diasEntreParcelas: dias,
+          primeiroVencimento: vencimentoBase
+        });
+        return inserirGrade(gerada.parcelas);
+      }
+    }
+
+    if (condicao_pagamento === 'entrada_parcelado' && qtdParcelas > 0 && valor_entrada > 0) {
+      const dias = Math.max(0, Number(dias_entre_parcelas) || 30);
+      const gerada = gerarGradeParcelas({
+        valorTotal,
+        quantidadeParcelas: qtdParcelas,
+        diasEntreParcelas: dias,
+        primeiroVencimento: vencimentoBase,
+        valorEntrada: Number(valor_entrada) || 0
+      });
+      return inserirGrade(gerada.parcelas, (p) => (p.tipo === 'entrada' ? 'pago' : 'pendente'));
+    }
+
+    // legado parcelado sem dias (mensal)
     if (condicao_pagamento === 'parcelado' && qtdParcelas > 1) {
       const valorBase = Math.floor((valorTotal / qtdParcelas) * 100) / 100;
       const resto = Math.round((valorTotal - (valorBase * qtdParcelas)) * 100) / 100;
@@ -240,44 +331,6 @@ function criarFinanceiroCompra(compra, callback) {
           vencimento: addMonths(vencimentoBase, i - 1),
           numero_parcela: i,
           total_parcelas: qtdParcelas,
-          status: 'pendente'
-        }, (err) => {
-          if (err) return callback(err);
-          pendentes -= 1;
-          if (pendentes === 0) callback(null);
-        });
-      }
-      return;
-    }
-
-    if (condicao_pagamento === 'entrada_parcelado' && qtdParcelas > 0 && valor_entrada > 0) {
-      const totalParcelas = qtdParcelas + 1;
-      let pendentes = totalParcelas;
-      // Entrada
-      inserir({
-        descricao: `${descricaoBase} - Entrada`,
-        valor: valor_entrada,
-        vencimento: data_compra,
-        numero_parcela: 1,
-        total_parcelas: totalParcelas,
-        status: 'pago'
-      }, (err) => {
-        if (err) return callback(err);
-        pendentes -= 1;
-        if (pendentes === 0) callback(null);
-      });
-      // Parcelas restantes
-      const valorRestante = valorTotal - valor_entrada;
-      const valorBase = Math.floor((valorRestante / qtdParcelas) * 100) / 100;
-      const resto = Math.round((valorRestante - (valorBase * qtdParcelas)) * 100) / 100;
-      for (let i = 1; i <= qtdParcelas; i++) {
-        const valorParcela = Number((valorBase + (i === qtdParcelas ? resto : 0)).toFixed(2));
-        inserir({
-          descricao: `${descricaoBase} - Parcela ${i + 1}/${totalParcelas}`,
-          valor: valorParcela,
-          vencimento: addMonths(vencimentoBase, i - 1),
-          numero_parcela: i + 1,
-          total_parcelas: totalParcelas,
           status: 'pendente'
         }, (err) => {
           if (err) return callback(err);
@@ -860,6 +913,123 @@ router.post('/:id/devolver', validarCaixaAberto, (req, res) => {
   });
 });
 
+router.get('/relatorio/uso-consumo', (req, res) => {
+  const { inicio, fim } = req.query;
+  let where = `WHERE COALESCE(c.tipo_entrada, '${TIPO_ENTRADA_PADRAO}') = 'USO_CONSUMO'`;
+  const params = [];
+
+  if (inicio) {
+    where += ' AND date(COALESCE(c.data_emissao, c.data_entrada, c.data_compra)) >= date(?)';
+    params.push(inicio);
+  }
+  if (fim) {
+    where += ' AND date(COALESCE(c.data_emissao, c.data_entrada, c.data_compra)) <= date(?)';
+    params.push(fim);
+  }
+
+  db.all(`
+    SELECT
+      c.*,
+      (SELECT COUNT(*) FROM financeiro f WHERE f.compra_id = c.id) AS total_financeiro,
+      (SELECT COUNT(*) FROM financeiro f WHERE f.compra_id = c.id AND f.status = 'pendente') AS parcelas_pendentes,
+      (SELECT GROUP_CONCAT(f.status || ':' || COALESCE(f.vencimento, ''), '|')
+         FROM financeiro f WHERE f.compra_id = c.id) AS financeiro_resumo,
+      d.id AS central_documento_id,
+      d.chave AS central_chave,
+      (SELECT usuario_nome FROM auditoria a
+         WHERE a.modulo = 'compras' AND a.referencia_tipo = 'compra' AND a.referencia_id = c.id
+         AND a.acao IN ('criar_compra', 'criar_uso_consumo', 'criar_nota_fiscal_avulsa')
+         ORDER BY a.id DESC LIMIT 1) AS usuario_nome
+    FROM compras c
+    LEFT JOIN central_entradas_documentos d ON d.compra_id = c.id
+    ${where}
+    ORDER BY COALESCE(c.data_emissao, c.data_entrada, c.data_compra) DESC, c.id DESC
+  `, params, (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({
+      success: true,
+      total: (rows || []).length,
+      itens: (rows || []).map((r) => ({
+        id: r.id,
+        data: r.data_emissao || r.data_entrada || r.data_compra,
+        fornecedor: r.fornecedor,
+        fornecedor_cnpj: r.fornecedor_cnpj,
+        numero_nf: r.numero_nf,
+        serie_nf: r.serie_nf,
+        valor: Number(r.valor_total_nota || r.total || 0),
+        situacao: r.status,
+        chave_acesso: r.chave_acesso,
+        central_documento_id: r.central_documento_id,
+        central_chave: r.central_chave,
+        xml_disponivel: Boolean(r.central_documento_id || r.chave_acesso),
+        financeiro: {
+          total: Number(r.total_financeiro || 0),
+          pendentes: Number(r.parcelas_pendentes || 0),
+          resumo: r.financeiro_resumo || null
+        },
+        usuario: r.usuario_nome || null,
+        tipo_entrada: r.tipo_entrada || TIPO_ENTRADA_PADRAO,
+        observacao: r.observacao || null
+      }))
+    });
+  });
+});
+
+router.get('/politicas-entrada', (_req, res) => {
+  const { listarTiposEntrada } = require('../services/compras/PoliticaEntradaCompra');
+  res.json({ success: true, tipos: listarTiposEntrada() });
+});
+
+router.post('/classificar-entrada', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const resultado = await classificarEntrada({
+      xml: body.xml,
+      dadosCompra: body.dadosCompra || body.dados_compra || body,
+      fornecedor_cnpj: body.fornecedor_cnpj,
+      cfop: body.cfop,
+      natureza: body.natureza || body.natureza_operacao,
+      finalidade: body.finalidade || body.finNFe
+    });
+    return res.json({
+      success: true,
+      tipoEntrada: resultado.tipoEntrada,
+      confianca: resultado.confianca,
+      motivo: resultado.motivo,
+      label: resultado.label,
+      sinais: resultado.sinais
+    });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: err.message || String(err)
+    });
+  }
+});
+
+router.post('/resumo-fiscal-entrada', (req, res) => {
+  try {
+    const body = req.body || {};
+    const resumo = montarResumoFiscalEntrada({
+      xml: body.xml,
+      tipo_entrada: body.tipo_entrada || body.tipoEntrada,
+      dadosCompra: body.dadosCompra || body.dados_compra || body,
+      fornecedor: body.fornecedor,
+      valor_total_nota: body.valor_total_nota,
+      cfop: body.cfop,
+      csosn_cst: body.csosn_cst,
+      cst_pis: body.cst_pis,
+      cst_cofins: body.cst_cofins,
+      cst_ipi: body.cst_ipi,
+      natureza_operacao: body.natureza_operacao,
+      escrituracao_motivo: body.escrituracao_motivo
+    });
+    return res.json({ success: true, ...resumo });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message || String(err) });
+  }
+});
+
 router.get('/', (req, res) => {
   db.all(`
     SELECT c.*, 
@@ -929,6 +1099,8 @@ router.post('/', (req, res) => {
     valor_desconto,
     valor_frete,
     valor_outras_despesas,
+    valor_ipi,
+    valor_seguro,
     valor_total_nota,
     total,
     itens,
@@ -938,13 +1110,69 @@ router.post('/', (req, res) => {
     parcelas,
     valor_entrada,
     observacao,
+    dias_entre_parcelas,
+    parcelas_detalhe,
     nota_fiscal_avulsa,
+    tipo_entrada,
+    tipo_entrada_sugerido,
+    tipo_entrada_confianca,
+    tipo_entrada_motivo,
+    cfop,
+    cfop_xml,
+    csosn_cst,
+    csosn_cst_xml,
+    cst_pis,
+    cst_pis_xml,
+    cst_cofins,
+    cst_cofins_xml,
+    cst_ipi,
+    cst_ipi_xml,
+    natureza_operacao,
+    natureza_operacao_xml,
+    escrituracao_motivo,
+    xml: xmlBody,
     central_documento_id: centralDocumentoId
   } = req.body;
 
-  const isNotaAvulsa = Number(nota_fiscal_avulsa) === 1;
+  const tipoEntrada = normalizarTipoEntrada(tipo_entrada);
+  const tipoSugerido = tipo_entrada_sugerido
+    ? normalizarTipoEntrada(tipo_entrada_sugerido)
+    : null;
+  const confiancaSugestao = tipo_entrada_confianca != null
+    ? Math.max(0, Math.min(100, Number(tipo_entrada_confianca) || 0))
+    : null;
+  const motivoSugestao = tipo_entrada_motivo
+    ? String(tipo_entrada_motivo).slice(0, 500)
+    : null;
+  const tipoAlterado = tipoSugerido && tipoSugerido !== tipoEntrada ? 1 : 0;
 
-  if (!isNotaAvulsa) {
+  const resumoEscrituracao = montarResumoFiscalEntrada({
+    xml: xmlBody || null,
+    tipo_entrada: tipoEntrada,
+    dadosCompra: { fornecedor, valor_total_nota, natureza_operacao },
+    fornecedor,
+    valor_total_nota,
+    cfop,
+    csosn_cst,
+    cst_pis,
+    cst_cofins,
+    cst_ipi,
+    natureza_operacao,
+    cfop_xml,
+    csosn_cst_xml,
+    cst_pis_xml,
+    cst_cofins_xml,
+    cst_ipi_xml,
+    natureza_xml: natureza_operacao_xml,
+    escrituracao_motivo
+  });
+  const escrituracao = normalizarEscrituracaoParaPersistencia(req.body, resumoEscrituracao);
+  const fluxo = classificarFluxoCompra({ tipo_entrada: tipoEntrada, nota_fiscal_avulsa, itens });
+  const isNotaAvulsa = fluxo.isNotaAvulsa;
+  const isUsoConsumo = fluxo.tipoEntrada === 'USO_CONSUMO';
+  const entradaSimplificada = fluxo.entradaSimplificada;
+
+  if (!entradaSimplificada) {
     if (!Array.isArray(itens) || itens.length === 0) {
       return res.status(400).json({ error: 'Informe ao menos um item para a compra.' });
     }
@@ -972,7 +1200,9 @@ router.post('/', (req, res) => {
   let diferencaTotal;
   let itensComRateio;
 
-  if (isNotaAvulsa) {
+  const { calcularTotalComponentes } = require('../services/compras/ImportacaoFinanceiraNfe');
+
+  if (entradaSimplificada) {
     totalItensCalculado = moeda(valor_total_nota || totalNum);
     totalCalculadoComAjustes = moeda(valor_total_nota || totalNum);
     diferencaTotal = 0;
@@ -982,9 +1212,15 @@ router.post('/', (req, res) => {
       itens.reduce((sum, item) => sum + moeda(item.subtotal), 0)
     );
 
-    totalCalculadoComAjustes = moeda(
-      totalItensCalculado - Number(valor_desconto || 0) + Number(valor_frete || 0) + Number(valor_outras_despesas || 0)
-    );
+    // RC 5.4.1 — componentes incluem IPI e seguro; total oficial = XML (valor_total_nota)
+    totalCalculadoComAjustes = calcularTotalComponentes({
+      valor_produtos: totalItensCalculado,
+      valor_desconto,
+      valor_frete,
+      valor_seguro,
+      valor_outras_despesas,
+      valor_ipi
+    });
 
     const totalXml = moeda(valor_total_nota || totalNum);
     diferencaTotal = moeda(totalXml - totalCalculadoComAjustes);
@@ -996,8 +1232,22 @@ router.post('/', (req, res) => {
     });
   }
 
+  // Total persistido = valor informado (XML), nunca um recálculo divergente
+  const totalOficial = moeda(valor_total_nota || totalNum || totalCalculadoComAjustes);
+
   const condicao = condicao_pagamento || 'avista';
-  const qtdParcelas = Math.max(1, Number(parcelas) || 1);
+  const gradeParcelasReq = normalizarParcelasDetalhe(parcelas_detalhe);
+  const qtdParcelas = gradeParcelasReq.length > 0
+    ? gradeParcelasReq.length
+    : Math.max(1, Number(parcelas) || 1);
+  const diasEntre = Math.max(0, Number(dias_entre_parcelas) || 30);
+
+  if (condicao !== 'avista' && gradeParcelasReq.length > 0) {
+    const validacaoGrade = validarSomaParcelas(gradeParcelasReq, totalOficial);
+    if (!validacaoGrade.ok) {
+      return res.status(400).json({ error: validacaoGrade.mensagem || 'Total das parcelas diverge do valor da nota.' });
+    }
+  }
 
   const continuarGravacao = () => {
     db.serialize(() => {
@@ -1007,11 +1257,16 @@ router.post('/', (req, res) => {
         INSERT INTO compras (
           data_compra, data_emissao, data_entrada, fornecedor, fornecedor_cnpj,
           numero_nf, serie_nf, modelo_nf, chave_acesso,
-          valor_produtos, valor_desconto, valor_frete, valor_outras_despesas,
+          valor_produtos, valor_desconto, valor_frete, valor_seguro, valor_outras_despesas, valor_ipi,
           valor_total_nota, total, total_xml, total_itens_calculado, diferenca_total,
           status, condicao_pagamento, forma_pagamento, data_vencimento,
-          parcelas, valor_entrada, observacao, nota_fiscal_avulsa
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'concluida', ?, ?, ?, ?, ?, ?, ?)
+          parcelas, valor_entrada, dias_entre_parcelas, observacao, nota_fiscal_avulsa, tipo_entrada,
+          tipo_entrada_sugerido, tipo_entrada_confianca, tipo_entrada_motivo, tipo_entrada_alterado,
+          natureza_operacao, natureza_operacao_xml, cfop, cfop_xml,
+          csosn_cst, csosn_cst_xml, cst_pis, cst_pis_xml,
+          cst_cofins, cst_cofins_xml, cst_ipi, cst_ipi_xml,
+          escrituracao_alterada, escrituracao_motivo
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'concluida', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         data_compra,
         data_emissao || null,
@@ -1025,18 +1280,41 @@ router.post('/', (req, res) => {
         Number(valor_produtos) || 0,
         Number(valor_desconto) || 0,
         Number(valor_frete) || 0,
+        Number(valor_seguro) || 0,
         Number(valor_outras_despesas) || 0,
-        totalCalculadoComAjustes,
-        totalCalculadoComAjustes,
-        totalCalculadoComAjustes,
+        Number(valor_ipi) || 0,
+        totalOficial,
+        totalOficial,
+        totalOficial,
         totalItensCalculado,
         diferencaTotal,
+        condicao,
         forma_pagamento || null,
         data_vencimento || (condicao === 'avista' ? data_compra : null),
-        condicao === 'parcelado' || condicao === 'entrada_parcelado' ? qtdParcelas : 1,
+        condicao === 'avista' ? 1 : qtdParcelas,
         Number(valor_entrada) || 0,
+        diasEntre,
         observacao || null,
-        isNotaAvulsa ? 1 : 0
+        isNotaAvulsa ? 1 : 0,
+        tipoEntrada,
+        tipoSugerido,
+        confiancaSugestao,
+        motivoSugestao,
+        tipoAlterado,
+        escrituracao.natureza_operacao,
+        escrituracao.natureza_operacao_xml,
+        escrituracao.cfop,
+        escrituracao.cfop_xml,
+        escrituracao.csosn_cst,
+        escrituracao.csosn_cst_xml,
+        escrituracao.cst_pis,
+        escrituracao.cst_pis_xml,
+        escrituracao.cst_cofins,
+        escrituracao.cst_cofins_xml,
+        escrituracao.cst_ipi,
+        escrituracao.cst_ipi_xml,
+        escrituracao.escrituracao_alterada,
+        escrituracao.escrituracao_motivo
       ], function(err) {
         if (err) {
           db.run('ROLLBACK');
@@ -1050,18 +1328,20 @@ router.post('/', (req, res) => {
 
         const compraId = this.lastID;
 
-        if (isNotaAvulsa) {
-          // Nota Fiscal Avulsa: skip item processing, only create financial records
+        if (entradaSimplificada) {
           criarFinanceiroCompra({
             id: compraId,
             data_compra,
             fornecedor,
-            total: totalCalculadoComAjustes,
+            total: totalOficial,
             condicao_pagamento: condicao,
             forma_pagamento,
             data_vencimento: data_vencimento || (condicao === 'avista' ? data_compra : null),
-            parcelas: (condicao === 'parcelado' || condicao === 'entrada_parcelado') ? qtdParcelas : 1,
+            parcelas: condicao === 'avista' ? 1 : qtdParcelas,
             valor_entrada: Number(valor_entrada) || 0,
+            dias_entre_parcelas: diasEntre,
+            parcelas_detalhe: gradeParcelasReq,
+            numero_nf,
             observacao
           }, (finErr) => {
             if (finErr) {
@@ -1071,21 +1351,44 @@ router.post('/', (req, res) => {
 
             db.run('COMMIT');
 
+            const acaoAuditoria = isUsoConsumo ? 'criar_uso_consumo' : 'criar_nota_fiscal_avulsa';
+            const mensagem = isUsoConsumo
+              ? 'Compra de Uso e Consumo registrada com sucesso.'
+              : 'Nota Fiscal Avulsa registrada com sucesso.';
+
             gravarAuditoria({
               usuario_id: req.user?.id || null,
               usuario_nome: req.user?.nome || req.user?.username || null,
               modulo: 'compras',
-              acao: 'criar_nota_fiscal_avulsa',
+              acao: acaoAuditoria,
               referencia_tipo: 'compra',
               referencia_id: compraId,
-              detalhes: { total: totalCalculadoComAjustes, fornecedor, nota_fiscal_avulsa: true },
+              detalhes: {
+                total: totalOficial,
+                fornecedor,
+                tipo_entrada: tipoEntrada,
+                tipo_entrada_sugerido: tipoSugerido,
+                tipo_entrada_confianca: confiancaSugestao,
+                tipo_entrada_motivo: motivoSugestao,
+                tipo_entrada_alterado: Boolean(tipoAlterado),
+                nota_fiscal_avulsa: isNotaAvulsa,
+                escrituracao: {
+                  original: resumoEscrituracao.original,
+                  utilizado: resumoEscrituracao.utilizado,
+                  alterada: Boolean(escrituracao.escrituracao_alterada),
+                  motivo: escrituracao.escrituracao_motivo,
+                  xml_imutavel: true
+                }
+              },
               ip_requisicao: req.ip || null
-            }).catch((auditErr) => console.error('Erro ao gravar auditoria de nota fiscal avulsa:', auditErr));
+            }).catch((auditErr) => console.error('Erro ao gravar auditoria de entrada simplificada:', auditErr));
 
             const payloadResposta = {
               id: compraId,
-              message: 'Nota Fiscal Avulsa registrada com sucesso.',
-              nota_fiscal_avulsa: true
+              message: mensagem,
+              tipo_entrada: tipoEntrada,
+              nota_fiscal_avulsa: isNotaAvulsa,
+              uso_consumo: isUsoConsumo
             };
 
             vincularDocumentoCentralAposCompra(centralDocumentoId, compraId, req.user?.id)
@@ -1105,12 +1408,15 @@ router.post('/', (req, res) => {
               id: compraId,
               data_compra,
               fornecedor,
-              total: totalCalculadoComAjustes,
+              total: totalOficial,
               condicao_pagamento: condicao,
               forma_pagamento,
               data_vencimento: data_vencimento || (condicao === 'avista' ? data_compra : null),
-              parcelas: (condicao === 'parcelado' || condicao === 'entrada_parcelado') ? qtdParcelas : 1,
+              parcelas: condicao === 'avista' ? 1 : qtdParcelas,
               valor_entrada: Number(valor_entrada) || 0,
+              dias_entre_parcelas: diasEntre,
+              parcelas_detalhe: gradeParcelasReq,
+              numero_nf,
               observacao
             }, (finErr) => {
               if (finErr) {
@@ -1127,13 +1433,29 @@ router.post('/', (req, res) => {
                 acao: 'criar_compra',
                 referencia_tipo: 'compra',
                 referencia_id: compraId,
-                detalhes: { total: totalCalculadoComAjustes, fornecedor },
+                detalhes: {
+                  total: totalOficial,
+                  fornecedor,
+                  tipo_entrada: tipoEntrada,
+                  tipo_entrada_sugerido: tipoSugerido,
+                  tipo_entrada_confianca: confiancaSugestao,
+                  tipo_entrada_motivo: motivoSugestao,
+                  tipo_entrada_alterado: Boolean(tipoAlterado),
+                  escrituracao: {
+                    original: resumoEscrituracao.original,
+                    utilizado: resumoEscrituracao.utilizado,
+                    alterada: Boolean(escrituracao.escrituracao_alterada),
+                    motivo: escrituracao.escrituracao_motivo,
+                    xml_imutavel: true
+                  }
+                },
                 ip_requisicao: req.ip || null
               }).catch((auditErr) => console.error('Erro ao gravar auditoria de criação de compra:', auditErr));
 
               const payloadResposta = {
                 id: compraId,
                 message: 'Compra registrada com sucesso e integrada ao estoque/financeiro.',
+                tipo_entrada: tipoEntrada,
                 conferencia: {
                   total_xml: totalCalculadoComAjustes,
                   total_itens_calculado: totalItensCalculado,
@@ -1220,8 +1542,13 @@ router.post('/:id/cancelar', (req, res) => {
           return res.status(500).json({ error: itensErr.message });
         }
 
+        const tipoEntrada = normalizarTipoEntrada(compra.tipo_entrada);
+        const pularEstoque = !itens.length
+          || Number(compra.nota_fiscal_avulsa) === 1
+          || tipoEntrada === 'USO_CONSUMO';
+
         const validarEstoque = (index = 0) => {
-          if (index >= itens.length) return baixarEstoque();
+          if (pularEstoque || index >= itens.length) return baixarEstoque();
 
           const item = itens[index];
 
@@ -1246,7 +1573,7 @@ router.post('/:id/cancelar', (req, res) => {
         };
 
         const baixarEstoque = (index = 0) => {
-          if (index >= itens.length) return finalizarCancelamento();
+          if (pularEstoque || index >= itens.length) return finalizarCancelamento();
 
           const item = itens[index];
           const qtds = resolverQuantidadesCompraItemPersistido(item);

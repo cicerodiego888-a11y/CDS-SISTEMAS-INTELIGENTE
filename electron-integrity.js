@@ -197,6 +197,42 @@ function listarArquivosElectron(rootDir) {
   return [...set].sort();
 }
 
+function obterConfigBuilderModulo(modulo) {
+  return modulo === 'pdv' ? 'electron-builder-pdv.json' : 'electron-builder-erp.json';
+}
+
+/** package.json dentro do app.asar (electron-builder remove dev/scripts/build e aplica extraMetadata). */
+function serializarPackageJsonEfetivo(rootDir, modulo = 'erp') {
+  const builderPath = path.join(rootDir, obterConfigBuilderModulo(modulo));
+  const builder = JSON.parse(fs.readFileSync(builderPath, 'utf8'));
+  const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+  const effective = {
+    name: pkg.name,
+    version: pkg.version,
+    description: pkg.description,
+    author: pkg.author,
+    main: pkg.main,
+    dependencies: pkg.dependencies
+  };
+  if (builder.extraMetadata && typeof builder.extraMetadata === 'object') {
+    Object.assign(effective, builder.extraMetadata);
+  }
+  return JSON.stringify(effective, null, 2);
+}
+
+function hashPackageJsonEfetivo(rootDir, modulo = 'erp') {
+  return sha256Buffer(Buffer.from(serializarPackageJsonEfetivo(rootDir, modulo), 'utf8'));
+}
+
+function aplicarHashPackageJsonEfetivo(rootDir, arquivosMap, modulo) {
+  if (modulo !== 'erp' && modulo !== 'pdv') return arquivosMap;
+  return { ...arquivosMap, 'package.json': hashPackageJsonEfetivo(rootDir, modulo) };
+}
+
+function moduloUsaPackageJsonEfetivo(modulo) {
+  return modulo === 'erp' || modulo === 'pdv';
+}
+
 function classificarArquivo(relPosix) {
   const rel = toPosix(relPosix);
   if (rel.startsWith('frontend/')) return 'frontend';
@@ -278,7 +314,9 @@ function gerarManifesto(rootDir, opcoes = {}) {
     throw err;
   }
 
-  const camadas = calcularHashesPorCamada(arquivos);
+  const modulo = opcoes.modulo || 'erp';
+  const arquivosComHashes = aplicarHashPackageJsonEfetivo(rootDir, arquivos, modulo);
+  const camadas = calcularHashesPorCamada(arquivosComHashes);
   const timestamp = opcoes.timestamp || new Date().toISOString();
   const manifesto = {
     schema: SCHEMA,
@@ -291,7 +329,7 @@ function gerarManifesto(rootDir, opcoes = {}) {
     electron: opcoes.electron || obterVersaoElectronDev(rootDir),
     chromium: opcoes.chromium || null,
     modulo: opcoes.modulo || 'erp',
-    quantidadeArquivos: Object.keys(arquivos).length,
+    quantidadeArquivos: Object.keys(arquivosComHashes).length,
     quantidadeFrontend: camadas.frontend.quantidade,
     quantidadeBackend: camadas.backend.quantidade,
     quantidadeElectron: camadas.electron.quantidade,
@@ -301,8 +339,8 @@ function gerarManifesto(rootDir, opcoes = {}) {
     hashElectron: camadas.electron.hash,
     hashRecursos: camadas.recursos.hash,
     hash: camadas.hashGlobal,
-    hashArquivos: hashManifestoArquivos(arquivos),
-    arquivos
+    hashArquivos: hashManifestoArquivos(arquivosComHashes),
+    arquivos: arquivosComHashes
   };
   return manifesto;
 }
@@ -391,6 +429,7 @@ function lerArquivoAsar(asarPath, relPosix) {
 
 function compararRepoComAsar(rootDir, asarPath, opcoes = {}) {
   const manifesto = opcoes.manifesto || lerManifesto(rootDir);
+  const modulo = opcoes.modulo || manifesto.modulo || 'erp';
   const erros = [];
   const logs = [];
   const estrutura = validarEstruturaManifesto(manifesto);
@@ -464,7 +503,9 @@ function compararRepoComAsar(rootDir, asarPath, opcoes = {}) {
 
     const absRepo = path.join(rootDir, ...rel.split('/'));
     if (fs.existsSync(absRepo) && fs.statSync(absRepo).isFile()) {
-      const hashRepo = sha256File(absRepo);
+      const hashRepo = (rel === 'package.json' && moduloUsaPackageJsonEfetivo(modulo))
+        ? hashPackageJsonEfetivo(rootDir, modulo)
+        : sha256File(absRepo);
       if (hashRepo !== hashAsar) {
         divergencias.push({
           arquivo: rel,
@@ -558,7 +599,14 @@ function validarIntegridadePacoteLocal(rootDir, opcoes = {}) {
       resultado.erros.push(...estrutura);
     }
 
+    const modulo = manifesto.modulo || 'erp';
     for (const [rel, hashEsperado] of Object.entries(manifesto.arquivos || {})) {
+      if (rel === 'package.json' && moduloUsaPackageJsonEfetivo(modulo)) {
+        if (hashPackageJsonEfetivo(rootDir, modulo) !== hashEsperado) {
+          resultado.erros.push('hash divergente: package.json (efetivo vs manifesto)');
+        }
+        continue;
+      }
       const abs = path.join(rootDir, ...toPosix(rel).split('/'));
       if (!fs.existsSync(abs)) {
         resultado.erros.push(`ausente no pacote: ${rel}`);
@@ -620,6 +668,11 @@ module.exports = {
   listarArquivosBackend,
   listarArquivosRecursos,
   listarArquivosElectron,
+  obterConfigBuilderModulo,
+  serializarPackageJsonEfetivo,
+  hashPackageJsonEfetivo,
+  aplicarHashPackageJsonEfetivo,
+  moduloUsaPackageJsonEfetivo,
   listarArquivosParaManifesto,
   extrairReferenciasIndex,
   mapearHrefParaArquivo,

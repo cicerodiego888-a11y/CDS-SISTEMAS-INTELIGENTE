@@ -53,6 +53,10 @@ ipcMain.handle('listar-impressoras', async (event) => {
   }
 });
 
+// RC3.5.1 — Portal Nacional da NF-e (npm start usa electron.js como main)
+const { registrarPortalNfeHandlers } = require('./electron-registrar-portal-nfe');
+registrarPortalNfeHandlers(ipcMain, () => mainWindow);
+
 ipcMain.removeHandler('selecionar-pasta-backup');
 ipcMain.handle('selecionar-pasta-backup', async (event) => {
   const { selecionarPastaBackup: abrirSeletorPasta } = require('./backend/services/electronDialogoService');
@@ -367,6 +371,7 @@ function criarMainWindow(opcoes = {}) {
     width: 1280,
     height: 800,
     show: false,
+    title: 'CDS Sistemas - Plataforma Inteligente de Gestão',
     autoHideMenuBar: true,
     focusable: true,
     skipTaskbar: false,

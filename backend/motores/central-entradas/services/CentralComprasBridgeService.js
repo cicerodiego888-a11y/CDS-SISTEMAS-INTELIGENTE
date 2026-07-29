@@ -42,7 +42,56 @@ class CentralComprasBridgeService {
       throw erro;
     }
 
-    return { ...documento.parseJson };
+    // RC8.4.0 — deep clone para isolar itens (evita referências compartilhadas)
+    try {
+      if (typeof structuredClone === 'function') {
+        return structuredClone(documento.parseJson);
+      }
+    } catch {
+      /* fallback */
+    }
+    return JSON.parse(JSON.stringify(documento.parseJson));
+  }
+
+  /**
+   * RC COMPRAS 5.4.1 — completa financeiro a partir do XML se parse antigo não tiver.
+   * Não reprocessa MIIP/itens; só enriquece pag/cobr/IPI.
+   * @private
+   */
+  async _enriquecerFinanceiroDoXml(payload, xml) {
+    if (!xml || typeof xml !== 'string') return payload;
+    const jaTemFinanceiro = (Array.isArray(payload.parcelas_detalhe) && payload.parcelas_detalhe.length > 0)
+      || Boolean(payload.forma_pagamento)
+      || Number(payload.valor_ipi) > 0;
+    if (jaTemFinanceiro) return payload;
+
+    try {
+      const NFeParserService = require('../../../shared/nfe/NFeParserService');
+      const json = await NFeParserService.parse(xml);
+      return {
+        ...payload,
+        valor_ipi: payload.valor_ipi ?? json.valor_ipi ?? 0,
+        valor_seguro: payload.valor_seguro ?? json.valor_seguro ?? 0,
+        forma_pagamento: payload.forma_pagamento || json.forma_pagamento || null,
+        condicao_pagamento: payload.condicao_pagamento || json.condicao_pagamento || null,
+        pagamentos: (payload.pagamentos && payload.pagamentos.length)
+          ? payload.pagamentos
+          : (json.pagamentos || []),
+        duplicatas: (payload.duplicatas && payload.duplicatas.length)
+          ? payload.duplicatas
+          : (json.duplicatas || []),
+        parcelas_detalhe: (payload.parcelas_detalhe && payload.parcelas_detalhe.length)
+          ? payload.parcelas_detalhe
+          : (json.parcelas_detalhe || []),
+        parcelas: (payload.parcelas_detalhe && payload.parcelas_detalhe.length)
+          ? payload.parcelas
+          : (json.parcelas || payload.parcelas || 1),
+        data_vencimento: payload.data_vencimento || json.data_vencimento || null,
+        valor_total_nota: payload.valor_total_nota || json.valor_total_nota
+      };
+    } catch {
+      return payload;
+    }
   }
 
   /**
@@ -57,14 +106,20 @@ class CentralComprasBridgeService {
       throw erro;
     }
 
-    const payload = this._obterPayloadParsePersistido(documento);
+    let payload = this._obterPayloadParsePersistido(documento);
+    payload = await this._enriquecerFinanceiroDoXml(payload, documento.xml);
 
     return {
       sucesso: true,
       documentoId: documento.id,
       chave: documento.chave,
       status: documento.status,
-      dadosCompra: payload
+      dadosCompra: {
+        ...payload,
+        xml: documento.xml || null,
+        natureza_operacao: payload.natureza_operacao || payload.natureza || null,
+        cfop: payload.cfop || null
+      }
     };
   }
 

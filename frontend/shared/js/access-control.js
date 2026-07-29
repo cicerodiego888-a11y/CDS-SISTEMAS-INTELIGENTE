@@ -14,6 +14,7 @@ const PERMISSOES_PAGINAS = {
     compras: 'compras',
     'central-entradas': 'compras',
     'central-diagnostico': 'compras',
+    'dfe-auditoria': 'compras',
     fornecedores: 'fornecedores',
     vendas: 'vendas',
     entregas: 'vendas',
@@ -226,7 +227,7 @@ function usuarioTemPermissao(page) {
         return !!localStorage.getItem('token');
     }
 
-    if (page === 'central-diagnostico') {
+    if (page === 'central-diagnostico' || page === 'dfe-auditoria') {
         return usuarioPodeAcessarDiagnosticoCentral();
     }
 

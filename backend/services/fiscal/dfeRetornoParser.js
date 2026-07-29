@@ -1,5 +1,6 @@
 /**
  * dfeRetornoParser — Parse puro do retorno SOAP da Distribuição DF-e.
+ * RC3.6.E — extrairDocumentosZip passa a reportar descartes (sem mudar o conjunto persistido).
  *
  * @module services/fiscal/dfeRetornoParser
  */
@@ -57,34 +58,108 @@ function isDocumentoNotaFiscal(schema, xml) {
 }
 
 /**
- * @param {string} xmlRetorno
- * @returns {Array<{ nsu: string, schema: string, xml: string, compactado: string }>}
+ * Classifica schema/XML para auditoria (não altera filtro de persistência).
+ * @param {string} schema
+ * @param {string} xml
+ * @returns {string}
  */
-function extrairDocumentosZip(xmlRetorno) {
+function classificarSchemaAuditoria(schema, xml) {
+  const s = String(schema || '').toLowerCase();
+  if (s.includes('procevento') || /<procEventoNFe/i.test(xml || '')) return 'PROC_EVENTO_NFE';
+  if (s.includes('resevento') || /<resEvento/i.test(xml || '')) return 'RES_EVENTO';
+  if (s.includes('resnfe') || /<resNFe/i.test(xml || '')) return 'RES_NFE';
+  if (s.includes('procnfe') || /<nfeProc/i.test(xml || '')) return 'PROC_NFE';
+  if (/<NFe[\s>]/i.test(xml || '')) return 'NFE';
+  return 'DESCONHECIDO';
+}
+
+/**
+ * @param {string} xmlRetorno
+ * @param {Object} [opcoes]
+ * @param {Function} [opcoes.onDescarte] callback({ nsu, schema, tipo, resultado, motivo, tempoMs, tamanhoZip })
+ * @returns {Array<{ nsu: string, schema: string, xml: string, compactado: string, tipoAuditoria: string, tempoZipMs: number, tamanhoZip: number }>}
+ */
+function extrairDocumentosZip(xmlRetorno, opcoes = {}) {
   const documentos = [];
+  const onDescarte = typeof opcoes.onDescarte === 'function' ? opcoes.onDescarte : null;
   const regex = /<docZip([^>]*)>([\s\S]*?)<\/docZip>/gi;
   let match;
 
   while ((match = regex.exec(String(xmlRetorno || ''))) !== null) {
+    const t0 = Date.now();
     const atributos = match[1] || '';
     const compactado = (match[2] || '').trim();
     const nsu = normalizarNsu(atributos.match(/NSU="(\d+)"/i)?.[1]);
     const schema = atributos.match(/schema="([^"]+)"/i)?.[1] || '';
+    const tamanhoZip = compactado.length;
 
-    if (!compactado) continue;
+    if (!compactado) {
+      if (onDescarte) {
+        onDescarte({
+          nsu,
+          schema,
+          tipo: 'ZIP',
+          resultado: 'ERRO_ZIP',
+          motivo: 'docZip vazio',
+          tempoMs: Date.now() - t0,
+          tamanhoZip: 0
+        });
+      }
+      continue;
+    }
 
     let xml = '';
     try {
       xml = zlib.gunzipSync(Buffer.from(compactado, 'base64')).toString('utf8');
-    } catch {
+    } catch (err) {
+      if (onDescarte) {
+        onDescarte({
+          nsu,
+          schema,
+          tipo: 'ZIP',
+          resultado: 'ERRO_ZIP',
+          motivo: `Falha ao descompactar: ${err.message || 'gzip/base64'}`,
+          tempoMs: Date.now() - t0,
+          tamanhoZip
+        });
+      }
       continue;
     }
+
+    const tipoAuditoria = classificarSchemaAuditoria(schema, xml);
+    const tempoZipMs = Date.now() - t0;
 
     if (!isDocumentoNotaFiscal(schema, xml)) {
+      if (onDescarte) {
+        const ehEvento = tipoAuditoria === 'PROC_EVENTO_NFE' || tipoAuditoria === 'RES_EVENTO';
+        onDescarte({
+          nsu,
+          schema,
+          tipo: ehEvento ? 'EVENTO' : 'PARSER',
+          resultado: ehEvento ? 'EVENTO' : 'ERRO_SCHEMA',
+          motivo: ehEvento
+            ? `Evento DF-e (${tipoAuditoria}) — processar efeito fiscal se aplicável`
+            : `Schema/XML não reconhecido como NF-e (${schema || tipoAuditoria})`,
+          tempoMs: tempoZipMs,
+          tamanhoZip,
+          chave: xml.match(/Id="NFe(\d{44})"/i)?.[1]
+            || xml.match(/<chNFe>(\d{44})<\/chNFe>/i)?.[1]
+            || null,
+          xml: ehEvento ? xml : undefined
+        });
+      }
       continue;
     }
 
-    documentos.push({ nsu, schema, xml, compactado });
+    documentos.push({
+      nsu,
+      schema,
+      xml,
+      compactado,
+      tipoAuditoria,
+      tempoZipMs,
+      tamanhoZip
+    });
   }
 
   return documentos;
@@ -105,5 +180,6 @@ module.exports = {
   extrairMetadadosRetorno,
   extrairDocumentosZip,
   isDocumentoNotaFiscal,
+  classificarSchemaAuditoria,
   retornoDistSucesso
 };

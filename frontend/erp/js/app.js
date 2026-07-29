@@ -11,18 +11,21 @@ const CDS_ERP_PAGE_SCRIPTS = Object.freeze({
         '/erp/js/dashboard.js'
     ],
     monitoring: ['/erp/js/cds-monitoring-engine.js'],
-    produtos: ['/erp/js/categorias.js', '/erp/js/subcategorias.js', '/erp/js/produtos.js'],
+    produtos: ['/erp/js/categorias.js', '/erp/js/subcategorias.js', '/erp/js/motor-unidades-medida.js', '/erp/js/produtos.js'],
     clientes: ['/erp/js/clientes.js'],
-    compras: ['/erp/js/categorias.js', '/erp/js/subcategorias.js', '/erp/js/produtos.js', '/erp/js/miip-central-revisao.js', '/erp/js/compras.js'],
+    compras: ['/erp/js/categorias.js', '/erp/js/subcategorias.js', '/erp/js/produtos.js', '/erp/js/motor-unidades-medida.js', '/erp/js/miip-central-revisao.js', '/erp/js/compras-fornecedor-cnpj-rc831.js', '/erp/js/compras.js'],
     'central-entradas': [
         '/erp/js/central-entradas-ux.js',
         '/erp/js/categorias.js',
         '/erp/js/subcategorias.js',
+        '/erp/js/motor-unidades-medida.js',
         '/erp/js/produtos.js',
         '/erp/js/miip-central-revisao.js',
+        '/erp/js/central-recuperacao-xml.js',
         '/erp/js/central-entradas.js'
     ],
     'central-diagnostico': ['/erp/js/central-diagnostico.js'],
+    'dfe-auditoria': ['/erp/js/dfe-auditoria.js'],
     fornecedores: ['/erp/js/fornecedores.js'],
     vendas: [
         '/shared/js/fiscalImpressao.js',
@@ -39,6 +42,7 @@ const CDS_ERP_PAGE_SCRIPTS = Object.freeze({
         '/erp/js/financeiro-pagar.js',
         '/erp/js/financeiro-historico.js',
         '/erp/js/financeiro-relatorios.js',
+        '/erp/js/financeiro-condicoes.js',
         '/erp/js/financeiro.js'
     ],
     licenca: ['/erp/js/licenca.js'],
@@ -55,6 +59,7 @@ const CDS_ERP_PAGE_SCRIPTS = Object.freeze({
     'configuracoes-avancadas': [
         '/shared/js/fiscalImpressao.js',
         '/shared/js/configuracaoRede.js',
+        '/erp/js/fiscal.js',
         '/erp/js/configuracoes.js',
         '/erp/js/cds-centro-configuracoes.js'
     ],
@@ -338,6 +343,10 @@ async function loadPage(page) {
             return typeof loadCentralDiagnostico === 'function'
                 ? loadCentralDiagnostico()
                 : $('#page-content').html('<div class="alert alert-danger">Erro ao carregar diagnóstico da Central.</div>');
+        case 'dfe-auditoria':
+            return typeof loadDfeAuditoria === 'function'
+                ? loadDfeAuditoria()
+                : $('#page-content').html('<div class="alert alert-danger">Erro ao carregar Auditoria DF-e.</div>');
         case 'fornecedores':
             return typeof loadFornecedores === 'function'
                 ? loadFornecedores()

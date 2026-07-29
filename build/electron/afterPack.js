@@ -19,7 +19,7 @@ exports.default = async function afterPack(context) {
   }
 
   const manifesto = lerManifesto(root);
-  const cmp = compararRepoComAsar(root, asarPath, { manifesto });
+  const cmp = compararRepoComAsar(root, asarPath, { manifesto, modulo: 'erp' });
 
   if (!cmp.ok) {
     const detalhe = [

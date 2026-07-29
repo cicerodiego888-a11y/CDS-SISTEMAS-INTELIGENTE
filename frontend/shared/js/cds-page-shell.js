@@ -33,6 +33,7 @@
     'laboratorio-equipamentos': { grupo: 'Administração', titulo: 'Laboratório de Equipamentos', subtitulo: 'Testes e diagnóstico de periféricos' },
     'central-equipamentos': { grupo: 'Administração', titulo: 'Central de Equipamentos', subtitulo: 'Painel de equipamentos cadastrados e descobertos' },
     'central-diagnostico': { grupo: 'Administração', titulo: 'Saúde da Central', subtitulo: 'Diagnóstico técnico da Central de Entradas' },
+    'dfe-auditoria': { grupo: 'Administração', titulo: 'Motor DF-e — Auditoria', subtitulo: 'Trilha DistDFe para suporte (somente leitura)' },
     'configuracoes-avancadas': { grupo: 'Administração', titulo: 'Centro de Configurações', subtitulo: 'Configurações oficiais da plataforma (SUPER_ADMIN)' },
     observabilidade: { grupo: 'Administração', titulo: 'Observabilidade', subtitulo: 'Dashboard oficial READ-ONLY da plataforma (SUPER_ADMIN)' },
     equipamentos: { grupo: 'Administração', titulo: 'Equipamentos', subtitulo: 'Cadastro de balanças e periféricos' }

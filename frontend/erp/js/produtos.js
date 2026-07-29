@@ -1803,6 +1803,59 @@ function showProdutoModal(produto = null) {
                                                     Selecione uma unidade fracionável (KG, MT, LT, M², M³, etc.).
                                                 </small>
                                             </div>
+                                            <div class="col-md-12">
+                                                <div class="form-check mt-1">
+                                                    <input class="form-check-input" type="checkbox" id="compra_por_embalagem"
+                                                        ${(() => {
+                                                            const flag = Number(isEdit ? (produto.compra_por_embalagem || 0) : 0) === 1;
+                                                            const legado = isEdit
+                                                                && String(produto.unidade_comercial || 'UN').toUpperCase() !== 'UN'
+                                                                && Number(produto.quantidade_por_embalagem || 0) > 0;
+                                                            return (flag || legado) ? 'checked' : '';
+                                                        })()}>
+                                                    <label class="form-check-label" for="compra_por_embalagem">
+                                                        Produto comprado por embalagem
+                                                    </label>
+                                                </div>
+                                                <small class="text-muted">Desmarcado: cadastro por unidade (padrão). Marcado: compra em pacote/caixa com conversão automática para estoque.</small>
+                                            </div>
+                                            <div class="col-12 ${(() => {
+                                                const flag = Number(isEdit ? (produto.compra_por_embalagem || 0) : 0) === 1;
+                                                const legado = isEdit
+                                                    && String(produto.unidade_comercial || 'UN').toUpperCase() !== 'UN'
+                                                    && Number(produto.quantidade_por_embalagem || 0) > 0;
+                                                return (flag || legado) ? '' : 'd-none';
+                                            })()}" id="painel_compra_por_embalagem">
+                                                <div class="row g-3 border rounded p-3 bg-light">
+                                                    <div class="col-md-4">
+                                                        <label class="form-label">Unidade de Estoque</label>
+                                                        <input type="text" class="form-control bg-white" value="UN" readonly>
+                                                        <small class="text-muted">Unidade que controla o estoque e a venda.</small>
+                                                    </div>
+                                                    <div class="col-md-4">
+                                                        <label for="unidade_comercial" class="form-label">Unidade de Compra</label>
+                                                        <select class="form-control" id="unidade_comercial">
+                                                            ${['PACOTE','CAIXA','FARDO','SACO','LATA','BALDE','ROLO','BARRA'].map((u) => {
+                                                                const atual = String(isEdit ? (produto.unidade_comercial || 'PACOTE') : 'PACOTE').toUpperCase();
+                                                                return `<option value="${u}" ${atual === u ? 'selected' : ''}>${u}</option>`;
+                                                            }).join('')}
+                                                        </select>
+                                                    </div>
+                                                    <div class="col-md-4" id="wrap_quantidade_por_embalagem">
+                                                        <label for="quantidade_por_embalagem" class="form-label">Quantidade por Embalagem</label>
+                                                        <input type="number" step="0.001" min="0" class="form-control" id="quantidade_por_embalagem"
+                                                            value="${isEdit ? Number(produto.quantidade_por_embalagem || 0) || '' : ''}"
+                                                            placeholder="Ex.: 12">
+                                                        <small class="text-muted">Unidades de estoque em 1 embalagem.</small>
+                                                    </div>
+                                                    <div class="col-md-4" id="wrap_valor_compra_embalagem">
+                                                        <label for="valor_compra_embalagem" class="form-label">Valor de Compra da Embalagem</label>
+                                                        <input type="number" step="0.01" min="0" class="form-control" id="valor_compra_embalagem"
+                                                            value="${isEdit && Number(produto.valor_compra_embalagem || 0) > 0 ? Number(produto.valor_compra_embalagem) : ''}"
+                                                            placeholder="Ex.: 40,00">
+                                                    </div>
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -1876,7 +1929,7 @@ function showProdutoModal(produto = null) {
                                                 >
                                             </div>
                                             <div class="col-md-3">
-                                                <label for="preco_venda" class="form-label">Preço de Venda *</label>
+                                                <label for="preco_venda" class="form-label">Preço Unitário *</label>
                                                 <input
                                                     type="number"
                                                     step="0.01"
@@ -1885,6 +1938,11 @@ function showProdutoModal(produto = null) {
                                                     required
                                                     value="${isEdit ? Number(produto.preco_venda || 0) : 0}"
                                                 >
+                                            </div>
+                                            <div class="col-md-3 d-none" id="wrap_valor_embalagem_venda">
+                                                <label for="valor_embalagem_venda" class="form-label">Valor de Venda da Embalagem</label>
+                                                <input type="text" class="form-control bg-light fw-semibold" id="valor_embalagem_venda" readonly value="R$ 0,00">
+                                                <small class="text-muted">Preço unitário × quantidade por embalagem</small>
                                             </div>
                                             <div class="col-md-4">
                                                 <label for="valor_total_venda_preview" class="form-label">Valor Total Venda</label>
@@ -3104,6 +3162,10 @@ function fixarEventosFaixaRow($row) {
 
 
 // Inicializa cálculo automático do preço de venda
+function produtoCadastroUsaCompraPorEmbalagem() {
+    return $('#compra_por_embalagem').is(':checked');
+}
+
 function sincronizarFormacaoPrecoProduto(origem = 'init') {
     const $precoCompra = $('#preco_compra');
     const $lucro = $('#lucro_percentual');
@@ -3111,6 +3173,46 @@ function sincronizarFormacaoPrecoProduto(origem = 'init') {
     if (!$precoCompra.length || !$lucro.length || !$precoVenda.length) return;
 
     const numero = (valor) => parseFloat(String(valor ?? '').replace(',', '.')) || 0;
+    const compraPorEmbalagem = produtoCadastroUsaCompraPorEmbalagem();
+    const unidadeComercial = String($('#unidade_comercial').val() || 'PACOTE').toUpperCase();
+    const qtdEmb = numero($('#quantidade_por_embalagem').val());
+    const valorEmbCompra = numero($('#valor_compra_embalagem').val());
+    const motor = window.MotorUnidadesMedidaCliente;
+
+    if (compraPorEmbalagem && motor && qtdEmb > 0) {
+        const calc = motor.calcularFormacaoPrecoCadastro({
+            compraPorEmbalagem: true,
+            unidadeComercial,
+            quantidadePorEmbalagem: qtdEmb,
+            valorEmbalagemCompra: valorEmbCompra,
+            custoUnitario: numero($precoCompra.val()),
+            margemPercentual: numero($lucro.val()),
+            precoVendaUnitario: numero($precoVenda.val()),
+            origem: origem === 'venda' ? 'venda' : (origem === 'lucro' ? 'margem' : (origem === 'embalagem' ? 'embalagem' : 'custo'))
+        });
+        $precoCompra.prop('readonly', true).addClass('bg-light');
+        if (valorEmbCompra > 0 || origem === 'embalagem' || origem === 'init') {
+            $precoCompra.val(calc.custoUnitario.toFixed(4));
+        }
+        if (origem === 'venda') {
+            $lucro.val(calc.margemPercentual.toFixed(2));
+        } else if (origem !== 'init' || numero($precoVenda.val()) <= 0) {
+            $precoVenda.val(calc.precoVendaUnitario.toFixed(2));
+            if (origem === 'init' && !String($lucro.val() ?? '').trim()) {
+                $lucro.val(calc.margemPercentual.toFixed(2));
+            }
+        }
+        $('#valor_embalagem_venda').val(
+            typeof formatCurrency === 'function'
+                ? formatCurrency(calc.valorEmbalagemVenda)
+                : `R$ ${calc.valorEmbalagemVenda.toFixed(2)}`
+        );
+        atualizarPreviewValorTotalEstoqueCadastro();
+        return;
+    }
+
+    $precoCompra.prop('readonly', false).removeClass('bg-light');
+
     const precoCompra = numero($precoCompra.val());
     const precoVenda = numero($precoVenda.val());
     const lucroInformado = String($lucro.val() ?? '').trim() !== '';
@@ -3140,6 +3242,19 @@ function sincronizarFormacaoPrecoProduto(origem = 'init') {
     atualizarPreviewValorTotalEstoqueCadastro();
 }
 
+function atualizarVisibilidadeEmbalagemComercialCadastro() {
+    const mostra = produtoCadastroUsaCompraPorEmbalagem();
+    $('#painel_compra_por_embalagem').toggleClass('d-none', !mostra);
+    $('#wrap_valor_embalagem_venda').toggleClass('d-none', !mostra);
+    if (!mostra) {
+        $('#quantidade_por_embalagem').val('');
+        $('#valor_compra_embalagem').val('');
+        $('#valor_embalagem_venda').val('R$ 0,00');
+        $('#preco_compra').prop('readonly', false).removeClass('bg-light');
+    }
+    sincronizarFormacaoPrecoProduto(mostra ? 'embalagem' : 'init');
+}
+
 function inicializarCalculoPreco(produto, isEdit) {
     const $precoCompra = $('#preco_compra');
     const $lucro = $('#lucro_percentual');
@@ -3157,6 +3272,20 @@ function inicializarCalculoPreco(produto, isEdit) {
         .off('input.precoMotor change.precoMotor')
         .on('input.precoMotor change.precoMotor', () => sincronizarFormacaoPrecoProduto('venda'));
 
+    $('#compra_por_embalagem')
+        .off('change.embalagemMotor')
+        .on('change.embalagemMotor', () => atualizarVisibilidadeEmbalagemComercialCadastro());
+    $('#unidade_comercial')
+        .off('change.embalagemMotor')
+        .on('change.embalagemMotor', () => sincronizarFormacaoPrecoProduto('embalagem'));
+    $('#quantidade_por_embalagem')
+        .off('input.embalagemMotor change.embalagemMotor')
+        .on('input.embalagemMotor change.embalagemMotor', () => sincronizarFormacaoPrecoProduto('embalagem'));
+    $('#valor_compra_embalagem')
+        .off('input.embalagemMotor change.embalagemMotor')
+        .on('input.embalagemMotor change.embalagemMotor', () => sincronizarFormacaoPrecoProduto('embalagem'));
+
+    atualizarVisibilidadeEmbalagemComercialCadastro();
     setTimeout(() => sincronizarFormacaoPrecoProduto('init'), 0);
 }
 
@@ -3237,6 +3366,21 @@ async function saveProduto() {
 
     sincronizarFormacaoPrecoProduto('init');
 
+    if ($('#compra_por_embalagem').is(':checked')) {
+        const qtdEmb = parseFloat($('#quantidade_por_embalagem').val()) || 0;
+        const valorEmb = parseFloat($('#valor_compra_embalagem').val()) || 0;
+        if (qtdEmb <= 0) {
+            showNotification('Informe a Quantidade por Embalagem (ex.: 12 unidades).', 'warning');
+            $('#quantidade_por_embalagem').focus();
+            return;
+        }
+        if (valorEmb <= 0) {
+            showNotification('Informe o Valor de Compra da Embalagem.', 'warning');
+            $('#valor_compra_embalagem').focus();
+            return;
+        }
+    }
+
     if ($('#produto_fracionado').is(':checked') && !unidadeVendaSuportaConversao($('#unidade').val())) {
         showNotification(
             'Produto Pesável exige unidade de venda fracionável (KG, MT, LT, M², M³, etc.).',
@@ -3300,6 +3444,16 @@ async function saveProduto() {
         observacoes: ($('#produto_observacoes').val() || '').trim() || null,
         imagem_principal: ($('#produtoModal').data('produtoImagemPath') || null),
         unidade: ($('#unidade').val() || '').trim(),
+        compra_por_embalagem: $('#compra_por_embalagem').is(':checked') ? 1 : 0,
+        unidade_comercial: $('#compra_por_embalagem').is(':checked')
+            ? String($('#unidade_comercial').val() || 'PACOTE').toUpperCase()
+            : 'UN',
+        quantidade_por_embalagem: $('#compra_por_embalagem').is(':checked')
+            ? (parseFloat($('#quantidade_por_embalagem').val()) || 0)
+            : 0,
+        valor_compra_embalagem: $('#compra_por_embalagem').is(':checked')
+            ? (parseFloat($('#valor_compra_embalagem').val()) || 0)
+            : 0,
         preco_compra: parseFloat($('#preco_compra').val()) || 0,
         preco_venda: parseFloat($('#preco_venda').val()) || 0,
         lucro_percentual: $('#lucro_percentual').val() !== '' ? parseFloat($('#lucro_percentual').val()) : (

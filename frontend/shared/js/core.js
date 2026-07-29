@@ -94,6 +94,7 @@ const PAGINAS_MODULO_FISCAL = Object.freeze([
     'central-contabil',
     'central-entradas',
     'central-diagnostico',
+    'dfe-auditoria',
     'monitoring'
 ]);
 
@@ -123,6 +124,7 @@ const CATALOGO_PESQUISA_PAGINAS = Object.freeze([
     { page: 'central-contabil', titulo: 'Central Contábil', keywords: 'contabilidade exportação zip xml contador escritório', fiscal: true },
     { page: 'central-equipamentos', titulo: 'Central de Equipamentos', keywords: 'balança discovery identidade equipamentos central saúde', fiscal: false },
     { page: 'central-diagnostico', titulo: 'Saúde da Central', keywords: 'diagnóstico central fiscal', fiscal: true },
+    { page: 'dfe-auditoria', titulo: 'Auditoria DF-e', keywords: 'dfe auditoria nsu sync dist sefaz suporte', fiscal: true },
     { page: 'configuracoes', titulo: 'Configurações', keywords: 'empresa configuração' },
     { page: 'usuarios', titulo: 'Usuários', keywords: 'usuário permissão' },
     { page: 'licenca', titulo: 'Assinatura CDS', keywords: 'licença assinatura' },
@@ -302,7 +304,7 @@ function paginaPermitidaPorImplantacao(page) {
     if (p === 'nfe-central' || p === 'nfe-avulsa' || p === 'nfe-monitor' || p === 'nfe-fila' || p === 'nfe-diagnostico') {
         return possuiRecurso('nfe');
     }
-    if (p === 'central-entradas' || p === 'central-diagnostico' || p === 'monitoring' || p === 'central-contabil') {
+    if (p === 'central-entradas' || p === 'central-diagnostico' || p === 'dfe-auditoria' || p === 'monitoring' || p === 'central-contabil') {
         return fiscalHabilitado();
     }
     if (p === 'caixas' && !implantacaoPermiteMultiCaixa()) return false;

@@ -11,6 +11,7 @@
 const db = require('../../database');
 const configService = require('../configuracaoService');
 const { parseVendaFiscalFlag, distribuirItensVendaComValorFiscalEfetivo } = require('../distribuidorEstoqueVenda');
+const mpfc = require('../mpfc');
 const { calcularEstoqueProduto } = require('../estoque/EstoqueDisponivelService');
 const { saldosParaDistribuicaoVenda } = require('../estoque/produtoControlaEstoque');
 const { reservarItem } = require('../estoque/EstoqueReservaService');
@@ -175,7 +176,10 @@ function criarVendaEntrega(req, res) {
         });
       }
 
-      const midpAtivo = Boolean(configService.isMidpAtivado && configService.isMidpAtivado());
+      const politicaMpfc = mpfc.obterPolitica();
+      const midpAtivo = Boolean(politicaMpfc.preservarDinheiro);
+      mpfc.receberPoliticaMotorComercial(politicaMpfc);
+      mpfc.receberPoliticaMotorFiscalNaoFiscal(politicaMpfc);
       const pagamentosEntrega = Array.isArray(body.pagamentos) ? body.pagamentos : [];
       const resultadoMotor = distribuirItensVendaComValorFiscalEfetivo(
         entradasMotor,
@@ -184,7 +188,8 @@ function criarVendaEntrega(req, res) {
           pagamentos: pagamentosEntrega,
           midpAtivo,
           desconto: Number(body.desconto || 0),
-          acrescimo: Number(body.acrescimo || 0)
+          acrescimo: Number(body.acrescimo || 0),
+          politicaFiscalComercial: politicaMpfc
         }
       );
 

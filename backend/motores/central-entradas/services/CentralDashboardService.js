@@ -7,7 +7,8 @@
  */
 
 const CentralDashboardDTO = require('../contracts/CentralDashboardDTO');
-const { DocumentoFiscalStatus, TODOS } = require('../core/DocumentoFiscalStatus');
+const { TODOS } = require('../core/DocumentoFiscalStatus');
+const { montarContadoresFilas } = require('../core/FilasEstadosCentral');
 const CentralNsuRepository = require('../repositories/CentralNsuRepository');
 
 class CentralDashboardService {
@@ -36,8 +37,13 @@ class CentralDashboardService {
     TODOS.forEach((status) => {
       contadores[status] = contadoresPorStatus[status] || 0;
     });
+    // Inclui legados ainda não migrados (somados após normalização no repository se houver)
+    Object.keys(contadoresPorStatus || {}).forEach((k) => {
+      if (contadores[k] == null) contadores[k] = contadoresPorStatus[k] || 0;
+    });
 
     const total = Object.values(contadores).reduce((acc, n) => acc + Number(n || 0), 0);
+    const filas = montarContadoresFilas(contadores);
 
     let saude = null;
     try {
@@ -49,13 +55,15 @@ class CentralDashboardService {
 
     return CentralDashboardDTO.create({
       contadores: {
-        novas: contadores[DocumentoFiscalStatus.SINCRONIZADA] || 0,
-        emProcessamento: contadores[DocumentoFiscalStatus.EM_PROCESSAMENTO] || 0,
-        aguardandoRevisao: contadores[DocumentoFiscalStatus.AGUARDANDO_REVISAO] || 0,
-        prontasParaCompra: contadores[DocumentoFiscalStatus.PRONTA_PARA_COMPRA] || 0,
-        gravadas: contadores[DocumentoFiscalStatus.GRAVADA] || 0,
-        erros: contadores[DocumentoFiscalStatus.ERRO] || 0,
+        ...filas,
+        novas: filas.novas,
+        emProcessamento: filas.emProcessamento,
+        aguardandoRevisao: filas.aguardandoRevisao,
+        prontasParaCompra: filas.prontasParaCompra,
+        gravadas: filas.gravadas,
+        erros: filas.erros,
         porStatus: contadores,
+        filas,
         total
       },
       indicadores: {

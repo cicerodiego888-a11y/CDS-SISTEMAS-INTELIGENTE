@@ -594,9 +594,9 @@ class CentralEntradasOrchestrator {
     });
   }
 
-  async obterOperacional() {
+  async obterOperacional(opcoes = {}) {
     const alertasResultado = await this._alertasService.listarAlertas();
-    return this._operacionalService.obterIndicadores({ alertasResultado });
+    return this._operacionalService.obterIndicadores({ alertasResultado, ...opcoes });
   }
 
   async obterItensAtencao(opcoes = {}) {
@@ -627,7 +627,14 @@ class CentralEntradasOrchestrator {
       alertasResultado: alertas
     });
     const [operacional, atencao] = await Promise.all([
-      this._operacionalService.obterIndicadores({ alertasResultado: alertas }),
+      this._operacionalService.obterIndicadores({
+        alertasResultado: alertas,
+        ano: opcoes.ano,
+        mes: opcoes.mes,
+        competencia: opcoes.competencia,
+        dataEmissaoInicio: opcoes.dataEmissaoInicio || opcoes.data_emissao_inicio || null,
+        dataEmissaoFim: opcoes.dataEmissaoFim || opcoes.data_emissao_fim || null
+      }),
       this._atencaoService.obterItensAtencao({
         alertasResultado: alertas,
         pendenciasResultado: pendencias
@@ -639,6 +646,16 @@ class CentralEntradasOrchestrator {
       operacional,
       pendencias,
       atencao,
+      indicadoresFiscais: {
+        valorMensal: operacional.valorMensal,
+        valorAnual: operacional.valorAnual,
+        quantidadeMensal: operacional.quantidadeMensal,
+        quantidadeAnual: operacional.quantidadeAnual,
+        competencia: operacional.competencia,
+        competenciaLabel: operacional.competenciaLabel,
+        ambiente: operacional.ambiente,
+        ambienteLabel: operacional.ambienteLabel
+      },
       geradoEm: new Date().toISOString()
     };
   }

@@ -6,6 +6,23 @@
 (function initCentralEntradasUx(global) {
     const STORAGE_KEY = 'central_entradas_kpi_snapshot_v1';
 
+    /** RC3.6.H — flags de exposição (somente UI). */
+    const _featureFlags = { recuperacaoPortalNacional: false };
+
+    function setFeatureFlagsCentral(flags = {}) {
+        if (flags.recuperacaoPortalNacional != null) {
+            _featureFlags.recuperacaoPortalNacional = flags.recuperacaoPortalNacional === true;
+        }
+    }
+
+    function recuperacaoPortalNacionalAtiva() {
+        return _featureFlags.recuperacaoPortalNacional === true;
+    }
+
+    function documentoTemChaveValidaUx(doc = {}) {
+        return String(doc.chave || '').replace(/\D/g, '').length === 44;
+    }
+
     const EMPTY_PRESETS = {
         documentos: {
             icone: 'fa-inbox',
@@ -20,6 +37,13 @@
             descricao: 'Ajuste os filtros ou limpe a pesquisa para ver mais documentos.',
             acaoLabel: 'Limpar filtros',
             acaoId: 'centralEmptyLimparFiltros'
+        },
+        pesquisa_filtros: {
+            icone: 'fa-filter',
+            titulo: 'Nenhum documento encontrado',
+            descricao: 'Existem filtros ativos que podem estar ocultando o resultado. O documento pode não aparecer devido aos filtros ativos.',
+            acaoLabel: 'Limpar filtros e pesquisar novamente',
+            acaoId: 'centralEmptyLimparFiltrosManterBusca'
         },
         alertas: {
             icone: 'fa-bell-slash',
@@ -322,6 +346,74 @@
         };
     }
 
+    /**
+     * RC3.4.9A — data de emissão reduzida (dd/MM/aa). Nunca inclui horário.
+     * @param {string|null|undefined} data
+     * @returns {string}
+     */
+    function formatarDataEmissaoCurtaCentral(data) {
+        if (!data) return '—';
+        const texto = String(data).trim();
+        const soData = texto.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (soData) {
+            return `${soData[3]}/${soData[2]}/${soData[1].slice(-2)}`;
+        }
+        const d = new Date(texto);
+        if (Number.isNaN(d.getTime())) return '—';
+        const dia = String(d.getDate()).padStart(2, '0');
+        const mes = String(d.getMonth() + 1).padStart(2, '0');
+        const ano = String(d.getFullYear()).slice(-2);
+        return `${dia}/${mes}/${ano}`;
+    }
+
+    /**
+     * RC3.4.9A — situação curta para linha da Saúde (NF • Emissão • Situação).
+     * @param {Object} alerta
+     * @returns {string}
+     */
+    function resolverSituacaoSaudeCurtaCentral(alerta = {}) {
+        const status = alerta.status || '';
+        const mapa = {
+            XML_INDISPONIVEL: 'XML indisponível na SEFAZ',
+            ERRO: 'Atenção',
+            EM_COMPRA: 'Em Compra',
+            AGUARDANDO_REVISAO: 'Em revisão',
+            EM_PROCESSAMENTO: 'Processando',
+            AGUARDANDO_XML_COMPLETO: 'Aguardando XML',
+            SINCRONIZADA: 'Recebido',
+            RECEBIDA: 'Recebido',
+            REVISADA: 'Pronto para importar',
+            PRONTA_PARA_COMPRA: 'Pronto para importar',
+            GRAVADA: 'Importado',
+            DUPLICADA: 'Duplicada',
+            DESCARTADA: 'Encerrado',
+            XML_IMPORTADO_MANUALMENTE: 'XML importado'
+        };
+        if (mapa[status]) return mapa[status];
+        const diag = String(alerta.diagnostico || '').trim();
+        if (/XML indisponível/i.test(diag)) return 'XML indisponível na SEFAZ';
+        if (/parado na etapa EM_COMPRA/i.test(diag)) return 'Em Compra';
+        if (/parado na etapa/i.test(diag)) {
+            const m = diag.match(/etapa\s+([A-Z_]+)/i);
+            if (m?.[1] && mapa[m[1]]) return mapa[m[1]];
+        }
+        return alerta.nivelLabel || diag || 'Atenção';
+    }
+
+    /**
+     * RC3.4.9A — monta linha compacta: NF • Emissão • Situação
+     * @param {Object} alerta
+     * @returns {string}
+     */
+    function montarLinhaSaudeCompactaCentral(alerta = {}) {
+        const nf = alerta.numero != null && String(alerta.numero).trim() !== ''
+            ? String(alerta.numero).trim()
+            : '—';
+        const emissao = formatarDataEmissaoCurtaCentral(alerta.dataEmissao || alerta.data_emissao);
+        const situacao = resolverSituacaoSaudeCurtaCentral(alerta);
+        return `${nf} • ${emissao} • ${situacao}`;
+    }
+
     function inferirOrigemTimelineCentral(item) {
         const detalhe = String(item.detalhe || '').toLowerCase();
         if (detalhe.includes('dfe') || detalhe.includes('sefaz')) return 'SEFAZ / DF-e';
@@ -344,19 +436,107 @@
     }
 
     function badgeStatusUx1(status, label) {
+        // RC4.0.0 / RC3.7.1 — linguagem operacional
         const mapa = {
-            PRONTA_PARA_COMPRA: { classe: 'central-ux1-badge--verde', texto: 'Pronta para Importar' },
-            REVISADA: { classe: 'central-ux1-badge--verde', texto: 'Pronta para Importar' },
-            AGUARDANDO_REVISAO: { classe: 'central-ux1-badge--amarelo', texto: 'Aguardando Revisão' },
-            EM_PROCESSAMENTO: { classe: 'central-ux1-badge--azul', texto: 'Processando' },
-            GRAVADA: { classe: 'central-ux1-badge--cinza', texto: 'Importada' },
+            NOVA: { classe: 'central-ux1-badge--azul', texto: 'Nova' },
+            RESUMO_RECEBIDO: { classe: 'central-ux1-badge--azul', texto: 'Resumo recebido' },
+            XML_COMPLETO: { classe: 'central-ux1-badge--azul', texto: 'XML completo' },
+            EM_REVISAO: { classe: 'central-ux1-badge--amarelo', texto: 'Em revisão' },
+            PRONTA_IMPORTACAO: { classe: 'central-ux1-badge--verde', texto: 'Pronta' },
+            EM_IMPORTACAO: { classe: 'central-ux1-badge--azul', texto: 'Em importação' },
+            IMPORTADA: { classe: 'central-ux1-badge--cinza', texto: 'Importada' },
+            FINALIZADA: { classe: 'central-ux1-badge--cinza', texto: 'Finalizada' },
+            CANCELADA: { classe: 'central-ux1-badge--vermelho', texto: 'Cancelada' },
+            DENEGADA: { classe: 'central-ux1-badge--vermelho', texto: 'Denegada' },
+            INUTILIZADA: { classe: 'central-ux1-badge--cinza', texto: 'Inutilizada' },
             ERRO: { classe: 'central-ux1-badge--vermelho', texto: 'Erro' },
-            DUPLICADA: { classe: 'central-ux1-badge--vermelho', texto: 'Duplicada' },
-            DESCARTADA: { classe: 'central-ux1-badge--cinza', texto: 'Cancelada' },
-            SINCRONIZADA: { classe: 'central-ux1-badge--azul', texto: 'Nova' }
+            XML_INDISPONIVEL: { classe: 'central-ux1-badge--vermelho', texto: 'XML indisponível' },
+            RECEBIDA: { classe: 'central-ux1-badge--azul', texto: 'Recebido' },
+            SINCRONIZADA: { classe: 'central-ux1-badge--azul', texto: 'Recebido' },
+            AGUARDANDO_XML_COMPLETO: { classe: 'central-ux1-badge--azul', texto: 'Aguardando XML' },
+            EM_PROCESSAMENTO: { classe: 'central-ux1-badge--azul', texto: 'Processando' },
+            AGUARDANDO_REVISAO: { classe: 'central-ux1-badge--amarelo', texto: 'Em revisão' },
+            REVISADA: { classe: 'central-ux1-badge--verde', texto: 'Pronto para importar' },
+            PRONTA_PARA_COMPRA: { classe: 'central-ux1-badge--verde', texto: 'Pronto para importar' },
+            EM_COMPRA: { classe: 'central-ux1-badge--azul', texto: 'Em importação' },
+            GRAVADA: { classe: 'central-ux1-badge--cinza', texto: 'Importada' },
+            DUPLICADA: { classe: 'central-ux1-badge--cinza', texto: 'Importada' },
+            DESCARTADA: { classe: 'central-ux1-badge--cinza', texto: 'Finalizada' },
+            XML_IMPORTADO_MANUALMENTE: { classe: 'central-ux1-badge--azul', texto: 'XML completo' }
         };
         const meta = mapa[status] || { classe: 'central-ux1-badge--cinza', texto: label || status || '—' };
-        return `<span class="central-ux1-badge ${meta.classe}" title="${escapeUx(meta.texto)}">${escapeUx(label || meta.texto)}</span>`;
+        return `<span class="central-ux1-badge ${meta.classe}" title="${escapeUx(meta.texto)}">${escapeUx(meta.texto)}</span>`;
+    }
+
+    /**
+     * RC4.0.0 / RC3.7.1 — próxima ação operacional (lista / painel).
+     */
+    function resolverProximaAcaoOperacional(doc = {}) {
+        const status = doc.status || '';
+        if (status === 'EM_REVISAO' || status === 'AGUARDANDO_REVISAO') {
+            return { emoji: '🟡', label: 'Revisar Produtos', tom: 'revisao', acao: 'revisar' };
+        }
+        if (status === 'PRONTA_IMPORTACAO' || status === 'PRONTA_PARA_COMPRA' || status === 'REVISADA') {
+            return { emoji: '🟢', label: 'Importar Compra', tom: 'pronto', acao: 'importar' };
+        }
+        if (status === 'RESUMO_RECEBIDO' || status === 'AGUARDANDO_XML_COMPLETO') {
+            return { emoji: '🔵', label: 'Aguardando XML', tom: 'processando', acao: 'aguardar' };
+        }
+        if (status === 'XML_INDISPONIVEL' || status === 'ERRO') {
+            if (recuperacaoPortalNacionalAtiva()) {
+                return { emoji: '☁️', label: 'Portal Nacional', tom: 'atencao', acao: 'portal-nfe' };
+            }
+            if (status === 'XML_INDISPONIVEL' && documentoTemChaveValidaUx(doc)) {
+                return { emoji: '📋', label: 'Copiar Chave', tom: 'atencao', acao: 'copiar-chave' };
+            }
+            if (status === 'ERRO') {
+                return { emoji: '🔴', label: 'Ver Diagnóstico', tom: 'atencao', acao: 'diagnostico' };
+            }
+            return { emoji: '🔴', label: 'Atenção', tom: 'atencao', acao: null };
+        }
+        if (status === 'CANCELADA' || status === 'DENEGADA' || status === 'INUTILIZADA') {
+            return { emoji: '⚫', label: status === 'CANCELADA' ? 'Cancelada' : status, tom: 'encerrado', acao: null };
+        }
+        if (status === 'IMPORTADA' || status === 'GRAVADA' || status === 'FINALIZADA' || status === 'DESCARTADA' || status === 'DUPLICADA') {
+            return { emoji: '⚫', label: 'Importada', tom: 'encerrado', acao: null };
+        }
+        if (status === 'EM_IMPORTACAO' || status === 'EM_COMPRA') {
+            return { emoji: '🔵', label: 'Importando…', tom: 'processando', acao: null };
+        }
+        if ((status === 'XML_COMPLETO' || status === 'SINCRONIZADA') && doc.parseDisponivel) {
+            return { emoji: '🔵', label: 'Processar', tom: 'processando', acao: 'processar' };
+        }
+        return { emoji: '🔵', label: 'Acompanhar', tom: 'processando', acao: null };
+    }
+
+    function labelStatusOperacionalCentral(status) {
+        const mapa = {
+            NOVA: 'Nova',
+            RESUMO_RECEBIDO: 'Resumo recebido',
+            XML_COMPLETO: 'XML completo',
+            EM_REVISAO: 'Em revisão',
+            PRONTA_IMPORTACAO: 'Pronta',
+            EM_IMPORTACAO: 'Em importação',
+            IMPORTADA: 'Importada',
+            FINALIZADA: 'Finalizada',
+            CANCELADA: 'Cancelada',
+            DENEGADA: 'Denegada',
+            INUTILIZADA: 'Inutilizada',
+            ERRO: 'Erro',
+            XML_INDISPONIVEL: 'XML indisponível',
+            RECEBIDA: 'Recebido',
+            SINCRONIZADA: 'Recebido',
+            AGUARDANDO_XML_COMPLETO: 'Aguardando XML',
+            EM_PROCESSAMENTO: 'Processando',
+            AGUARDANDO_REVISAO: 'Em revisão',
+            REVISADA: 'Pronto para importar',
+            PRONTA_PARA_COMPRA: 'Pronto para importar',
+            EM_COMPRA: 'Em importação',
+            GRAVADA: 'Importada',
+            DESCARTADA: 'Finalizada',
+            DUPLICADA: 'Importada'
+        };
+        return mapa[status] || status || '—';
     }
 
     function renderPipelineTimelineUx1(doc, historico) {
@@ -501,7 +681,7 @@
 
     function mensagemAmigavelCentral(chave, fallback) {
         const mapa = {
-            AGUARDANDO_XML_COMPLETO: 'A SEFAZ ainda não disponibilizou o XML completo. O MIRX tentará novamente automaticamente.',
+            AGUARDANDO_XML_COMPLETO: 'A SEFAZ ainda não disponibilizou o XML completo. A recuperação automática ocorrerá no horário programado.',
             ERRO: 'Consulta temporariamente indisponível.',
             CONSUMO_INDEVIDO: 'A SEFAZ solicitou um intervalo antes da próxima consulta.',
             '656': 'A SEFAZ solicitou um intervalo antes da próxima consulta.',
@@ -515,9 +695,10 @@
 
     /** RC3.4.5 — status reais (linguagem operacional). */
     function resolverStatusRealCentral(doc, wait = {}) {
+        const w = wait || {};
         const status = doc?.status || '';
         if (status === 'AGUARDANDO_XML_COMPLETO') {
-            if (wait.estadoMirx === 'CONSULTANDO_XML') return 'Recuperando XML automaticamente';
+            if (w.estadoMirx === 'CONSULTANDO_XML') return 'Recuperando XML automaticamente';
             return 'Recuperação automática do XML agendada';
         }
         if (status === 'SINCRONIZADA' && doc?.tipoDocumento === 'RES_NFE') return 'Aguardando manifestação';
@@ -534,10 +715,22 @@
         return mensagemAmigavelCentral(status, status) || status || '—';
     }
 
+    /** RC3.4.6.1 — documento encerrado (sem próximas tentativas). */
+    function documentoEncerradoCentral(doc) {
+        const status = doc?.status || '';
+        return status === 'GRAVADA' || status === 'DESCARTADA' || status === 'DUPLICADA';
+    }
+
     /** RC3.4.5 — explicação com próxima tentativa DD/MM/AAAA HH:MM. */
     function explicarStatusCentral(doc, wait = {}) {
+        const w = wait || {};
         const status = doc?.status || '';
-        const proxima = wait.proximaTentativa || wait.bloqueio656?.bloqueadoAte || null;
+
+        if (documentoEncerradoCentral(doc)) {
+            return 'Documento encerrado. Não existem próximas tentativas.';
+        }
+
+        const proxima = w.proximaTentativa || w.bloqueio656?.bloqueadoAte || null;
         let proximaLabel = null;
         if (proxima) {
             const d = new Date(proxima);
@@ -548,12 +741,12 @@
         }
 
         if (status === 'AGUARDANDO_XML_COMPLETO') {
-            if (wait.estadoMirx === 'CONSULTANDO_XML') {
-                return 'O MIRX está consultando a SEFAZ para recuperar o XML completo.';
+            if (w.estadoMirx === 'CONSULTANDO_XML') {
+                return 'O sistema está consultando a SEFAZ para recuperar o XML completo.';
             }
             return proximaLabel
                 ? `Recuperação automática do XML agendada. Próxima tentativa: ${proximaLabel}.`
-                : 'Recuperação automática do XML agendada. O MIRX tentará no horário programado.';
+                : 'Recuperação automática do XML agendada. Nova tentativa no horário programado.';
         }
         if (status === 'EM_PROCESSAMENTO') {
             return 'O XML está sendo lido: itens, valores e tributos estão sendo extraídos.';
@@ -564,13 +757,10 @@
         if (status === 'EM_COMPRA') {
             return 'A compra está sendo importada. Estoque e financeiro serão atualizados na conclusão.';
         }
-        if (status === 'GRAVADA') {
-            return 'Documento finalizado. Compra gravada e estoque atualizado.';
-        }
         if (status === 'SINCRONIZADA' && doc?.tipoDocumento === 'RES_NFE') {
             return 'Resumo da NF-e recebido. Aguardando manifestação e disponibilização do XML completo.';
         }
-        return resolverStatusRealCentral(doc, wait);
+        return resolverStatusRealCentral(doc, w);
     }
 
     function resolverDataDocumentoCentral(doc) {
@@ -1049,12 +1239,23 @@
     }
 
     /** RC3.4.6 — Saúde documental da Central. */
-    function renderPainelSaudeDocumentalCentral(saude = {}, opcoes = {}) {
+    function renderPainelSaudeDocumentalCentral(saude, opcoes = {}) {
+        // RC3.4.6.1 — null-safe: painel nunca lança se saúde ainda não calculada
+        if (!saude) {
+            return `
+            <div class="central-health-panel central-entradas-anim-in" aria-label="Saúde da Central">
+                <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+                    <strong>Saúde da Central</strong>
+                </div>
+                <div class="small text-muted">Saúde ainda não calculada</div>
+            </div>`;
+        }
+
         const c = saude.contadores || {};
         const est = saude.estatisticas || {};
         const filtro = opcoes.filtroNivel || null;
-        let alertas = saude.alertas || [];
-        if (filtro) alertas = alertas.filter((a) => a.nivel === filtro);
+        let alertas = Array.isArray(saude.alertas) ? saude.alertas : [];
+        if (filtro) alertas = alertas.filter((a) => a?.nivel === filtro);
 
         const chips = [
             { nivel: 'SAUDAVEL', emoji: '🟢', label: 'Saudáveis', valor: c.saudaveis ?? 0, cor: '#198754' },
@@ -1065,17 +1266,20 @@
 
         const listaHtml = alertas.length
             ? `<div class="central-health-alertas mt-2">
-                ${alertas.slice(0, 12).map((a) => `
-                    <button type="button" class="central-health-alerta" data-health-doc="${a.documentoId}"
-                        title="${escapeUx(a.diagnostico || '')}">
-                        <span>${escapeUx(a.indicador || '🟡')}</span>
-                        <span class="flex-grow-1 text-start">
-                            <strong>${escapeUx(a.fornecedor || a.chave || `#${a.documentoId}`)}</strong>
-                            <small class="d-block text-muted">${escapeUx(a.diagnostico || a.regra || '')}</small>
+                ${alertas.slice(0, 12).map((a) => {
+                    const linha = montarLinhaSaudeCompactaCentral(a || {});
+                    const tempo = a?.tempoParadoLabel || '';
+                    return `
+                    <button type="button" class="central-health-alerta" data-health-doc="${escapeUx(a?.documentoId ?? '')}"
+                        title="${escapeUx(a?.diagnostico || linha)}">
+                        <span>${escapeUx(a?.indicador || '🟡')}</span>
+                        <span class="flex-grow-1 text-start min-w-0">
+                            <strong class="central-health-alerta-fornecedor">${escapeUx(a?.fornecedor || a?.chave || (a?.documentoId != null ? `#${a.documentoId}` : 'Documento'))}</strong>
+                            <small class="d-block text-muted text-truncate central-health-alerta-linha">${escapeUx(linha)}</small>
                         </span>
-                        <small class="text-muted">${escapeUx(a.tempoParadoLabel || '')}</small>
-                    </button>
-                `).join('')}
+                        <small class="text-muted central-health-alerta-tempo">${escapeUx(tempo)}</small>
+                    </button>`;
+                }).join('')}
                </div>`
             : (filtro
                 ? '<div class="small text-muted mt-2">Nenhum documento neste nível.</div>'
@@ -1119,24 +1323,82 @@
             </div>`;
     }
 
-    function renderCardSaudeDocumentoCentral(saude) {
-        if (!saude || !saude.nivel) return '';
+    /**
+     * RC3.4.6 / RC3.4.6.1 — card de saúde no detalhe do documento.
+     * Null-safe: nunca lança se saude/campos forem null.
+     */
+    function renderCardSaudeDocumentoCentral(saude, doc = null) {
+        const encerrado = documentoEncerradoCentral(doc) || documentoEncerradoCentral(saude);
+
+        if (!saude || !saude.nivel) {
+            const msg = encerrado
+                ? 'Documento encerrado. Não existem próximas tentativas.'
+                : 'Saúde ainda não calculada. Documento sem diagnóstico disponível.';
+            return `
+            <div class="central-health-doc mb-3" style="border-left:3px solid #94a3b8; padding-left:.75rem">
+                <label class="central-entradas-label">Saúde do documento</label>
+                <div class="small text-muted">${escapeUx(msg)}</div>
+            </div>`;
+        }
+
         const cor = saude.cor || '#64748b';
+        const diagnostico = saude.diagnostico
+            || (encerrado
+                ? 'Documento encerrado. Não existem próximas tentativas.'
+                : 'Documento sem diagnóstico disponível');
+        const regra = saude.regra || null;
+        const nivel = saude.nivelLabel || saude.nivel || '—';
+        const tempoParado = saude.tempoParadoLabel || null;
+        const ultimaAtualizacao = saude.ultimaAtualizacaoDoc || null;
+        const motivo = saude.motivo || saude.mirx?.motivo || null;
+        const proximaTentativa = saude.mirx?.proximaTentativa || null;
+
+        let metaLinha = '';
+        if (encerrado) {
+            const em = formatarDataHoraSeparadoCentral(saude.dataEmissao || doc?.dataEmissao);
+            const enc = formatarDataHoraSeparadoCentral(
+                saude.dataEncerramento || saude.ultimaAtualizacaoDoc || doc?.updatedAt
+            );
+            const partesEnc = ['Documento encerrado. Não existem próximas tentativas.'];
+            if (saude.dataEmissao || doc?.dataEmissao) {
+                partesEnc.push(`Emissão: ${escapeUx(em.data)}`);
+            }
+            if (saude.dataEncerramento || saude.ultimaAtualizacaoDoc || doc?.updatedAt) {
+                partesEnc.push(`Encerrado: ${escapeUx(enc.data)}${enc.hora ? ` ${escapeUx(enc.hora)}` : ''}`);
+            }
+            metaLinha = partesEnc.join(' · ');
+        } else {
+            const partes = [];
+            if (saude.dataEmissao || doc?.dataEmissao) {
+                const em = formatarDataHoraSeparadoCentral(saude.dataEmissao || doc?.dataEmissao);
+                partes.push(`Emissão: ${escapeUx(em.data)}`);
+            }
+            if (tempoParado) partes.push(`Tempo parado: ${escapeUx(tempoParado)}`);
+            if (saude.detectadoEm) {
+                partes.push(`Detecção: ${escapeUx(formatarDataHoraSeparadoCentral(saude.detectadoEm).hora)}`);
+            }
+            if (ultimaAtualizacao) {
+                partes.push(`Atualização: ${escapeUx(formatarDataHoraSeparadoCentral(ultimaAtualizacao).hora)}`);
+            }
+            if (proximaTentativa) {
+                const cd = formatarCountdownCentral(proximaTentativa);
+                partes.push(`Próxima tentativa: ${escapeUx(cd.dataHora || '—')}`);
+            }
+            if (motivo) partes.push(`Motivo: ${escapeUx(motivo)}`);
+            metaLinha = partes.join(' · ');
+        }
+
         return `
-            <div class="central-health-doc mb-3" style="border-left:3px solid ${cor}; padding-left:.75rem">
+            <div class="central-health-doc mb-3" style="border-left:3px solid ${escapeUx(cor)}; padding-left:.75rem">
                 <label class="central-entradas-label">Saúde do documento</label>
                 <div class="d-flex align-items-center gap-2 mb-1">
                     <span>${escapeUx(saude.indicador || '🟢')}</span>
-                    <strong>${escapeUx(saude.nivelLabel || saude.nivel)}</strong>
-                    ${saude.regra ? `<span class="badge bg-light text-dark">${escapeUx(saude.regra)}</span>` : ''}
+                    <strong>${escapeUx(nivel)}</strong>
+                    ${regra ? `<span class="badge bg-light text-dark">${escapeUx(regra)}</span>` : ''}
                 </div>
-                <div class="small">${escapeUx(saude.diagnostico || '—')}</div>
+                <div class="small">${escapeUx(diagnostico)}</div>
                 ${saude.recomendacao ? `<div class="small text-muted mt-1"><i class="fas fa-lightbulb me-1"></i>${escapeUx(saude.recomendacao)}</div>` : ''}
-                <div class="small text-muted mt-1">
-                    ${saude.tempoParadoLabel ? `Tempo parado: ${escapeUx(saude.tempoParadoLabel)} · ` : ''}
-                    ${saude.detectadoEm ? `Detecção: ${escapeUx(formatarDataHoraSeparadoCentral(saude.detectadoEm).hora)}` : ''}
-                    ${saude.ultimaAtualizacaoDoc ? ` · Atualização: ${escapeUx(formatarDataHoraSeparadoCentral(saude.ultimaAtualizacaoDoc).hora)}` : ''}
-                </div>
+                ${metaLinha ? `<div class="small text-muted mt-1">${metaLinha}</div>` : ''}
             </div>`;
     }
 
@@ -1214,10 +1476,17 @@
         salvarSnapshotKpisCentral,
         resolverEstadoServicoCentral,
         formatarDataHoraSeparadoCentral,
+        formatarDataEmissaoCurtaCentral,
+        resolverSituacaoSaudeCurtaCentral,
+        montarLinhaSaudeCompactaCentral,
         inferirOrigemTimelineCentral,
         extrairDadosExecutivoCentral,
         avatarFornecedorCentral,
         badgeStatusUx1,
+        setFeatureFlagsCentral,
+        recuperacaoPortalNacionalAtiva,
+        resolverProximaAcaoOperacional,
+        labelStatusOperacionalCentral,
         renderPipelineTimelineUx1,
         renderSkeletonListaDocumentosCentral,
         // RC7.5
@@ -1226,6 +1495,7 @@
         mensagemAmigavelCentral,
         resolverStatusRealCentral,
         explicarStatusCentral,
+        documentoEncerradoCentral,
         resolverDataDocumentoCentral,
         resolverChipEtapaCentral,
         montarEtapasOperacionaisCentral,

@@ -68,6 +68,10 @@ ipcMain.handle('selecionar-pasta-backup', async (event) => {
   return null;
 });
 
+// RC3.5.1 — Portal Nacional da NF-e (handlers IPC centralizados)
+const { registrarPortalNfeHandlers } = require('./electron-registrar-portal-nfe');
+registrarPortalNfeHandlers(ipcMain, () => mainWindow);
+
 ipcMain.removeHandler('rede-obter-modo-estacao');
 ipcMain.handle('rede-obter-modo-estacao', async () => {
   const sessao = obterSessaoClienteRemoto();

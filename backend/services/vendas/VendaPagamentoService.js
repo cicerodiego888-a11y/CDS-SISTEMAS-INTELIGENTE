@@ -12,11 +12,31 @@ const { normalizarTipoVendaItem } = require('../vendaUnidadeHelpers');
 const { separarItensDistribuidos } = require('../fiscalNaoFiscalService');
 const OrquestradorPagamento = require('../OrquestradorPagamento');
 const { parseVendaFiscalFlag, distribuirItensVendaComValorFiscalEfetivo } = require('../distribuidorEstoqueVenda');
+const mpfc = require('../mpfc');
 const {
   obterCreditoReservaPedidoCb,
   creditarDisponibilidadeComReservaPedido,
   consumirReservasPedidoNaVendaCb
 } = require('../estoque/pedidoReservaPonteNucleo');
+
+/**
+ * RC8.2 — carrega MPFC e entrega política aos consumidores.
+ * midpAtivo / preservarDinheiro vêm exclusivamente da política (não de leitura direta no F×NF).
+ */
+function carregarPoliticaFiscalComercialPassiva(opcoes = {}) {
+  const politica = mpfc.obterPolitica(opcoes);
+  const comercial = mpfc.receberPoliticaMotorComercial(politica);
+  const fiscalNaoFiscal = mpfc.receberPoliticaMotorFiscalNaoFiscal(politica);
+  const snapshot = mpfc.prepararSnapshot(politica);
+  return { politica, comercial, fiscalNaoFiscal, snapshot };
+}
+
+/**
+ * RC8.2 — validação comercial de margem (domínio comercial exclusivo).
+ */
+function validarMargemPoliticaComercial(itens, produtoMap, politica) {
+  return mpfc.validarMargemMinimaComercial(itens, produtoMap, politica);
+}
 
 /**
  * RC3.15.11 — prioridade fiscal do estoque ≠ emissão de NFC-e.
@@ -516,7 +536,8 @@ db.all(`
     });
   }
 
-  const midpAtivo = Boolean(configService.isMidpAtivado && configService.isMidpAtivado());
+  const { politica: politicaMpfc } = carregarPoliticaFiscalComercialPassiva();
+  const midpAtivo = Boolean(politicaMpfc.preservarDinheiro);
   const pagamentosPre = Array.isArray(req.body?.pagamentos) ? req.body.pagamentos : [];
   const resultadoMotor = distribuirItensVendaComValorFiscalEfetivo(
     entradasMotor,
@@ -525,7 +546,8 @@ db.all(`
       pagamentos: pagamentosPre,
       midpAtivo,
       desconto: Number(desconto || 0),
-      acrescimo: Number(acrescimo || 0)
+      acrescimo: Number(acrescimo || 0),
+      politicaFiscalComercial: politicaMpfc
     }
   );
 
@@ -686,6 +708,7 @@ db.all(`
   SELECT
     id,
     nome,
+    preco_compra,
     saldo_fiscal,
     saldo_nao_fiscal,
     estoque_atual,
@@ -754,7 +777,20 @@ db.all(`
     });
   }
 
-  const midpAtivo = Boolean(configService.isMidpAtivado && configService.isMidpAtivado());
+  const { politica: politicaMpfc, snapshot: snapshotMpfc } = carregarPoliticaFiscalComercialPassiva();
+  const midpAtivo = Boolean(politicaMpfc.preservarDinheiro);
+  const snapshotJson = mpfc.snapshotParaJson(politicaMpfc);
+  mpfc.registrarSnapshotGravado(politicaMpfc, { fonte: 'criar_venda' });
+
+  const validacaoMargem = validarMargemPoliticaComercial(itens, produtoMap, politicaMpfc);
+  if (!validacaoMargem.sucesso) {
+    return res.status(400).json({
+      error: validacaoMargem.error,
+      codigo: 'MARGEM_MINIMA_COMERCIAL',
+      itens: validacaoMargem.itensViolados
+    });
+  }
+
   const pagamentosParaMotor = Array.isArray(pagamentosVenda) && pagamentosVenda.length
     ? pagamentosVenda
     : (forma_pagamento
@@ -768,7 +804,8 @@ db.all(`
       pagamentos: pagamentosParaMotor,
       midpAtivo,
       desconto: Number(desconto || 0),
-      acrescimo: Number(acrescimo || 0)
+      acrescimo: Number(acrescimo || 0),
+      politicaFiscalComercial: politicaMpfc
     }
   );
 
@@ -876,7 +913,8 @@ db.all(`
       tefHabilitado,
       modoConfirmacaoFiscal,
       valorFiscalMaximo: resultadoMotor.valorFiscalMaximo,
-      preservacaoAplicada: resultadoMotor.preservacaoAplicada
+      preservacaoAplicada: resultadoMotor.preservacaoAplicada,
+      midpAtivo
     });
 
     if (!resultadoPagamento.sucesso) {
@@ -898,9 +936,9 @@ db.all(`
     db.serialize(() => {
       db.run('BEGIN IMMEDIATE');
       db.run(`
-        INSERT INTO vendas (codigo, data_venda, cliente_id, total, desconto, forma_pagamento, status, caixa_sessao_id, caixa_id, terminal_id, operador_id, valor_fiscal, valor_nao_fiscal, status_pagamento, tef_transacao_id)
-          VALUES (?, ?, ?, ?, ?, ?, 'concluida', ?, ?, ?, ?, ?, ?, ?, ?)
-        `, [codigo, data_venda, cliente_id, totalNum, desconto || 0, formaPagamentoFinal, req.caixaSessaoId || null, req.caixaId, req.terminalId || null, req.operadorId, totalFiscal, totalNaoFiscal, statusPagamento, resultadoFiscal?.transacoes?.[0] || null], function(err) {
+        INSERT INTO vendas (codigo, data_venda, cliente_id, total, desconto, forma_pagamento, status, caixa_sessao_id, caixa_id, terminal_id, operador_id, valor_fiscal, valor_nao_fiscal, status_pagamento, tef_transacao_id, mpfc_politica_snapshot)
+          VALUES (?, ?, ?, ?, ?, ?, 'concluida', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [codigo, data_venda, cliente_id, totalNum, desconto || 0, formaPagamentoFinal, req.caixaSessaoId || null, req.caixaId, req.terminalId || null, req.operadorId, totalFiscal, totalNaoFiscal, statusPagamento, resultadoFiscal?.transacoes?.[0] || null, snapshotJson], function(err) {
         if (err) {
           db.run('ROLLBACK');
           res.status(500).json({ error: err.message });
@@ -1173,7 +1211,8 @@ const executarVenda = async () => {
     tefHabilitado,
     modoConfirmacaoFiscal,
     valorFiscalMaximo: resultadoMotor.valorFiscalMaximo,
-    preservacaoAplicada: resultadoMotor.preservacaoAplicada
+    preservacaoAplicada: resultadoMotor.preservacaoAplicada,
+    midpAtivo
   });
 
   if (!resultadoPagamento.sucesso) {
@@ -1212,9 +1251,10 @@ const executarVenda = async () => {
         valor_fiscal,
         valor_nao_fiscal,
         status_pagamento,
-        tef_transacao_id
+        tef_transacao_id,
+        mpfc_politica_snapshot
       )
-      VALUES (?, ?, ?, ?, ?, ?, 'concluida', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, 'concluida', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       codigo,
       data_venda,
@@ -1231,7 +1271,8 @@ const executarVenda = async () => {
       totalFiscal,
       totalNaoFiscal,
       statusPagamento,
-      resultadoFiscal?.transacoes?.[0] || null
+      resultadoFiscal?.transacoes?.[0] || null,
+      snapshotJson
     ], function(err) {
       if (err) {
         db.run('ROLLBACK');
@@ -1816,6 +1857,7 @@ module.exports = {
   resolverStatusPagamentoVenda,
   aplicarRegraStatusPagamentoVenda,
   normalizarPagamentosNaoFiscal,
+  carregarPoliticaFiscalComercialPassiva,
   validarPagamentosNaoFiscal,
   obterTerminalId,
   preCalcularDistribuicao,

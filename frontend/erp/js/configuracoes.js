@@ -1230,7 +1230,29 @@ function carregarConfigFiscalAvancadas() {
 
     if (typeof carregarFiscalConfig === 'function') {
         carregarFiscalConfig('#fiscal-config-form-area-avancadas');
+        return;
     }
+
+    const carregarFiscalLazy = async () => {
+        try {
+            if (window.CdsErpLazyLoader?.loadFeatureScript) {
+                await window.CdsErpLazyLoader.loadFeatureScript('/erp/js/fiscal.js');
+            }
+            if (typeof carregarFiscalConfig === 'function') {
+                carregarFiscalConfig('#fiscal-config-form-area-avancadas');
+                return;
+            }
+        } catch (err) {
+            console.error('[Config] Falha ao carregar módulo fiscal:', err);
+        }
+        $form.html(`
+            <div class="alert alert-warning mb-0">
+                Não foi possível carregar o módulo fiscal. Recarregue a página ou acesse novamente Configurações.
+            </div>
+        `);
+    };
+
+    void carregarFiscalLazy();
 }
 
 function configurarFormConfigAvancadas() {

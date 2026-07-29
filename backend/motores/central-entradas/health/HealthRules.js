@@ -7,6 +7,7 @@
 
 const { HealthNiveis } = require('./HealthNiveis');
 const { DocumentoFiscalStatus } = require('../core/DocumentoFiscalStatus');
+const { recuperacaoPortalNacionalHabilitada } = require('../config/centralFeatureFlags');
 
 const MS_MIN = 60 * 1000;
 const MS_HORA = 60 * MS_MIN;
@@ -89,7 +90,9 @@ function avaliarDocumento(doc, wait = {}, ctx = {}) {
         ? 'Documento encerrado: XML indisponível na SEFAZ (estado terminal).'
         : 'Documento em erro operacional. Verifique o histórico e a configuração.',
       recomendacao: status === DocumentoFiscalStatus.XML_INDISPONIVEL
-        ? 'Nenhuma ação automática. Avalie upload manual do XML se disponível.'
+        ? (recuperacaoPortalNacionalHabilitada()
+          ? 'Recuperar pelo Portal Nacional (CDS) ou Importação de XML Legado. Nenhuma ação MIRX automática.'
+          : 'Documento encerrado: XML indisponível na SEFAZ. Nenhuma ação MIRX automática.')
         : 'Verificar configuração e histórico do documento.',
       tempoParadoMs: tempoDesde(doc.updatedAt || doc.createdAt, agora),
       autoRecuperavel: false

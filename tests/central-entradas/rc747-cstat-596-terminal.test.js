@@ -168,14 +168,22 @@ async function run() {
     ),
     true
   );
+  // RC3.4.8 — isTerminal permanece; única saída oficial é → AGUARDANDO_XML_COMPLETO (lote).
   assert.strictEqual(
     validarTransicao(
       DocumentoFiscalStatus.XML_INDISPONIVEL,
       DocumentoFiscalStatus.AGUARDANDO_XML_COMPLETO
     ).valido,
+    true
+  );
+  assert.strictEqual(
+    validarTransicao(
+      DocumentoFiscalStatus.XML_INDISPONIVEL,
+      DocumentoFiscalStatus.SINCRONIZADA
+    ).valido,
     false
   );
-  console.log('✓ máquina: XML_INDISPONIVEL terminal + transição a partir de AGUARDANDO');
+  console.log('✓ máquina: XML_INDISPONIVEL terminal + reabertura RC3.4.8 → AGUARDANDO');
 
   // Caso 1 — cStat 135 inalterado (aceita → aguardando, sem DistDFe imediata)
   {

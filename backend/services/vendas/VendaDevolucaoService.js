@@ -6,6 +6,7 @@ const { resolverQuantidadesVendaItem, calcularDevolucaoVendaFiscalPrimeiro } = r
 const { gravarAuditoria } = require('../auditoria');
 const { validarMotivoTexto } = require('../validacao/validarMotivoTexto');
 const { recalcularFinanceiroDevolucaoVenda } = require('./VendaFinanceiroService');
+const mpfc = require('../mpfc');
 
 function devolverSaldosDistribuidos(produtoId, quantidadeFiscal, quantidadeNaoFiscal, callback) {
   const qtdFiscal = Number(quantidadeFiscal || 0);
@@ -362,7 +363,16 @@ garantirTabelaDevolucoesVenda((tableErr) => {
                 financeiro: financeiroResumo,
                 sessao_id: req.caixaSessaoId || null,
                 autorizado_admin: true,
-                ip: req.ip || null
+                ip: req.ip || null,
+                // RC8.2.2 — estorno/devolução usa snapshot da venda (nunca config atual)
+                ...(() => {
+                  const r = mpfc.resolverPoliticaOperacionalDaVenda(venda, 'estorno');
+                  return {
+                    mpfc_snapshot_presente: r.snapshotPresente,
+                    mpfc_fonte: r.fonte,
+                    mpfc_politica: r.payload
+                  };
+                })()
               },
               ip_requisicao: req.ip || null
             }).catch((auditErr) => console.error('Erro ao gravar auditoria de devolução:', auditErr));

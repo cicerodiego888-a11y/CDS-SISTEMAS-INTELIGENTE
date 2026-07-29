@@ -1,9 +1,490 @@
 let produtosCompraList = [];
 let fornecedoresList = [];
 let itensCompraAtual = [];
+/**
+ * RC8.4.1 — Arquitetura Draft:
+ * É PROIBIDO mutar objetos dentro de itensCompraAtual.
+ * Toda edição ocorre em itemDraftCompra; só no commit o array é substituído.
+ */
+let itemDraftCompra = null;
+/** índice visual (cache); fonte da verdade = linhaIdEditandoCompra */
+let indiceEditandoCompra = null;
+let linhaIdEditandoCompra = null;
 let compraImportadaXml = null;
+let cnpjEmitenteXmlOriginal = null;
 let centralDocumentoIdAtual = null;
 let modoEntradaF7Compra = false;
+let tipoEntradaCompraAtual = 'REVENDA';
+let pendenciaPoliticaEntradaPayload = null;
+let classificacaoEntradaAtual = null;
+/** RC8.5.0 / RC8.5.2 — grade de parcelas da compra (editável) */
+let parcelasCompraGrade = [];
+let parcelasCompraEditadasManual = false;
+
+/**
+ * RC8.4.1 — deep clone obrigatório (structuredClone).
+ * Nunca shallow { ...obj } quando há nested (miip_*, embalagem, impostos…).
+ */
+function clonarDadosItemCompra(item) {
+    if (item == null) return item;
+    try {
+        if (typeof structuredClone === 'function') {
+            return structuredClone(item);
+        }
+    } catch {
+        /* fallback JSON */
+    }
+    return JSON.parse(JSON.stringify(item));
+}
+
+function clonarNestedMiipItemCompra(valor) {
+    if (valor == null || typeof valor !== 'object') return valor || null;
+    return clonarDadosItemCompra(valor);
+}
+
+function gerarLinhaIdCompra() {
+    try {
+        if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+            return crypto.randomUUID();
+        }
+    } catch {
+        /* ignore */
+    }
+    return `linha_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+}
+
+function obterLinhaIdItemCompra(item) {
+    return item?.linha_id || item?.linhaId || null;
+}
+
+function encontrarIndiceItemCompraPorLinhaId(linhaId) {
+    if (!linhaId) return -1;
+    return itensCompraAtual.findIndex((it) => obterLinhaIdItemCompra(it) === linhaId);
+}
+
+/**
+ * Substitui item no array por linhaId (ou índice fallback).
+ * Sempre grava clone normalizado — nunca a mesma referência do draft.
+ */
+function commitItemCompraNoArray(itemNormalizado, { linhaId = null, indice = null } = {}) {
+    const pronto = normalizeItemCompra(clonarDadosItemCompra(itemNormalizado));
+    const idAlvo = linhaId || obterLinhaIdItemCompra(pronto);
+    let idx = idAlvo ? encontrarIndiceItemCompraPorLinhaId(idAlvo) : -1;
+    if (idx < 0 && indice != null && indice >= 0 && indice < itensCompraAtual.length) {
+        idx = indice;
+    }
+    if (idx >= 0) {
+        itensCompraAtual[idx] = pronto;
+        return idx;
+    }
+    itensCompraAtual.push(pronto);
+    return itensCompraAtual.length - 1;
+}
+
+/**
+ * Atualização imutável de uma linha existente (MIIP / checkbox / etc.).
+ * mutator recebe um DRAFT e deve mutar só ele.
+ */
+function atualizarItemCompraImutavel(linhaIdOuIndice, mutator) {
+    let idx = typeof linhaIdOuIndice === 'number'
+        ? linhaIdOuIndice
+        : encontrarIndiceItemCompraPorLinhaId(linhaIdOuIndice);
+    if (idx < 0 || !itensCompraAtual[idx]) return null;
+    const draft = clonarDadosItemCompra(itensCompraAtual[idx]);
+    mutator(draft);
+    itensCompraAtual[idx] = normalizeItemCompra(draft);
+    return itensCompraAtual[idx];
+}
+
+function limparDraftCompra() {
+    itemDraftCompra = null;
+    indiceEditandoCompra = null;
+    linhaIdEditandoCompra = null;
+}
+
+function iniciarDraftCompraNovo() {
+    itemDraftCompra = normalizeItemCompra({
+        linha_id: gerarLinhaIdCompra(),
+        quantidade: 1,
+        margem_lucro: 30,
+        atualizar_preco_venda: 1
+    });
+    indiceEditandoCompra = null;
+    linhaIdEditandoCompra = null;
+    return itemDraftCompra;
+}
+
+function iniciarDraftCompraEdicao(indexOuLinhaId) {
+    let idx = typeof indexOuLinhaId === 'number'
+        ? indexOuLinhaId
+        : encontrarIndiceItemCompraPorLinhaId(indexOuLinhaId);
+    const original = itensCompraAtual[idx];
+    if (!original) return null;
+    itemDraftCompra = normalizeItemCompra(clonarDadosItemCompra(original));
+    if (!obterLinhaIdItemCompra(itemDraftCompra)) {
+        itemDraftCompra.linha_id = gerarLinhaIdCompra();
+    }
+    indiceEditandoCompra = idx;
+    linhaIdEditandoCompra = obterLinhaIdItemCompra(itemDraftCompra);
+    return itemDraftCompra;
+}
+
+/** Sincroniza campos do formulário compartilhado → itemDraft (formação de preço). */
+function sincronizarDraftCompraDoFormulario(extras = {}) {
+    if (!itemDraftCompra) {
+        iniciarDraftCompraNovo();
+    }
+    const draft = itemDraftCompra;
+    draft.produto_id = $('#produto_id_item').val() || draft.produto_id || '';
+    draft.produto_nome = ($('#codigo_barras_item').val() || '').trim() || draft.produto_nome || '';
+    draft.quantidade = Number($('#quantidade_item').val() || draft.quantidade || 0);
+    draft.quantidade_fiscal = Number($('#quantidade_fiscal_item').val() || draft.quantidade_fiscal || 0);
+    draft.quantidade_nao_fiscal = Number($('#quantidade_nao_fiscal_item').val() || draft.quantidade_nao_fiscal || 0);
+    draft.preco_unitario = Number($('#preco_item').val() || draft.preco_unitario || 0);
+    draft.margem_lucro = Number($('#margem_padrao_item').val() || draft.margem_lucro || 0);
+    draft.preco_venda_sugerido = Number($('#preco_venda_item').val() || draft.preco_venda_sugerido || 0);
+    draft.data_validade = $('#data_validade_item').val() || null;
+    draft.compra_em = $('#compra_em_item').val() || draft.compra_em || '';
+    draft.quantidade_embalagens = Number($('#quantidade_embalagens_item').val() || draft.quantidade_embalagens || 0);
+    draft.quantidade_por_embalagem = Number($('#quantidade_por_embalagem_item').val() || draft.quantidade_por_embalagem || 0);
+    draft.valor_total_embalagem = Number($('#valor_total_fracionado_item').val() || draft.valor_total_embalagem || 0);
+    Object.assign(draft, extras);
+    return draft;
+}
+
+/** Formação de preço exclusivamente sobre o draft. */
+function recalcularFormacaoPrecoDraftCompra(origem = 'custo') {
+    if (!itemDraftCompra) return;
+    const draft = itemDraftCompra;
+    draft.preco_unitario = Number(draft.preco_unitario || 0);
+    draft.margem_lucro = Number(draft.margem_lucro || 0);
+    draft.preco_venda_sugerido = Number(draft.preco_venda_sugerido || 0);
+
+    if (origem === 'margem' || origem === 'custo' || origem === 'embalagem') {
+        draft.preco_venda_sugerido = Number(
+            (draft.preco_unitario * (1 + draft.margem_lucro / 100)).toFixed(2)
+        );
+    } else if (origem === 'venda') {
+        draft.margem_lucro = draft.preco_unitario > 0
+            ? Number((((draft.preco_venda_sugerido - draft.preco_unitario) / draft.preco_unitario) * 100).toFixed(2))
+            : 0;
+    }
+
+    if (Number(draft.quantidade_por_embalagem || 0) > 0 && Number(draft.preco_venda_sugerido || 0) > 0) {
+        draft.valor_embalagem_venda = Number(
+            (draft.preco_venda_sugerido * Number(draft.quantidade_por_embalagem)).toFixed(2)
+        );
+    }
+}
+
+const TIPOS_ENTRADA_COMPRA = Object.freeze({
+    REVENDA: 'REVENDA',
+    INDUSTRIALIZACAO: 'INDUSTRIALIZACAO',
+    USO_CONSUMO: 'USO_CONSUMO'
+});
+
+function obterTipoEntradaSelecionado() {
+    const sel = $('input[name="tipo_entrada_compra"]:checked').val();
+    return sel || tipoEntradaCompraAtual || TIPOS_ENTRADA_COMPRA.REVENDA;
+}
+
+function isUsoConsumoCompraAtual() {
+    return obterTipoEntradaSelecionado() === TIPOS_ENTRADA_COMPRA.USO_CONSUMO;
+}
+
+function rotuloTipoEntradaCompra(tipo) {
+    const map = {
+        REVENDA: 'Compra para Revenda',
+        INDUSTRIALIZACAO: 'Compra para Industrialização',
+        USO_CONSUMO: 'Compra para Uso e Consumo'
+    };
+    return map[tipo] || map.REVENDA;
+}
+
+function definirTipoEntradaCompra(tipo, { silencioso } = {}) {
+    tipoEntradaCompraAtual = tipo || TIPOS_ENTRADA_COMPRA.REVENDA;
+    $(`input[name="tipo_entrada_compra"][value="${tipoEntradaCompraAtual}"]`).prop('checked', true);
+    if (!silencioso) aplicarPoliticaEntradaCompra();
+}
+
+function aplicarPoliticaEntradaCompra() {
+    tipoEntradaCompraAtual = obterTipoEntradaSelecionado();
+    const usoConsumo = isUsoConsumoCompraAtual();
+    const avulsa = $('#nota_fiscal_avulsa').is(':checked');
+
+    if (usoConsumo) {
+        $('#nota_fiscal_avulsa').prop('checked', false).prop('disabled', true);
+        $('#itensCompraSection').hide();
+        $('#adicionarItemRow').hide();
+        $('#itensCompraTable').hide();
+        $('#totaisNotaSection').show();
+        $('#pagamentoSection').show();
+        $('#valor_total_nota').prop('readonly', false);
+        $('#valor_produtos').prop('readonly', false);
+        $('#valor_total_nota_hint').text('Valor fiscal da NF-e (sem movimentação de estoque).');
+        if (!$('#valor_total_nota').val() && compraImportadaXml?.valor_total_nota) {
+            $('#valor_total_nota').val(formatNumberInput(compraImportadaXml.valor_total_nota));
+            $('#valor_produtos').val(formatNumberInput(compraImportadaXml.valor_produtos || compraImportadaXml.valor_total_nota));
+        }
+    } else {
+        $('#nota_fiscal_avulsa').prop('disabled', false);
+        if (!avulsa) {
+            $('#itensCompraSection').show();
+            $('#adicionarItemRow').show();
+            $('#itensCompraTable').show();
+            $('#valor_total_nota').prop('readonly', true);
+            $('#valor_produtos').prop('readonly', true);
+            $('#valor_total_nota_hint').text('Calculado automaticamente a partir dos itens.');
+            recalcularTotaisCompraNota();
+        } else {
+            toggleNotaFiscalAvulsa();
+        }
+    }
+}
+
+async function classificarEntradaCompraApi(dadosCompra) {
+    try {
+        const resp = await fetch(`${API_URL}/compras/classificar-entrada`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${localStorage.getItem('token') || ''}`
+            },
+            body: JSON.stringify({
+                dadosCompra: dadosCompra || {},
+                fornecedor_cnpj: dadosCompra?.fornecedor_cnpj,
+                xml: dadosCompra?.xml || null
+            })
+        });
+        const json = await resp.json();
+        if (!resp.ok) throw new Error(json.error || 'Falha ao classificar entrada');
+        return json;
+    } catch (err) {
+        console.warn('[RC9.1] Classificação:', err.message);
+        return {
+            tipoEntrada: TIPOS_ENTRADA_COMPRA.REVENDA,
+            confianca: 55,
+            motivo: 'Classificação indisponível — sugestão padrão Revenda.',
+            label: 'Compra para Revenda'
+        };
+    }
+}
+
+function mostrarDialogoPoliticaEntrada(callback, classificacao) {
+    const modalId = 'politicaEntradaModal';
+    $(`#${modalId}`).remove();
+    const sugestao = classificacao?.tipoEntrada || TIPOS_ENTRADA_COMPRA.USO_CONSUMO;
+    const confianca = Number(classificacao?.confianca || 0);
+    const motivo = classificacao?.motivo || '';
+    const check = (tipo) => (tipo === sugestao ? ' checked' : '');
+    const html = `
+        <div class="modal fade" id="${modalId}" tabindex="-1" data-bs-backdrop="static">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Como deseja registrar esta NF-e?</h5>
+                    </div>
+                    <div class="modal-body">
+                        ${classificacao ? `
+                        <div class="alert alert-info py-2">
+                            <div><strong>Tipo sugerido:</strong> ${escapeHtml(rotuloTipoEntradaCompra(sugestao))}</div>
+                            <div><strong>Confiança:</strong> ${confianca}%</div>
+                            <div class="small mt-1">${escapeHtml(motivo)}</div>
+                        </div>` : ''}
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="radio" name="politica_entrada_import" id="politica_revenda" value="REVENDA"${check(TIPOS_ENTRADA_COMPRA.REVENDA)}>
+                            <label class="form-check-label" for="politica_revenda">Compra para Revenda</label>
+                        </div>
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="radio" name="politica_entrada_import" id="politica_industrializacao" value="INDUSTRIALIZACAO"${check(TIPOS_ENTRADA_COMPRA.INDUSTRIALIZACAO)}>
+                            <label class="form-check-label" for="politica_industrializacao">Compra para Industrialização</label>
+                        </div>
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="radio" name="politica_entrada_import" id="politica_uso_consumo" value="USO_CONSUMO"${check(TIPOS_ENTRADA_COMPRA.USO_CONSUMO)}>
+                            <label class="form-check-label" for="politica_uso_consumo"><strong>Compra para Uso e Consumo</strong></label>
+                            <small class="text-muted d-block">Registra NF-e, fiscal e financeiro — sem produtos ou estoque.</small>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-primary" id="politicaEntradaConfirmar">Continuar</button>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+    $('body').append(html);
+    const el = document.getElementById(modalId);
+    const modal = new bootstrap.Modal(el);
+    $('#politicaEntradaConfirmar').on('click', () => {
+        const tipo = $('input[name="politica_entrada_import"]:checked').val()
+            || sugestao
+            || TIPOS_ENTRADA_COMPRA.REVENDA;
+        modal.hide();
+        el.addEventListener('hidden.bs.modal', () => {
+            $(`#${modalId}`).remove();
+            if (typeof callback === 'function') callback(tipo, classificacao || null);
+        }, { once: true });
+    });
+    modal.show();
+}
+
+function abrirRelatorioUsoConsumo() {
+    $.ajax({ url: `${API_URL}/compras/relatorio/uso-consumo`, method: 'GET' })
+        .done(function(resp) {
+            const itens = resp.itens || [];
+            const linhas = itens.map((r) => `
+                <tr>
+                    <td>${formatDate(r.data)}</td>
+                    <td>${escapeHtml(r.fornecedor || '—')}</td>
+                    <td>${escapeHtml(r.numero_nf || '—')}${r.serie_nf ? '/' + escapeHtml(r.serie_nf) : ''}</td>
+                    <td>${formatCurrency(r.valor)}</td>
+                    <td>${escapeHtml(r.situacao || '—')}</td>
+                    <td>${r.chave_acesso ? '<span class="badge bg-success">XML</span>' : '—'}</td>
+                    <td>${Number(r.financeiro?.total || 0) > 0 ? `${r.financeiro.total} lanç.` : '—'}</td>
+                    <td>${escapeHtml(r.usuario || '—')}</td>
+                </tr>`).join('');
+            const html = `
+                <div class="modal fade" id="relatorioUsoConsumoModal" tabindex="-1">
+                    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title">Compras de Uso e Consumo</h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                            </div>
+                            <div class="modal-body">
+                                <p class="text-muted">Entradas simplificadas — sem movimentação de estoque.</p>
+                                <div class="table-responsive">
+                                    <table class="table table-sm table-striped">
+                                        <thead><tr>
+                                            <th>Data</th><th>Fornecedor</th><th>NF</th><th>Valor</th>
+                                            <th>Situação</th><th>XML</th><th>Financeiro</th><th>Usuário</th>
+                                        </tr></thead>
+                                        <tbody>${linhas || '<tr><td colspan="8">Nenhum registro.</td></tr>'}</tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+            $('#relatorioUsoConsumoModal').remove();
+            $('body').append(html);
+            new bootstrap.Modal(document.getElementById('relatorioUsoConsumoModal')).show();
+        })
+        .fail(function(xhr) {
+            showNotification(xhr.responseJSON?.error || 'Erro ao carregar relatório.', 'danger');
+        });
+}
+
+function obterHelpersCnpjCompra() {
+    return (typeof ComprasFornecedorCnpjRc831 !== 'undefined' && ComprasFornecedorCnpjRc831)
+        ? ComprasFornecedorCnpjRc831
+        : null;
+}
+
+function garantirCompraImportadaXml() {
+    if (!compraImportadaXml) compraImportadaXml = {};
+}
+
+function obterCnpjCompraDigitos() {
+    const helpers = obterHelpersCnpjCompra();
+    const raw = $('#fornecedor_cnpj').val() || '';
+    return helpers ? helpers.digitsOnly(raw) : String(raw).replace(/\D/g, '');
+}
+
+function atualizarAlertaCnpjXmlDivergente() {
+    const container = $('#alertaCnpjXmlDivergente');
+    if (!container.length) return;
+
+    const helpers = obterHelpersCnpjCompra();
+    const diverge = helpers
+        && cnpjEmitenteXmlOriginal
+        && helpers.divergeCnpjXml(obterCnpjCompraDigitos(), cnpjEmitenteXmlOriginal);
+
+    if (diverge) {
+        container.show();
+    } else {
+        container.hide();
+    }
+}
+
+function aplicarDadosFornecedorEncontrado(fornecedor) {
+    if (!fornecedor) return;
+
+    const helpers = obterHelpersCnpjCompra();
+    garantirCompraImportadaXml();
+
+    $('#fornecedor').val(fornecedor.nome || fornecedor.razao_social || '');
+    if (fornecedor.cpf_cnpj) {
+        $('#fornecedor_cnpj').val(typeof formatarCpfCnpj === 'function'
+            ? formatarCpfCnpj(fornecedor.cpf_cnpj)
+            : fornecedor.cpf_cnpj);
+    }
+
+    if (helpers) {
+        Object.assign(compraImportadaXml, helpers.mapFornecedorParaCompraImportada(fornecedor));
+    } else {
+        compraImportadaXml.fornecedor = fornecedor.nome || fornecedor.razao_social || '';
+        compraImportadaXml.fornecedor_cnpj = String(fornecedor.cpf_cnpj || '').replace(/\D/g, '');
+    }
+}
+
+function buscarFornecedorPorCnpj(cnpjDigitos) {
+    if (!cnpjDigitos) return $.Deferred().resolve().promise();
+
+    return $.ajax({
+        url: `${API_URL}/fornecedores?busca=${encodeURIComponent(cnpjDigitos)}`,
+        method: 'GET'
+    }).then(function(lista) {
+        const candidatos = Array.isArray(lista) ? lista : [];
+        const exato = candidatos.find((f) => {
+            const doc = String(f.cpf_cnpj || '').replace(/\D/g, '');
+            return doc === cnpjDigitos;
+        });
+        if (exato) {
+            aplicarDadosFornecedorEncontrado(exato);
+        }
+    }).catch(function() {
+        /* fornecedor inexistente — fluxo de auto-cadastro no save */
+    });
+}
+
+function onFornecedorCnpjInput(input) {
+    if (input && typeof formatCpfCnpjInput === 'function') {
+        formatCpfCnpjInput(input);
+    }
+    atualizarAlertaCnpjXmlDivergente();
+}
+
+function onFornecedorCnpjBlur() {
+    const helpers = obterHelpersCnpjCompra();
+    const cnpjInformado = obterCnpjCompraDigitos();
+    const cnpjAnterior = compraImportadaXml?.fornecedor_cnpj
+        ? String(compraImportadaXml.fornecedor_cnpj).replace(/\D/g, '')
+        : '';
+
+    if (cnpjInformado && helpers && !helpers.validarCnpjCompra(cnpjInformado)) {
+        showNotification('CNPJ inválido. Informe um CNPJ com 14 dígitos válidos.', 'warning');
+        atualizarAlertaCnpjXmlDivergente();
+        return;
+    }
+
+    garantirCompraImportadaXml();
+    compraImportadaXml.fornecedor_cnpj = cnpjInformado;
+
+    atualizarAlertaCnpjXmlDivergente();
+
+    if (cnpjInformado.length === 14) {
+        buscarFornecedorPorCnpj(cnpjInformado).always(function() {
+            if (cnpjInformado !== cnpjAnterior && itensCompraAtual.length > 0) {
+                carregarSugestoesMiipXml();
+            }
+        });
+        return;
+    }
+
+    if (cnpjInformado !== cnpjAnterior && itensCompraAtual.length > 0) {
+        carregarSugestoesMiipXml();
+    }
+}
 
 function loadCompras() {
     $.when(
@@ -30,6 +511,9 @@ function renderCompras(compras) {
             <div class="card-header d-flex justify-content-between align-items-center">
                 <div><i class="fas fa-cart-plus"></i> Compras</div>
                 <div>
+                    <button class="btn btn-outline-secondary btn-sm me-1" onclick="abrirRelatorioUsoConsumo()" title="Relatório de entradas simplificadas">
+                        <i class="fas fa-clipboard-list"></i> Uso e Consumo
+                    </button>
                     <button class="btn btn-outline-primary btn-sm me-1" onclick="abrirCentralInteligenteEntradas()" title="Documentos fiscais entram pela Central Inteligente">
                         📥 Importar pela Central Inteligente
                     </button>
@@ -60,7 +544,7 @@ function renderCompras(compras) {
                                 <tr>
                                     <td>${c.id || '-'}</td>
                                     <td>${formatDate(c.data_compra)}</td>
-                                    <td>${c.fornecedor || '-'}</td>
+                                    <td>${c.fornecedor || '-'}${c.tipo_entrada === 'USO_CONSUMO' ? ' <span class="badge bg-dark">USO E CONSUMO</span>' : ''}</td>
                                     <td>${formatCurrency(c.total)}</td>
                                     <td>${rotuloCondicaoPagamento(c.condicao_pagamento || 'avista')}</td>
                                     <td>${rotuloFormaPagamento(c.forma_pagamento)}</td>
@@ -105,7 +589,12 @@ function formatBadgeStatusCompra(status) {
 }
 
 function rotuloCondicaoPagamento(value) {
-    const mapa = { avista: 'À vista', prazo: 'A prazo', parcelado: 'Parcelado', entrada_parcelado: 'Entrada + Parcelamento' };
+    const mapa = {
+        avista: 'À vista',
+        prazo: 'À prazo',
+        parcelado: 'À prazo',
+        entrada_parcelado: 'À prazo'
+    };
     return mapa[value] || value || '-';
 }
 
@@ -117,95 +606,246 @@ function rotuloFormaPagamento(value) {
         cartao_debito: 'Cartão débito',
         boleto: 'Boleto',
         transferencia: 'Transferência',
-        cheque: 'Cheque'
+        cheque: 'Cheque',
+        credito_loja: 'Crédito Loja',
+        vale_alimentacao: 'Vale Alimentação',
+        vale_refeicao: 'Vale Refeição',
+        vale_presente: 'Vale Presente',
+        vale_combustivel: 'Vale Combustível',
+        deposito: 'Depósito Bancário',
+        programa_fidelidade: 'Programa Fidelidade',
+        sem_pagamento: 'Sem Pagamento',
+        outro: 'Outros'
     };
     return mapa[value] || '-';
 }
 
 function formasPagamentoCompra(selected = '') {
     const opcoes = [
-        ['dinheiro', 'Dinheiro'], ['pix', 'PIX'], ['cartao_credito', 'Cartão crédito'], ['cartao_debito', 'Cartão débito'],
-        ['boleto', 'Boleto'], ['transferencia', 'Transferência'], ['cheque', 'Cheque']
+        ['dinheiro', 'Dinheiro'],
+        ['pix', 'PIX'],
+        ['cartao_credito', 'Cartão crédito'],
+        ['cartao_debito', 'Cartão débito'],
+        ['boleto', 'Boleto'],
+        ['transferencia', 'Transferência'],
+        ['cheque', 'Cheque'],
+        ['credito_loja', 'Crédito Loja'],
+        ['deposito', 'Depósito Bancário'],
+        ['vale_alimentacao', 'Vale Alimentação'],
+        ['vale_refeicao', 'Vale Refeição'],
+        ['vale_presente', 'Vale Presente'],
+        ['vale_combustivel', 'Vale Combustível'],
+        ['programa_fidelidade', 'Programa Fidelidade'],
+        ['sem_pagamento', 'Sem Pagamento'],
+        ['outro', 'Outros']
     ];
     return opcoes.map(([value, label]) => `<option value="${value}" ${selected === value ? 'selected' : ''}>${label}</option>`).join('');
 }
 
-function atualizarVisibilidadePagamentoCompra() {
-    const condicao = $('#condicao_pagamento').val();
-    if (condicao === 'avista') {
-        $('#grupo_vencimento_compra').hide();
-        $('#grupo_parcelas_compra').hide();
-        $('#grupo_entrada_compra').hide();
-        $('#data_vencimento').val($('#data_compra').val());
-        $('#parcelas').val(1);
-        $('#valor_entrada').val(0);
-    } else if (condicao === 'prazo') {
-        $('#grupo_vencimento_compra').show();
-        $('#grupo_parcelas_compra').show();
-        $('#grupo_entrada_compra').hide();
-        if (parseInt($('#parcelas').val(), 10) < 1) $('#parcelas').val(1);
-        $('#valor_entrada').val(0);
-    } else if (condicao === 'parcelado') {
-        $('#grupo_vencimento_compra').show();
-        $('#grupo_parcelas_compra').show();
-        $('#grupo_entrada_compra').hide();
-        if (parseInt($('#parcelas').val(), 10) < 1) $('#parcelas').val(1);
-        $('#valor_entrada').val(0);
-    } else if (condicao === 'entrada_parcelado') {
-        $('#grupo_vencimento_compra').show();
-        $('#grupo_parcelas_compra').show();
-        $('#grupo_entrada_compra').show();
-        if (parseInt($('#parcelas').val(), 10) < 1) $('#parcelas').val(1);
-    }
-    calcularParcelasCompra();
+function obterTotalNotaCompraParaParcelas() {
+    return Number($('#valor_total_nota').val())
+        || itensCompraAtual.reduce((sum, item) => sum + Number(item.subtotal || 0), 0)
+        || 0;
 }
 
-function calcularParcelasCompra() {
-    const total = Number($('#valor_total_nota').val()) || itensCompraAtual.reduce((sum, item) => sum + Number(item.subtotal || 0), 0);
-    const parcelas = parseInt($('#parcelas').val(), 10) || 1;
-    const dataVencimento = $('#data_vencimento').val();
-    const condicao = $('#condicao_pagamento').val();
-    const valorEntrada = Number($('#valor_entrada').val()) || 0;
+function moedaParcelaCompra(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 0;
+    return Math.round(n * 100) / 100;
+}
 
-    if (!dataVencimento || (parcelas <= 1 && condicao !== 'entrada_parcelado')) {
+function adicionarDiasDataCompra(dataIso, dias) {
+    const base = String(dataIso || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(base)) return base;
+    const [y, m, d] = base.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    dt.setUTCDate(dt.getUTCDate() + Number(dias || 0));
+    return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+}
+
+/** RC8.5.2 — grade sempre gerada (à vista = 1 parcela; à prazo = N). */
+function condicaoCompraUsaParcelasFlexiveis(condicao) {
+    return condicao === 'avista' || condicao === 'prazo'
+        || condicao === 'parcelado' || condicao === 'entrada_parcelado';
+}
+
+function gerarGradeParcelasCompraAutomatica() {
+    const total = moedaParcelaCompra(obterTotalNotaCompraParaParcelas());
+    const dataBase = $('#data_vencimento').val() || $('#data_compra').val();
+    const condicao = $('#condicao_pagamento').val();
+    const qtd = condicao === 'avista'
+        ? 1
+        : Math.max(1, parseInt($('#parcelas').val(), 10) || 1);
+    const dias = condicao === 'avista'
+        ? 0
+        : Math.max(0, parseInt($('#dias_entre_parcelas').val(), 10) || 0);
+    const primeiro = dataBase;
+
+    const base = Math.floor((total / qtd) * 100) / 100;
+    const resto = moedaParcelaCompra(total - base * qtd);
+    const parcelas = [];
+    for (let i = 0; i < qtd; i += 1) {
+        parcelas.push({
+            numero: i + 1,
+            vencimento: adicionarDiasDataCompra(primeiro, dias * i),
+            valor: moedaParcelaCompra(base + (i === qtd - 1 ? resto : 0)),
+            tipo: 'parcela'
+        });
+    }
+    return parcelas;
+}
+
+function validarSomaParcelasCompraGrade(grade, totalNota) {
+    const total = moedaParcelaCompra(totalNota);
+    const soma = moedaParcelaCompra((grade || []).reduce((s, p) => s + Number(p.valor || 0), 0));
+    const diferenca = moedaParcelaCompra(soma - total);
+    if (Math.abs(diferenca) < 0.005) {
+        return { ok: true, soma, diferenca: 0, mensagem: null };
+    }
+    if (diferenca < 0) {
+        return {
+            ok: false,
+            soma,
+            diferenca,
+            mensagem: `Faltam: ${typeof formatCurrency === 'function' ? formatCurrency(Math.abs(diferenca)) : `R$ ${Math.abs(diferenca).toFixed(2)}`}`
+        };
+    }
+    return {
+        ok: false,
+        soma,
+        diferenca,
+        mensagem: `Excesso: ${typeof formatCurrency === 'function' ? formatCurrency(diferenca) : `R$ ${diferenca.toFixed(2)}`}`
+    };
+}
+
+function renderizarGradeParcelasCompra() {
+    const condicao = $('#condicao_pagamento').val();
+    const $box = $('#parcelas_detalhes');
+    if (!$box.length) return;
+
+    if (!condicaoCompraUsaParcelasFlexiveis(condicao) || !parcelasCompraGrade.length) {
+        $box.html('');
+        return;
+    }
+
+    const total = obterTotalNotaCompraParaParcelas();
+    const validacao = validarSomaParcelasCompraGrade(parcelasCompraGrade, total);
+    const alerta = validacao.ok
+        ? `<span class="text-success"><i class="fas fa-check-circle"></i> Total das parcelas confere com a nota.</span>`
+        : `<span class="text-danger fw-semibold"><i class="fas fa-exclamation-triangle"></i> ${validacao.mensagem}</span>`;
+
+    const linhas = parcelasCompraGrade.map((p, idx) => `
+        <tr data-parcela-idx="${idx}">
+            <td class="text-center align-middle">${p.numero}${p.tipo === 'entrada' ? ' <small class="text-muted">(entrada)</small>' : ''}</td>
+            <td>
+                <input type="date" class="form-control form-control-sm parcela-vencimento-compra"
+                    value="${p.vencimento || ''}" data-idx="${idx}">
+            </td>
+            <td>
+                <input type="number" step="0.01" min="0" class="form-control form-control-sm parcela-valor-compra"
+                    value="${Number(p.valor || 0).toFixed(2)}" data-idx="${idx}">
+            </td>
+        </tr>
+    `).join('');
+
+    $box.html(`
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <h6 class="mb-0">Parcelas</h6>
+            <div class="small">${alerta}</div>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-sm table-bordered mb-1" id="tabela_parcelas_compra">
+                <thead class="table-light">
+                    <tr><th style="width:70px">Nº</th><th>Vencimento</th><th style="width:160px">Valor</th></tr>
+                </thead>
+                <tbody>${linhas}</tbody>
+                <tfoot>
+                    <tr>
+                        <td colspan="2" class="text-end fw-semibold">Soma</td>
+                        <td class="fw-semibold">${typeof formatCurrency === 'function' ? formatCurrency(validacao.soma) : validacao.soma.toFixed(2)}</td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+        <small class="text-muted">Altere vencimentos ou valores livremente. Enquanto não editar, a grade recalcula sozinha.</small>
+    `);
+
+    $box.find('.parcela-vencimento-compra').off('change.rc850').on('change.rc850', function () {
+        const idx = Number($(this).data('idx'));
+        if (!parcelasCompraGrade[idx]) return;
+        parcelasCompraGrade[idx].vencimento = $(this).val();
+        parcelasCompraEditadasManual = true;
+        renderizarGradeParcelasCompra();
+    });
+    $box.find('.parcela-valor-compra').off('change.rc850 input.rc850').on('change.rc850', function () {
+        const idx = Number($(this).data('idx'));
+        if (!parcelasCompraGrade[idx]) return;
+        parcelasCompraGrade[idx].valor = moedaParcelaCompra($(this).val());
+        parcelasCompraEditadasManual = true;
+        renderizarGradeParcelasCompra();
+    });
+}
+
+function regenerarGradeParcelasCompra(forcar = false) {
+    const condicao = $('#condicao_pagamento').val();
+    if (!condicaoCompraUsaParcelasFlexiveis(condicao)) {
+        parcelasCompraGrade = [];
+        parcelasCompraEditadasManual = false;
         $('#parcelas_detalhes').html('');
         return;
     }
 
-    let html = '<h6>Parcelas:</h6><ul class="list-group list-group-flush">';
-    const dataBase = new Date(dataVencimento);
+    const aplicar = () => {
+        parcelasCompraGrade = gerarGradeParcelasCompraAutomatica();
+        parcelasCompraEditadasManual = false;
+        renderizarGradeParcelasCompra();
+    };
 
-    if (condicao === 'entrada_parcelado' && valorEntrada > 0) {
-        // Entrada
-        html += `<li class="list-group-item d-flex justify-content-between">
-            <span>Entrada</span>
-            <span>${formatCurrency(valorEntrada)} - ${dataBase.toISOString().split('T')[0]}</span>
-        </li>`;
-        // Parcelas restantes
-        const valorRestante = total - valorEntrada;
-        const valorParcela = valorRestante / parcelas;
-        for (let i = 0; i < parcelas; i++) {
-            const dataParcela = new Date(dataBase);
-            dataParcela.setMonth(dataBase.getMonth() + i);
-            html += `<li class="list-group-item d-flex justify-content-between">
-                <span>Parcela ${i + 1}</span>
-                <span>${formatCurrency(valorParcela)} - ${dataParcela.toISOString().split('T')[0]}</span>
-            </li>`;
+    if (!forcar && parcelasCompraEditadasManual) {
+        const ok = window.confirm(
+            'As parcelas foram alteradas manualmente.\n\nDeseja recalcular os vencimentos?'
+        );
+        if (!ok) return;
+    }
+    aplicar();
+}
+
+function onParametroParcelamentoCompraAlterado() {
+    regenerarGradeParcelasCompra(false);
+}
+
+function atualizarVisibilidadePagamentoCompra() {
+    const condicao = $('#condicao_pagamento').val() || 'avista';
+    const avista = condicao === 'avista';
+
+    $('#grupo_vencimento_compra').show();
+    $('#grupo_parcelas_compra').show();
+    $('#grupo_dias_parcelas_compra').show();
+    $('#grupo_entrada_compra').hide();
+    $('#valor_entrada').val(0);
+    $('#label_parcelas_compra').text('Quantidade de Parcelas');
+
+    if (avista) {
+        $('#parcelas').val(1).prop('disabled', true);
+        $('#dias_entre_parcelas').val(0).prop('disabled', true);
+        if (!$('#data_vencimento').val()) {
+            $('#data_vencimento').val($('#data_compra').val() || '');
         }
     } else {
-        // Parcelas normais
-        const valorParcela = total / parcelas;
-        for (let i = 0; i < parcelas; i++) {
-            const dataParcela = new Date(dataBase);
-            dataParcela.setMonth(dataBase.getMonth() + i);
-            html += `<li class="list-group-item d-flex justify-content-between">
-                <span>Parcela ${i + 1}</span>
-                <span>${formatCurrency(valorParcela)} - ${dataParcela.toISOString().split('T')[0]}</span>
-            </li>`;
+        $('#parcelas').prop('disabled', false);
+        $('#dias_entre_parcelas').prop('disabled', false);
+        if (parseInt($('#parcelas').val(), 10) < 1) $('#parcelas').val(1);
+        if ($('#dias_entre_parcelas').val() === '' || parseInt($('#dias_entre_parcelas').val(), 10) < 0) {
+            $('#dias_entre_parcelas').val(30);
         }
     }
-    html += '</ul>';
-    $('#parcelas_detalhes').html(html);
+
+    regenerarGradeParcelasCompra(true);
+}
+
+/** @deprecated nome legado — RC8.5.0 usa regenerarGradeParcelasCompra */
+function calcularParcelasCompra() {
+    regenerarGradeParcelasCompra(!parcelasCompraEditadasManual);
 }
 
 function formatNumberInput(value, decimals = 2) {
@@ -516,7 +1156,8 @@ function calcularSubtotalFinanceiroItemCompra(item = {}) {
     return Number((quantidade * preco).toFixed(2));
 }
 
-function normalizeItemCompra(item = {}) {
+function normalizeItemCompra(itemBruto = {}) {
+    const item = clonarDadosItemCompra(itemBruto) || {};
     const qtds = item.quantidade_fiscal !== undefined || item.quantidade_nao_fiscal !== undefined
         ? {
             quantidade_fiscal: Number(item.quantidade_fiscal || 0),
@@ -537,11 +1178,14 @@ function normalizeItemCompra(item = {}) {
     const margem = Number(item.margem_lucro ?? item.lucro_percentual ?? 30);
     const ultimoPrecoCompra = Number(item.ultimo_preco_compra || custo);
     const precoVenda = Number(item.preco_venda_sugerido || item.preco_venda || (custo * (1 + margem / 100)) || 0);
+    const linhaId = item.linha_id || item.linhaId || gerarLinhaIdCompra();
     const normalizado = {
+        linha_id: linhaId,
         produto_id: item.produto_id ? Number(item.produto_id) : '',
         produto_nome: item.produto_nome || item.nome || item.descricao_produto || '',
         codigo_barras: item.codigo_barras || item.codigo || '',
         unidade: item.unidade || 'UN',
+        unidade_comercial: item.unidade_comercial || item.unidadeComercial || 'UN',
         ncm: item.ncm || '',
         quantidade,
         quantidade_fiscal: qtds.quantidade_fiscal,
@@ -560,18 +1204,18 @@ function normalizeItemCompra(item = {}) {
         outras_despesas_rateado: Number(item.outras_despesas_rateado || 0),
         custo_unitario_final: Number((item.custo_unitario_final || custo || 0).toFixed(casasCusto)),
         subtotal: calcularSubtotalFinanceiroItemCompra({
-            ...item,
             quantidade,
             preco_unitario: Number(custo.toFixed(casasCusto))
         }),
         data_validade: item.data_validade || null,
         compra_em: item.compra_em || '',
         codigo_fornecedor: item.codigo_fornecedor || item.codigoFornecedor || '',
-        miip_sugestao: item.miip_sugestao || null,
-        miip_resultado: item.miip_resultado || null,
+        miip_sugestao: clonarNestedMiipItemCompra(item.miip_sugestao),
+        miip_resultado: clonarNestedMiipItemCompra(item.miip_resultado),
         quantidade_embalagens: Number(item.quantidade_embalagens || 0),
         quantidade_por_embalagem: Number(item.quantidade_por_embalagem || 0),
-        valor_total_embalagem: Number(item.valor_total_embalagem || 0)
+        valor_total_embalagem: Number(item.valor_total_embalagem || 0),
+        valor_embalagem_venda: Number(item.valor_embalagem_venda || 0)
     };
 
     return sincronizarQuantidadesEstoqueItemCompra(
@@ -580,32 +1224,30 @@ function normalizeItemCompra(item = {}) {
 }
 
 function recalcularLinhaCompra(index, origem = 'custo') {
-    const item = itensCompraAtual[index];
-    if (!item) return;
-    item.quantidade = Number(item.quantidade || 0);
-
-    if (itemCompraEhFracionado(item)) {
-        item.preco_unitario = resolverCustoUnitarioItemCompra(item, item.quantidade);
-        item.custo_unitario_final = item.preco_unitario;
-        item.custo_por_kg = item.preco_unitario;
-    } else {
-        item.preco_unitario = Number(item.preco_unitario || 0);
-    }
-
-    item.margem_lucro = Number(item.margem_lucro || 0);
-    item.preco_venda_sugerido = Number(item.preco_venda_sugerido || 0);
-
-    if (origem === 'margem' || origem === 'custo') {
-        item.preco_venda_sugerido = Number((item.preco_unitario * (1 + (item.margem_lucro / 100))).toFixed(2));
-    } else if (origem === 'venda') {
-        item.margem_lucro = item.preco_unitario > 0
-            ? Number((((item.preco_venda_sugerido - item.preco_unitario) / item.preco_unitario) * 100).toFixed(2))
-            : 0;
-    }
-
-    item.subtotal = calcularSubtotalFinanceiroItemCompra(item);
-
-    sincronizarPrecosCadastroItemCompra(item);
+    // RC8.4.1 — recalcula via draft temporário; não muta o objeto da lista.
+    atualizarItemCompraImutavel(index, (draft) => {
+        draft.quantidade = Number(draft.quantidade || 0);
+        if (itemCompraEhFracionado(draft)) {
+            draft.preco_unitario = resolverCustoUnitarioItemCompra(draft, draft.quantidade);
+            draft.custo_unitario_final = draft.preco_unitario;
+            draft.custo_por_kg = draft.preco_unitario;
+        } else {
+            draft.preco_unitario = Number(draft.preco_unitario || 0);
+        }
+        draft.margem_lucro = Number(draft.margem_lucro || 0);
+        draft.preco_venda_sugerido = Number(draft.preco_venda_sugerido || 0);
+        if (origem === 'margem' || origem === 'custo') {
+            draft.preco_venda_sugerido = Number(
+                (draft.preco_unitario * (1 + (draft.margem_lucro / 100))).toFixed(2)
+            );
+        } else if (origem === 'venda') {
+            draft.margem_lucro = draft.preco_unitario > 0
+                ? Number((((draft.preco_venda_sugerido - draft.preco_unitario) / draft.preco_unitario) * 100).toFixed(2))
+                : 0;
+        }
+        draft.subtotal = calcularSubtotalFinanceiroItemCompra(draft);
+        sincronizarPrecosCadastroItemCompra(draft);
+    });
 }
 
 
@@ -613,36 +1255,67 @@ function recalcularTotaisCompraNota() {
     const valorProdutos = itensCompraAtual.reduce((sum, item) => sum + Number(item.subtotal || 0), 0);
     const desconto = Number($('#valor_desconto').val()) || 0;
     const frete = Number($('#valor_frete').val()) || 0;
+    const seguro = Number($('#valor_seguro').val()) || 0;
     const outras = Number($('#valor_outras_despesas').val()) || 0;
-    const totalNota = Number((valorProdutos - desconto + frete + outras).toFixed(2));
+    const ipi = Number($('#valor_ipi').val()) || 0;
+    const totalComponentes = Number((valorProdutos - desconto + frete + seguro + outras + ipi).toFixed(2));
+
+    // RC 5.4.1 — se veio do XML, o total oficial é o vNF (nunca recalcular diferente)
+    const totalXmlImportado = Number(compraImportadaXml?.valor_total_nota);
+    const totalNota = Number.isFinite(totalXmlImportado) && totalXmlImportado > 0
+        ? Number(totalXmlImportado.toFixed(2))
+        : totalComponentes;
 
     $('#valor_produtos').val(formatNumberInput(valorProdutos));
     $('#valor_total_itens').val(formatNumberInput(valorProdutos));
     $('#valor_total_nota').val(formatNumberInput(totalNota));
     $('#totalCompra').text(formatCurrency(totalNota));
 
-    const totalXml = Number($('#valor_total_nota').val()) || totalNota;
-    const diferenca = Number((totalXml - totalNota).toFixed(2));
+    const diferenca = Number((totalNota - totalComponentes).toFixed(2));
 
     $('#conferencia_total_compra').remove();
 
     let classe = Math.abs(diferenca) <= 0.05 ? 'alert-success' : 'alert-warning';
     let texto = Math.abs(diferenca) <= 0.05
-        ? 'Conferência OK: total dos itens bate com o total da nota.'
-        : `Atenção: diferença entre XML e itens: ${formatCurrency(diferenca)}. Verifique frete, desconto ou despesas.`;
+        ? 'Conferência OK: total dos componentes bate com o total da NF-e.'
+        : `Atenção: diferença entre XML e componentes: ${formatCurrency(diferenca)}. Verifique frete, desconto, IPI ou despesas.`;
 
     $('#valor_total_nota').closest('.row').after(`
       <div class="col-12 mt-2" id="conferencia_total_compra">
         <div class="alert ${classe} py-2 mb-0">${texto}</div>
       </div>
     `);
+
+    // RC8.5.0 — total da nota altera a grade (sem prompt em digitação de frete/desconto)
+    if (condicaoCompraUsaParcelasFlexiveis($('#condicao_pagamento').val())) {
+        if (!parcelasCompraEditadasManual) {
+            regenerarGradeParcelasCompra(true);
+        } else {
+            renderizarGradeParcelasCompra();
+        }
+    }
 }
 
 function removerItemCompra(index) {
     if (index < 0 || index >= itensCompraAtual.length) return;
+    const removido = itensCompraAtual[index];
+    const linhaRemovida = obterLinhaIdItemCompra(removido);
+    if (linhaIdEditandoCompra && linhaRemovida === linhaIdEditandoCompra) {
+        limparDraftCompra();
+        limparFormularioItemCompra();
+    } else if (indiceEditandoCompra != null && indiceEditandoCompra > index) {
+        indiceEditandoCompra -= 1;
+    }
+    // splice apenas na remoção explícita — nunca durante edição
     itensCompraAtual.splice(index, 1);
     renderItensCompraTabela();
     calcularParcelasCompra();
+}
+
+function alterarAtualizarPrecoItemCompra(index, checked) {
+    atualizarItemCompraImutavel(index, (draft) => {
+        draft.atualizar_preco_venda = checked ? 1 : 0;
+    });
 }
 
 function formatarPrecoCompraItem(item = {}) {
@@ -743,7 +1416,7 @@ function renderItensCompraTabela() {
               <small>
                 <label>
                   <input type="checkbox" ${Number(item.atualizar_preco_venda ?? 1) === 1 ? 'checked' : ''}
-                    onchange="itensCompraAtual[${index}].atualizar_preco_venda = this.checked ? 1 : 0">
+                    onchange="alterarAtualizarPrecoItemCompra(${index}, this.checked)">
                   Atualizar preço
                 </label>
               </small>
@@ -899,21 +1572,18 @@ function aplicarMiipImportacaoXml(data) {
 
     const resultados = Array.isArray(miip.resultados) ? miip.resultados : [];
     resultados.forEach((resultado) => {
-        const item = itensCompraAtual[resultado.indice];
-        if (!item) return;
-
-        item.miip_resultado = resultado;
-
-        if (resultado.associadoAutomaticamente && resultado.produtoEncontrado?.id) {
-            item.produto_id = resultado.produtoEncontrado.id;
-        }
-
-        if (resultado.precisaConfirmacao && item.miip_sugestao) {
-            item.miip_sugestao = {
-                ...item.miip_sugestao,
-                status: 'pendente'
-            };
-        }
+        atualizarItemCompraImutavel(resultado.indice, (draft) => {
+            draft.miip_resultado = clonarDadosItemCompra(resultado);
+            if (resultado.associadoAutomaticamente && resultado.produtoEncontrado?.id) {
+                draft.produto_id = resultado.produtoEncontrado.id;
+            }
+            if (resultado.precisaConfirmacao && draft.miip_sugestao) {
+                draft.miip_sugestao = {
+                    ...clonarNestedMiipItemCompra(draft.miip_sugestao),
+                    status: 'pendente'
+                };
+            }
+        });
     });
 
     renderMiipImportacaoStatus(
@@ -928,13 +1598,13 @@ function aplicarSugestoesMiipXml(resposta) {
     const sugestoes = Array.isArray(resposta?.itens) ? resposta.itens : [];
 
     sugestoes.forEach((sugestao) => {
-        const item = itensCompraAtual[sugestao.indice];
-        if (!item || !sugestao.encontrado) return;
-
-        item.miip_sugestao = {
-            ...sugestao,
-            status: 'pendente'
-        };
+        if (!sugestao.encontrado) return;
+        atualizarItemCompraImutavel(sugestao.indice, (draft) => {
+            draft.miip_sugestao = {
+                ...clonarDadosItemCompra(sugestao),
+                status: 'pendente'
+            };
+        });
     });
 
     renderMiipImportacaoStatus(
@@ -952,16 +1622,16 @@ function carregarSugestoesMiipXml() {
 
     const payload = {
         origem: 'compra',
-        fornecedor: compraImportadaXml.fornecedor || $('#fornecedor').val() || '',
-        fornecedor_cnpj: compraImportadaXml.fornecedor_cnpj || '',
+        fornecedor: $('#fornecedor').val() || compraImportadaXml?.fornecedor || '',
+        fornecedor_cnpj: obterCnpjCompraDigitos() || compraImportadaXml?.fornecedor_cnpj || '',
         itens: itensCompraAtual.map((item) => ({
             produto_nome: item.produto_nome,
             codigo_barras: item.codigo_barras,
             codigo_fornecedor: item.codigo_fornecedor,
             ncm: item.ncm,
             unidade: item.unidade,
-            fornecedor_cnpj: compraImportadaXml.fornecedor_cnpj || '',
-            fornecedor_nome: compraImportadaXml.fornecedor || ''
+            fornecedor_cnpj: obterCnpjCompraDigitos() || compraImportadaXml?.fornecedor_cnpj || '',
+            fornecedor_nome: $('#fornecedor').val() || compraImportadaXml?.fornecedor || ''
         }))
     };
 
@@ -979,16 +1649,16 @@ function carregarSugestoesMiipXml() {
 }
 
 function confirmarAssociacaoMiip(index) {
-    const item = itensCompraAtual[index];
-    const sugestao = item?.miip_sugestao;
-    if (!item || !sugestao || !sugestao.produtoId) return;
+    const itemSnap = clonarDadosItemCompra(itensCompraAtual[index]);
+    const sugestao = itemSnap?.miip_sugestao;
+    if (!itemSnap || !sugestao || !sugestao.produtoId) return;
 
     alterarProdutoItemCompra(index, sugestao.produtoId);
 
     const usuario = obterUsuarioLogadoCompra();
-    const fornecedorCnpj = compraImportadaXml?.fornecedor_cnpj || '';
+    const fornecedorCnpj = obterCnpjCompraDigitos() || compraImportadaXml?.fornecedor_cnpj || '';
 
-    if (fornecedorCnpj && item.codigo_fornecedor) {
+    if (fornecedorCnpj && itemSnap.codigo_fornecedor) {
         $.ajax({
             url: `${API_URL}/miip/feedback`,
             method: 'POST',
@@ -997,40 +1667,50 @@ function confirmarAssociacaoMiip(index) {
                 confirmado: true,
                 produtoId: sugestao.produtoId,
                 fornecedorCnpj,
-                codigoFornecedor: item.codigo_fornecedor,
+                codigoFornecedor: itemSnap.codigo_fornecedor,
                 fornecedorNome: compraImportadaXml?.fornecedor || $('#fornecedor').val() || '',
-                nomeItem: item.produto_nome,
-                codigoBarras: item.codigo_barras,
-                ncm: item.ncm,
-                unidade: item.unidade,
+                nomeItem: itemSnap.produto_nome,
+                codigoBarras: itemSnap.codigo_barras,
+                ncm: itemSnap.ncm,
+                unidade: itemSnap.unidade,
                 usuarioId: usuario.id || null,
                 operacaoId: sugestao.operacaoId || null,
                 motivo: 'confirmacao_importacao_xml',
-                item
+                item: itemSnap
             })
         });
     }
 
-    item.miip_sugestao = { ...sugestao, status: 'confirmado' };
+    atualizarItemCompraImutavel(index, (draft) => {
+        draft.miip_sugestao = { ...clonarNestedMiipItemCompra(sugestao), status: 'confirmado' };
+    });
     renderItensCompraTabela();
     showNotification('Associação confirmada.', 'success');
 }
 
 function ignorarSugestaoMiip(index) {
-    const item = itensCompraAtual[index];
-    if (!item?.miip_sugestao) return;
-
-    item.miip_sugestao = { ...item.miip_sugestao, status: 'ignorado' };
+    atualizarItemCompraImutavel(index, (draft) => {
+        if (!draft.miip_sugestao) return;
+        draft.miip_sugestao = {
+            ...clonarNestedMiipItemCompra(draft.miip_sugestao),
+            status: 'ignorado'
+        };
+    });
     renderItensCompraTabela();
 }
 
 function miipNovoProdutoItemCompra(index) {
-    const item = itensCompraAtual[index];
+    const item = clonarDadosItemCompra(itensCompraAtual[index]);
     if (!item) return;
 
-    if (item.miip_sugestao) {
-        item.miip_sugestao = { ...item.miip_sugestao, status: 'novo_produto' };
-    }
+    atualizarItemCompraImutavel(index, (draft) => {
+        if (draft.miip_sugestao) {
+            draft.miip_sugestao = {
+                ...clonarNestedMiipItemCompra(draft.miip_sugestao),
+                status: 'novo_produto'
+            };
+        }
+    });
 
     renderItensCompraTabela();
 
@@ -1067,39 +1747,47 @@ function miipNovoProdutoItemCompra(index) {
 }
 
 function alterarCampoItemCompra(index, campo, valor) {
-    if (!itensCompraAtual[index]) return;
-    itensCompraAtual[index][campo] = valor;
-    if (campo === 'produto_nome' && String(valor).trim() === '') {
-        itensCompraAtual[index].produto_id = '';
-    }
+    atualizarItemCompraImutavel(index, (draft) => {
+        draft[campo] = valor;
+        if (campo === 'produto_nome' && String(valor).trim() === '') {
+            draft.produto_id = '';
+        }
+    });
 }
 
 function alterarNumeroItemCompra(index, campo, valor, origem) {
-    if (!itensCompraAtual[index]) return;
-    itensCompraAtual[index][campo] = Number(valor || 0);
+    atualizarItemCompraImutavel(index, (draft) => {
+        draft[campo] = Number(valor || 0);
+    });
     recalcularLinhaCompra(index, origem);
     renderItensCompraTabela();
 }
 
 function alterarProdutoItemCompra(index, produtoId) {
     const produto = produtosCompraList.find(p => String(p.id) === String(produtoId));
-    if (!itensCompraAtual[index]) return;
-    itensCompraAtual[index].produto_id = produtoId ? Number(produtoId) : '';
+    atualizarItemCompraImutavel(index, (draft) => {
+        draft.produto_id = produtoId ? Number(produtoId) : '';
+        if (!produto) return;
+        draft.produto_nome = produto.nome;
+        draft.codigo_barras = produto.codigo_barras || produto.codigo || '';
+        draft.unidade = produto.unidade || 'UN';
+        draft.unidade_comercial = produto.unidade_comercial || 'UN';
+        draft.ncm = produto.ncm || '';
+        if (Number(produto.quantidade_por_embalagem || 0) > 0) {
+            draft.quantidade_por_embalagem = Number(produto.quantidade_por_embalagem);
+        }
+        if (!Number(draft.preco_unitario)) {
+            draft.preco_unitario = Number(produto.preco_compra || 0);
+        }
+        draft.ultimo_preco_compra = Number(produto.preco_compra || 0);
+        if (!Number(draft.preco_venda_sugerido)) {
+            draft.preco_venda_sugerido = Number(produto.preco_venda || 0);
+        }
+        if (!Number(draft.margem_lucro)) {
+            draft.margem_lucro = Number(produto.lucro_percentual || 30);
+        }
+    });
     if (produto) {
-        itensCompraAtual[index].produto_nome = produto.nome;
-        itensCompraAtual[index].codigo_barras = produto.codigo_barras || produto.codigo || '';
-        itensCompraAtual[index].unidade = produto.unidade || 'UN';
-        itensCompraAtual[index].ncm = produto.ncm || '';
-        if (!Number(itensCompraAtual[index].preco_unitario)) {
-            itensCompraAtual[index].preco_unitario = Number(produto.preco_compra || 0);
-        }
-        itensCompraAtual[index].ultimo_preco_compra = Number(produto.preco_compra || 0);
-        if (!Number(itensCompraAtual[index].preco_venda_sugerido)) {
-            itensCompraAtual[index].preco_venda_sugerido = Number(produto.preco_venda || 0);
-        }
-        if (!Number(itensCompraAtual[index].margem_lucro)) {
-            itensCompraAtual[index].margem_lucro = Number(produto.lucro_percentual || 30);
-        }
         recalcularLinhaCompra(index, 'custo');
         renderItensCompraTabela();
     }
@@ -1110,6 +1798,7 @@ function adicionarItemCompra() {
     const descricaoLivre = ($('#codigo_barras_item').val() || '').trim();
     const produto = produtosCompraList.find(p => String(p.id) === String(produtoId));
     const fracionado = produtoUsaConversaoUnidadesCompra(produto);
+    const usaEmbalagemComercial = !fracionado && produtoUsaEmbalagemComercialCompra(produto);
 
     let qtds = resolverQuantidadesItemCompra(
         $('#quantidade_item').val(),
@@ -1163,6 +1852,49 @@ function adicionarItemCompra() {
             peso_total_compra: conv.qtdTotal,
             custo_por_kg: conv.custoUnitario
         };
+    } else if (usaEmbalagemComercial) {
+        const qtdEmb = Number($('#quantidade_embalagens_item').val() || qtds.quantidade || 0);
+        const qtdPorEmb = Number(
+            $('#quantidade_por_embalagem_item').val()
+            || produto.quantidade_por_embalagem
+            || 0
+        );
+        const valorEmb = Number($('#valor_total_fracionado_item').val() || 0);
+        const motor = typeof window.MotorUnidadesMedidaCliente !== 'undefined'
+            ? window.MotorUnidadesMedidaCliente
+            : null;
+        const calc = motor
+            ? motor.calcularCompraEmbalagem({
+                quantidadeEmbalagens: qtdEmb,
+                quantidadePorEmbalagem: qtdPorEmb,
+                valorTotalEmbalagem: valorEmb > 0 ? valorEmb : (preco * qtdEmb),
+                margemPercentual: margem,
+                precoVendaUnitario: precoVendaInput
+            })
+            : calcularEmbalagemComercialLocal(qtdEmb, qtdPorEmb, valorEmb > 0 ? valorEmb : (preco * qtdEmb), margem);
+
+        if (!calc || calc.quantidadeEstoque <= 0) {
+            showNotification('Informe quantidade de embalagens e quantidade por embalagem.', 'warning');
+            return;
+        }
+
+        preco = calc.custoUnitario;
+        qtds = {
+            quantidade_fiscal: calc.quantidadeEstoque,
+            quantidade_nao_fiscal: 0,
+            quantidade: calc.quantidadeEstoque
+        };
+        valorTotalEmbalagem = calc.valorTotalEmbalagem;
+        dadosEmbalagem = {
+            unidade_comercial: produto.unidade_comercial || $('#compra_em_item').val() || 'PACOTE',
+            compra_em: produto.unidade_comercial || $('#compra_em_item').val() || 'PACOTE',
+            quantidade_embalagens: qtdEmb,
+            quantidade_por_embalagem: qtdPorEmb,
+            valor_total_embalagem: calc.valorTotalEmbalagem,
+            valor_embalagem_venda: calc.valorEmbalagemVenda,
+            produto_fracionado: 0,
+            vendido_por_peso: 0
+        };
     } else if ((!produtoId && !descricaoLivre) || !qtds.quantidade || !preco) {
         const msgQtd = isModoEntradaF7CompraAtivo()
             ? 'Informe produto, preço e ao menos uma quantidade (fiscal ou não fiscal).'
@@ -1174,22 +1906,34 @@ function adicionarItemCompra() {
     let margemFinal = margem;
     let precoVenda = preco * (1 + margem / 100);
 
-    if (Number.isFinite(precoVendaInput) && precoVendaInput > 0) {
+    if (Number.isFinite(precoVendaInput) && precoVendaInput > 0 && !usaEmbalagemComercial) {
         precoVenda = precoVendaInput;
         margemFinal = preco > 0 ? ((precoVenda - preco) / preco) * 100 : 0;
+    } else if (usaEmbalagemComercial && dadosEmbalagem.valor_embalagem_venda) {
+        precoVenda = Number((dadosEmbalagem.valor_embalagem_venda / Number(dadosEmbalagem.quantidade_por_embalagem || 1)).toFixed(2));
+        if (Number.isFinite(precoVendaInput) && precoVendaInput > 0) {
+            precoVenda = precoVendaInput;
+            margemFinal = preco > 0 ? ((precoVenda - preco) / preco) * 100 : 0;
+        }
     }
 
-    // Verificar se o produto controla validade e validar campos de lote
     if (produto && Number(produto.controlar_validade || 0) === 1) {
         const dataValidade = $('#data_validade_item').val();
-
         if (!dataValidade) {
             showNotification('Para produtos com controle de validade, informe a data de validade.', 'warning');
             return;
         }
     }
 
-    const item = normalizeItemCompra({
+    const itemExistente = linhaIdEditandoCompra
+        ? itensCompraAtual[encontrarIndiceItemCompraPorLinhaId(linhaIdEditandoCompra)]
+        : (indiceEditandoCompra != null ? itensCompraAtual[indiceEditandoCompra] : null);
+
+    // RC8.4.1 — monta exclusivamente no draft; commit só no final
+    itemDraftCompra = normalizeItemCompra({
+        linha_id: itemExistente
+            ? obterLinhaIdItemCompra(itemExistente)
+            : (itemDraftCompra?.linha_id || gerarLinhaIdCompra()),
         produto_id: produto ? produto.id : '',
         produto_nome: produto ? produto.nome : descricaoLivre,
         codigo_barras: produto ? (produto.codigo_barras || produto.codigo || '') : '',
@@ -1201,20 +1945,53 @@ function adicionarItemCompra() {
         margem_lucro: margemFinal,
         preco_venda_sugerido: precoVenda,
         unidade: produto ? (produto.unidade || 'UN') : 'UN',
+        unidade_comercial: produto?.unidade_comercial || dadosEmbalagem.unidade_comercial || 'UN',
         ncm: produto ? (produto.ncm || '') : '',
         data_validade: $('#data_validade_item').val() || null,
-        produto_fracionado: fracionado ? 1 : (produto && produtoUsaConversaoUnidadesCompra(produto) ? 1 : 0),
-        vendido_por_peso: fracionado ? 1 : (produto && produtoUsaConversaoUnidadesCompra(produto) ? 1 : 0),
-        subtotal: fracionado ? valorTotalEmbalagem : undefined,
+        produto_fracionado: fracionado ? 1 : 0,
+        vendido_por_peso: fracionado ? 1 : 0,
+        subtotal: (fracionado || usaEmbalagemComercial) ? valorTotalEmbalagem : undefined,
+        miip_sugestao: clonarNestedMiipItemCompra(itemExistente?.miip_sugestao || itemDraftCompra?.miip_sugestao),
+        miip_resultado: clonarNestedMiipItemCompra(itemExistente?.miip_resultado || itemDraftCompra?.miip_resultado),
         ...dadosEmbalagem
     });
 
-    itensCompraAtual.push(item);
+    commitItemCompraNoArray(itemDraftCompra, {
+        linhaId: linhaIdEditandoCompra || obterLinhaIdItemCompra(itemDraftCompra),
+        indice: indiceEditandoCompra
+    });
+    limparDraftCompra();
     limparFormularioItemCompra();
     renderItensCompraTabela();
 }
 
+/** Fallback local quando o motor cliente ainda não carregou. */
+function calcularEmbalagemComercialLocal(qtdEmb, qtdPorEmb, valorTotal, margem) {
+    const quantidadeEstoque = Number(qtdEmb || 0) * Number(qtdPorEmb || 0);
+    const valor = Number(valorTotal || 0);
+    const custoUnitario = quantidadeEstoque > 0 ? Number((valor / quantidadeEstoque).toFixed(4)) : 0;
+    const precoVendaUnitario = Number((custoUnitario * (1 + Number(margem || 0) / 100)).toFixed(2));
+    return {
+        quantidadeEstoque,
+        custoUnitario,
+        precoVendaUnitario,
+        valorTotalEmbalagem: valor,
+        valorEmbalagemVenda: Number((precoVendaUnitario * Number(qtdPorEmb || 0)).toFixed(2))
+    };
+}
+
+function produtoUsaEmbalagemComercialCompra(produto) {
+    if (!produto) return false;
+    const qtd = Number(produto.quantidade_por_embalagem || 0);
+    if (!(qtd > 0)) return false;
+    // RC8.4.2 — opt-in; legado RC8.4.0 (unidade_comercial ≠ UN) permanece válido até regravar
+    if (Number(produto.compra_por_embalagem || 0) === 1) return true;
+    const uc = String(produto.unidade_comercial || 'UN').toUpperCase();
+    return uc !== 'UN';
+}
+
 function limparFormularioItemCompra() {
+    limparDraftCompra();
     $('#codigo_barras_item').val('');
     $('#produto_id_item').val('');
     $('#quantidade_item').val('1');
@@ -1238,62 +2015,55 @@ function limparFormularioItemCompra() {
 }
 
 function calcularValorVendaItem() {
-    const preco = Number($('#preco_item').val()) || 0;
-    const margem = Number($('#margem_padrao_item').val()) || 30;
-    const valorVenda = preco * (1 + margem / 100);
-    $('#preco_venda_item').val(formatNumberInput(valorVenda));
+    // RC8.4.1 — formação de preço só no draft
+    sincronizarDraftCompraDoFormulario();
+    recalcularFormacaoPrecoDraftCompra('custo');
+    $('#preco_venda_item').val(formatNumberInput(itemDraftCompra.preco_venda_sugerido));
 }
 
 function calcularMargemItem() {
-    const preco = Number($('#preco_item').val()) || 0;
-    const valorVenda = Number($('#preco_venda_item').val()) || 0;
-    if (preco > 0) {
-        const margem = ((valorVenda - preco) / preco) * 100;
-        $('#margem_padrao_item').val(formatNumberInput(margem));
-    }
+    sincronizarDraftCompraDoFormulario();
+    recalcularFormacaoPrecoDraftCompra('venda');
+    $('#margem_padrao_item').val(formatNumberInput(itemDraftCompra.margem_lucro));
 }
 
 function editarItemCompra(index) {
-    const item = itensCompraAtual[index];
-    if (!item) return;
+    // RC8.4.1 — NUNCA splice / NUNCA mutar a linha original. Só draft.
+    const draft = iniciarDraftCompraEdicao(index);
+    if (!draft) return;
 
-    const temSplit = Number(item.quantidade_nao_fiscal || 0) > 0;
+    const temSplit = Number(draft.quantidade_nao_fiscal || 0) > 0;
     modoEntradaF7Compra = temSplit;
 
-    $('#codigo_barras_item').val(item.produto_nome || item.codigo_barras || '');
-    $('#produto_id_item').val(item.produto_id || '');
-    $('#quantidade_item').val(formatNumberInput(item.quantidade));
-    $('#quantidade_fiscal_item').val(formatNumberInput(item.quantidade_fiscal ?? item.quantidade));
-    $('#quantidade_nao_fiscal_item').val(formatNumberInput(item.quantidade_nao_fiscal || 0));
+    $('#codigo_barras_item').val(draft.produto_nome || draft.codigo_barras || '');
+    $('#produto_id_item').val(draft.produto_id || '');
+    $('#quantidade_item').val(formatNumberInput(draft.quantidade));
+    $('#quantidade_fiscal_item').val(formatNumberInput(draft.quantidade_fiscal ?? draft.quantidade));
+    $('#quantidade_nao_fiscal_item').val(formatNumberInput(draft.quantidade_nao_fiscal || 0));
     $('#preco_item').val(formatNumberInput(
-        item.preco_unitario,
-        itemCompraEhFracionado(item) ? 4 : 2
+        draft.preco_unitario,
+        itemCompraEhFracionado(draft) ? 4 : 2
     ));
-    $('#margem_padrao_item').val(formatNumberInput(item.margem_lucro));
-    $('#preco_venda_item').val(formatNumberInput(item.preco_venda_sugerido));
-    if (itemCompraEhFracionado(item)) {
-        modoEntradaF7Compra = true;
-        const compraEmSalva = item.compra_em || 'Rolo';
+    $('#margem_padrao_item').val(formatNumberInput(draft.margem_lucro));
+    $('#preco_venda_item').val(formatNumberInput(draft.preco_venda_sugerido));
+    if (itemCompraEhFracionado(draft) || Number(draft.quantidade_por_embalagem || 0) > 0) {
+        if (itemCompraEhFracionado(draft)) modoEntradaF7Compra = true;
+        const compraEmSalva = draft.compra_em || draft.unidade_comercial || 'Rolo';
         if (TIPOS_COMPRA_EMBALAGEM.includes(compraEmSalva)) {
             $('#compra_em_item').val(compraEmSalva);
         } else {
             $('#compra_em_item').html(
                 opcoesCompraEmbalagemHtml('Rolo') +
-                `<option value="${escapeHtml(compraEmSalva)}" selected>${escapeHtml(compraEmSalva)} (legado)</option>`
+                `<option value="${escapeHtml(compraEmSalva)}" selected>${escapeHtml(compraEmSalva)}</option>`
             );
         }
-        $('#quantidade_embalagens_item').val(item.quantidade_embalagens || 1);
-        $('#quantidade_por_embalagem_item').val(formatNumberInput(item.quantidade_por_embalagem || 0, 3));
-        $('#valor_total_fracionado_item').val(formatNumberInput(item.valor_total_embalagem || item.subtotal || 0, 2));
+        $('#quantidade_embalagens_item').val(draft.quantidade_embalagens || 1);
+        $('#quantidade_por_embalagem_item').val(formatNumberInput(draft.quantidade_por_embalagem || 0, 3));
+        $('#valor_total_fracionado_item').val(formatNumberInput(draft.valor_total_embalagem || draft.subtotal || 0, 2));
     }
-    $('#data_validade_item').val(item.data_validade || '');
-    // Mostrar campos de lote se o produto controlar validade
+    $('#data_validade_item').val(draft.data_validade || '');
     onProdutoSelecionado();
     atualizarCamposQuantidadeCompra();
-    calcularValorVendaItem();
-    // Remover o item da lista
-    itensCompraAtual.splice(index, 1);
-    renderItensCompraTabela();
     $('#codigo_barras_item').focus();
 }
 
@@ -1303,6 +2073,15 @@ function onFornecedorInput() {
     const fornecedor = fornecedoresList.find(f => String(f.nome || '').toLowerCase() === inputValue.trim().toLowerCase());
     if (fornecedor) {
         $('#fornecedor').val(fornecedor.nome);
+        if (fornecedor.cpf_cnpj) {
+            $('#fornecedor_cnpj').val(typeof formatarCpfCnpj === 'function'
+                ? formatarCpfCnpj(fornecedor.cpf_cnpj)
+                : fornecedor.cpf_cnpj);
+            garantirCompraImportadaXml();
+            compraImportadaXml.fornecedor = fornecedor.nome;
+            compraImportadaXml.fornecedor_cnpj = String(fornecedor.cpf_cnpj || '').replace(/\D/g, '');
+        }
+        atualizarAlertaCnpjXmlDivergente();
     }
 }
 
@@ -1502,7 +2281,10 @@ async function findProdutoByInputAsync(input) {
 function showCompraModal() {
     console.log('showCompraModal chamada - gerando modal');
     itensCompraAtual = [];
+    limparDraftCompra();
     compraImportadaXml = null;
+    cnpjEmitenteXmlOriginal = null;
+    tipoEntradaCompraAtual = TIPOS_ENTRADA_COMPRA.REVENDA;
     modoEntradaF7Compra = false;
     const hoje = new Date().toISOString().split('T')[0];
     const modalHtml = `
@@ -1551,12 +2333,32 @@ function showCompraModal() {
         <input type="date" class="form-control" id="data_entrada" value="${hoje}">
     </div>
 
-    <div class="col-md-6">
-        <label class="form-label">Fornecedor</label>
+    <div class="col-md-4">
+        <label class="form-label">Fornecedor (Nome)</label>
         <input type="text" class="form-control" id="fornecedor" list="lista_fornecedores" oninput="onFornecedorInput()" onkeydown="onFornecedorKeyDown(event)">
         <datalist id="lista_fornecedores">
             ${fornecedoresList.map(f => `<option value="${escapeHtml(f.nome || '')}"></option>`).join('')}
         </datalist>
+    </div>
+
+    <div class="col-md-2">
+        <label class="form-label">CNPJ</label>
+        <input
+            type="text"
+            class="form-control"
+            id="fornecedor_cnpj"
+            maxlength="18"
+            placeholder="00.000.000/0000-00"
+            oninput="onFornecedorCnpjInput(this)"
+            onblur="onFornecedorCnpjBlur()"
+        >
+    </div>
+
+    <div class="col-12" id="alertaCnpjXmlDivergente" style="display:none;">
+        <div class="alert alert-warning py-2 mb-0">
+            <i class="fas fa-exclamation-triangle"></i>
+            Atenção: o CNPJ informado é diferente do emitente da NF-e importada.
+        </div>
     </div>
 
     <div class="col-md-2">
@@ -1589,6 +2391,27 @@ function showCompraModal() {
     <div class="col-12">
         <label class="form-label">Observação</label>
         <textarea class="form-control" id="observacao_compra" rows="2"></textarea>
+    </div>
+</div>
+
+<hr>
+
+<div class="row g-3" id="politicaEntradaSection">
+    <div class="col-12">
+        <h6 class="border-bottom pb-2 mb-2">Tipo da Entrada</h6>
+        <div class="form-check">
+            <input class="form-check-input" type="radio" name="tipo_entrada_compra" id="tipo_entrada_revenda" value="REVENDA" checked onchange="aplicarPoliticaEntradaCompra()">
+            <label class="form-check-label" for="tipo_entrada_revenda">Compra para Revenda</label>
+        </div>
+        <div class="form-check">
+            <input class="form-check-input" type="radio" name="tipo_entrada_compra" id="tipo_entrada_industrializacao" value="INDUSTRIALIZACAO" onchange="aplicarPoliticaEntradaCompra()">
+            <label class="form-check-label" for="tipo_entrada_industrializacao">Compra para Industrialização</label>
+        </div>
+        <div class="form-check">
+            <input class="form-check-input" type="radio" name="tipo_entrada_compra" id="tipo_entrada_uso_consumo" value="USO_CONSUMO" onchange="aplicarPoliticaEntradaCompra()">
+            <label class="form-check-label" for="tipo_entrada_uso_consumo">Compra para Uso e Consumo</label>
+            <small class="text-muted d-block">Registra fiscal e financeiro sem cadastrar produtos ou movimentar estoque.</small>
+        </div>
     </div>
 </div>
 
@@ -1790,6 +2613,16 @@ function showCompraModal() {
         <input type="number" step="0.01" class="form-control" id="valor_outras_despesas" value="0.00" oninput="recalcularTotaisCompraNota(); recalcularTotalNotaAvulsa(); calcularParcelasCompra();">
     </div>
 
+    <div class="col-md-2" id="col_valor_seguro">
+        <label class="form-label">Seguro</label>
+        <input type="number" step="0.01" class="form-control" id="valor_seguro" value="0.00" oninput="recalcularTotaisCompraNota(); recalcularTotalNotaAvulsa(); calcularParcelasCompra();">
+    </div>
+
+    <div class="col-md-2" id="col_valor_ipi">
+        <label class="form-label">IPI</label>
+        <input type="number" step="0.01" class="form-control" id="valor_ipi" value="0.00" oninput="recalcularTotaisCompraNota(); recalcularTotalNotaAvulsa(); calcularParcelasCompra();">
+    </div>
+
     <div class="col-md-2" id="col_valor_total_itens">
         <label class="form-label">Valor total itens</label>
         <input type="number" step="0.01" class="form-control" id="valor_total_itens" value="0.00" readonly oninput="recalcularTotalNotaAvulsa()">
@@ -1798,38 +2631,36 @@ function showCompraModal() {
     <div class="col-md-2" id="col_valor_total_nota">
         <label class="form-label">Valor total da nota *</label>
         <input type="number" step="0.01" class="form-control fw-bold" id="valor_total_nota" value="0.00" readonly>
-        <small class="text-muted" id="valor_total_nota_hint">Calculado automaticamente a partir dos itens.</small>
+        <small class="text-muted" id="valor_total_nota_hint">Igual ao total do XML (vNF).</small>
     </div>
 </div>
 
 <hr>
                         <div class="row g-2" id="pagamentoSection">
                             <div class="col-md-3 mb-3">
-                                <label class="form-label">Condição de pagamento *</label>
+                                <label class="form-label">Tipo *</label>
                                 <select class="form-control" id="condicao_pagamento" onchange="atualizarVisibilidadePagamentoCompra()">
                                     <option value="avista">À vista</option>
-                                    <option value="prazo">A prazo</option>
-                                    <option value="parcelado">Parcelado</option>
-                                    <option value="entrada_parcelado">Entrada + Parcelamento</option>
+                                    <option value="prazo">À prazo</option>
                                 </select>
                             </div>
                             <div class="col-md-3 mb-3">
-                                <label class="form-label">Forma de pagamento</label>
+                                <label class="form-label">Forma de Pagamento</label>
                                 <select class="form-control" id="forma_pagamento"><option value="">Selecione</option>${formasPagamentoCompra()}</select>
                             </div>
-                            <div class="col-md-2 mb-3" id="grupo_entrada_compra" style="display:none;">
-                                <label class="form-label">Valor entrada</label>
-                                <input type="number" step="0.01" class="form-control" id="valor_entrada" value="0" onchange="calcularParcelasCompra()">
+                            <div class="col-md-2 mb-3" id="grupo_parcelas_compra">
+                                <label class="form-label" id="label_parcelas_compra">Quantidade de Parcelas</label>
+                                <input type="number" min="1" class="form-control" id="parcelas" value="1" onchange="onParametroParcelamentoCompraAlterado()">
                             </div>
-                            <div class="col-md-2 mb-3" id="grupo_parcelas_compra" style="display:none;">
-                                <label class="form-label">Parcelas após entrada</label>
-                                <input type="number" min="1" class="form-control" id="parcelas" value="1" onchange="calcularParcelasCompra()">
-                                <small class="text-muted">Informe quantas parcelas serão geradas após a entrada.</small>
+                            <div class="col-md-2 mb-3" id="grupo_dias_parcelas_compra">
+                                <label class="form-label">Prazo entre Parcelas (dias)</label>
+                                <input type="number" min="0" class="form-control" id="dias_entre_parcelas" value="30" onchange="onParametroParcelamentoCompraAlterado()">
                             </div>
-                            <div class="col-md-2 mb-3" id="grupo_vencimento_compra" style="display:none;">
-                                <label class="form-label">1º vencimento</label>
-                                <input type="date" class="form-control" id="data_vencimento" value="${hoje}" onchange="calcularParcelasCompra()">
+                            <div class="col-md-2 mb-3" id="grupo_vencimento_compra">
+                                <label class="form-label">Primeiro Vencimento</label>
+                                <input type="date" class="form-control" id="data_vencimento" value="${hoje}" onchange="onParametroParcelamentoCompraAlterado()">
                             </div>
+                            <input type="hidden" id="valor_entrada" value="0">
                         </div>
                         <div id="parcelas_detalhes" class="mb-3"></div>
                     </div>
@@ -1866,17 +2697,20 @@ function showCompraModal() {
     renderItensCompraTabela();
     atualizarVisibilidadePagamentoCompra();
     recalcularTotaisCompraNota();
+    definirTipoEntradaCompra(TIPOS_ENTRADA_COMPRA.REVENDA, { silencioso: true });
 }
 
 function saveCompra() {
     const isNotaAvulsa = $('#nota_fiscal_avulsa').is(':checked');
+    const isUsoConsumo = isUsoConsumoCompraAtual();
+    const entradaSimplificada = isNotaAvulsa || isUsoConsumo;
 
-    if (!isNotaAvulsa && !itensCompraAtual.length) {
+    if (!entradaSimplificada && !itensCompraAtual.length) {
         showNotification('Adicione ao menos um item.', 'warning');
         return;
     }
 
-    if (!isNotaAvulsa) {
+    if (!entradaSimplificada) {
         for (const item of itensCompraAtual) {
             if (!itemCompraEhFracionado(item)) continue;
             const totalConvertido = Number(item.peso_total_compra || 0)
@@ -1895,8 +2729,15 @@ function saveCompra() {
         }
     }
 
-    const total = Number($('#valor_total_nota').val()) || (isNotaAvulsa ? 0 : itensCompraAtual.reduce((sum, item) => sum + Number(item.subtotal || 0), 0));
+    const total = Number($('#valor_total_nota').val())
+        || (entradaSimplificada ? Number(compraImportadaXml?.valor_total_nota || 0) : 0)
+        || (isNotaAvulsa ? 0 : itensCompraAtual.reduce((sum, item) => sum + Number(item.subtotal || 0), 0));
     const valorTotalItens = Number($('#valor_total_itens').val()) || 0;
+
+    if (entradaSimplificada && !isNotaAvulsa && total <= 0) {
+        showNotification('Informe o valor total da nota fiscal.', 'warning');
+        return;
+    }
 
     if (isNotaAvulsa && total <= 0) {
         showNotification('Informe o valor total da nota fiscal.', 'warning');
@@ -1908,46 +2749,105 @@ function saveCompra() {
         return;
     }
 
-    const condicaoPagamento = $('#condicao_pagamento').val();
-    const valorEntrada = Number($('#valor_entrada').val()) || 0;
-    const parcelas = parseInt($('#parcelas').val(), 10) || 1;
+    const condicaoPagamento = $('#condicao_pagamento').val() || 'avista';
+    const valorEntrada = 0;
+    const parcelas = condicaoPagamento === 'avista'
+        ? 1
+        : (parseInt($('#parcelas').val(), 10) || 1);
+    const diasEntreParcelas = condicaoPagamento === 'avista'
+        ? 0
+        : parseInt($('#dias_entre_parcelas').val(), 10);
+    const diasEntre = Number.isFinite(diasEntreParcelas) ? Math.max(0, diasEntreParcelas) : 30;
 
-    if (condicaoPagamento === 'entrada_parcelado' && valorEntrada <= 0) {
-        showNotification('Informe o valor da entrada para Entrada + Parcelamento.', 'warning');
+    if (condicaoCompraUsaParcelasFlexiveis(condicaoPagamento)) {
+        if (!parcelasCompraGrade.length) {
+            regenerarGradeParcelasCompra(true);
+        }
+        if (!$('#data_vencimento').val()) {
+            showNotification('Informe o primeiro vencimento das parcelas.', 'warning');
+            $('#data_vencimento').focus();
+            return;
+        }
+        const validacaoParcelas = validarSomaParcelasCompraGrade(parcelasCompraGrade, total);
+        if (!validacaoParcelas.ok) {
+            showNotification(validacaoParcelas.mensagem || 'Total das parcelas diverge do valor da nota.', 'warning');
+            renderizarGradeParcelasCompra();
+            return;
+        }
+        const semVencimento = parcelasCompraGrade.some((p) => !String(p.vencimento || '').trim());
+        if (semVencimento) {
+            showNotification('Todas as parcelas devem ter data de vencimento.', 'warning');
+            return;
+        }
+        const valorZero = parcelasCompraGrade.some((p) => moedaParcelaCompra(p.valor) <= 0);
+        if (valorZero) {
+            showNotification('Nenhuma parcela pode ter valor zero.', 'warning');
+            return;
+        }
+    }
+
+    const helpersCnpj = obterHelpersCnpjCompra();
+    const cnpjCompra = obterCnpjCompraDigitos();
+    if (cnpjCompra && helpersCnpj && !helpersCnpj.validarCnpjCompra(cnpjCompra)) {
+        showNotification('CNPJ do fornecedor inválido.', 'warning');
         return;
     }
+
+    garantirCompraImportadaXml();
+    if (cnpjCompra) {
+        compraImportadaXml.fornecedor_cnpj = cnpjCompra;
+    }
+    compraImportadaXml.fornecedor = $('#fornecedor').val();
+
+    const camposFornecedor = helpersCnpj
+        ? helpersCnpj.montarCamposFornecedorSave(compraImportadaXml, cnpjCompra, $('#fornecedor').val())
+        : {
+            fornecedor: $('#fornecedor').val(),
+            fornecedor_cnpj: cnpjCompra || compraImportadaXml?.fornecedor_cnpj || '',
+            fornecedor_rua: compraImportadaXml?.fornecedor_rua || '',
+            fornecedor_numero: compraImportadaXml?.fornecedor_numero || '',
+            fornecedor_bairro: compraImportadaXml?.fornecedor_bairro || '',
+            fornecedor_cidade: compraImportadaXml?.fornecedor_cidade || '',
+            fornecedor_uf: compraImportadaXml?.fornecedor_uf || '',
+            fornecedor_cep: compraImportadaXml?.fornecedor_cep || ''
+        };
 
     const data = {
         data_compra: $('#data_compra').val(),
         data_emissao: $('#data_emissao').val(),
         data_entrada: $('#data_entrada').val(),
-        fornecedor: $('#fornecedor').val(),
-        fornecedor_cnpj: compraImportadaXml?.fornecedor_cnpj || '',
-        fornecedor_rua: compraImportadaXml?.fornecedor_rua || '',
-        fornecedor_numero: compraImportadaXml?.fornecedor_numero || '',
-        fornecedor_bairro: compraImportadaXml?.fornecedor_bairro || '',
-        fornecedor_cidade: compraImportadaXml?.fornecedor_cidade || '',
-        fornecedor_uf: compraImportadaXml?.fornecedor_uf || '',
-        fornecedor_cep: compraImportadaXml?.fornecedor_cep || '',
+        fornecedor: camposFornecedor.fornecedor,
+        fornecedor_cnpj: camposFornecedor.fornecedor_cnpj,
+        fornecedor_rua: camposFornecedor.fornecedor_rua,
+        fornecedor_numero: camposFornecedor.fornecedor_numero,
+        fornecedor_bairro: camposFornecedor.fornecedor_bairro,
+        fornecedor_cidade: camposFornecedor.fornecedor_cidade,
+        fornecedor_uf: camposFornecedor.fornecedor_uf,
+        fornecedor_cep: camposFornecedor.fornecedor_cep,
         numero_nf: $('#numero_nf').val().trim(),
         serie_nf: $('#serie_nf').val().trim(),
         modelo_nf: $('#modelo_nf').val().trim() || '55',
         chave_acesso: ($('#chave_acesso').val() || '').replace(/\D/g, ''),
-        valor_produtos: isNotaAvulsa ? valorTotalItens : (Number($('#valor_produtos').val()) || 0),
+        valor_produtos: entradaSimplificada
+            ? (isNotaAvulsa ? valorTotalItens : (Number($('#valor_produtos').val()) || Number(compraImportadaXml?.valor_produtos || total)))
+            : (Number($('#valor_produtos').val()) || 0),
         valor_desconto: Number($('#valor_desconto').val()) || 0,
         valor_frete: Number($('#valor_frete').val()) || 0,
+        valor_seguro: Number($('#valor_seguro').val()) || 0,
         valor_outras_despesas: Number($('#valor_outras_despesas').val()) || 0,
+        valor_ipi: Number($('#valor_ipi').val()) || 0,
         valor_total_nota: Number($('#valor_total_nota').val()) || 0,
         total,
-        itens: isNotaAvulsa ? [] : itensCompraAtual.map((item) => {
+        itens: entradaSimplificada ? [] : itensCompraAtual.map((item) => {
             const sincronizado = sincronizarQuantidadesEstoqueItemCompra(
-                sincronizarPrecosCadastroItemCompra({ ...item })
+                sincronizarPrecosCadastroItemCompra(clonarDadosItemCompra(item))
             );
             return {
             produto_id: sincronizado.produto_id || null,
             produto_nome: sincronizado.produto_nome,
             codigo_barras: sincronizado.codigo_barras,
             unidade: sincronizado.unidade,
+            unidade_comercial: sincronizado.unidade_comercial || 'UN',
             ncm: sincronizado.ncm,
             quantidade: Number(sincronizado.quantidade || 0),
             quantidade_fiscal: Number(sincronizado.quantidade_fiscal ?? sincronizado.quantidade ?? 0),
@@ -1966,16 +2866,33 @@ function saveCompra() {
             quantidade_embalagens: Number(sincronizado.quantidade_embalagens || 0),
             quantidade_por_embalagem: Number(sincronizado.quantidade_por_embalagem || 0),
             valor_total_embalagem: Number(sincronizado.valor_total_embalagem || sincronizado.subtotal || 0),
+            valor_embalagem_venda: Number(sincronizado.valor_embalagem_venda || 0),
             atualizar_preco_venda: Number(sincronizado.atualizar_preco_venda ?? 1)
         };
         }),
         condicao_pagamento: condicaoPagamento,
         forma_pagamento: $('#forma_pagamento').val(),
         data_vencimento: $('#data_vencimento').val(),
-        parcelas,
+        parcelas: condicaoCompraUsaParcelasFlexiveis(condicaoPagamento)
+            ? (parcelasCompraGrade.length || parcelas)
+            : 1,
+        dias_entre_parcelas: diasEntre,
+        parcelas_detalhe: condicaoPagamento === 'prazo'
+            ? parcelasCompraGrade.map((p) => ({
+                numero: p.numero,
+                vencimento: p.vencimento,
+                valor: moedaParcelaCompra(p.valor),
+                tipo: p.tipo || 'parcela'
+            }))
+            : [],
         valor_entrada: valorEntrada,
         observacao: $('#observacao_compra').val(),
-        nota_fiscal_avulsa: isNotaAvulsa ? 1 : 0
+        nota_fiscal_avulsa: isNotaAvulsa ? 1 : 0,
+        tipo_entrada: obterTipoEntradaSelecionado(),
+        tipo_entrada_sugerido: classificacaoEntradaAtual?.tipoEntrada || null,
+        tipo_entrada_confianca: classificacaoEntradaAtual?.confianca ?? null,
+        tipo_entrada_motivo: classificacaoEntradaAtual?.motivo || null,
+        xml: compraImportadaXml?.xml || null
     };
 
     if (centralDocumentoIdAtual) {
@@ -1992,18 +2909,161 @@ function saveCompra() {
         return;
     }
 
-    console.log('ITENS ENVIADOS:', JSON.stringify(itensCompraAtual, null, 2));
+    mostrarResumoFiscalObrigatorio(data, isUsoConsumo, isNotaAvulsa);
+}
 
+function campoFiscalDivergenteHtml(label, xmlVal, usadoVal, motivo) {
+    const xml = xmlVal || '—';
+    const usado = usadoVal || '';
+    const diverge = xmlVal && usadoVal && String(xmlVal) !== String(usadoVal);
+    if (!diverge) {
+        return `<tr>
+            <td>${escapeHtml(label)}</td>
+            <td class="text-muted small">${escapeHtml(xml)}</td>
+            <td><input type="text" class="form-control form-control-sm fiscal-campo-utilizado" data-campo="${escapeHtml(label)}" value="${escapeHtml(usado)}"></td>
+        </tr>`;
+    }
+    return `<tr class="table-warning">
+        <td>${escapeHtml(label)} <span class="badge bg-warning text-dark">divergente</span></td>
+        <td>
+            <div class="small text-muted">${escapeHtml(label)} XML</div>
+            <strong>${escapeHtml(xml)}</strong>
+        </td>
+        <td>
+            <div class="small text-muted">${escapeHtml(label)} Utilizado</div>
+            <input type="text" class="form-control form-control-sm fiscal-campo-utilizado border-warning" data-campo="${escapeHtml(label)}" value="${escapeHtml(usado)}">
+            ${motivo ? `<div class="small text-muted mt-1">Motivo: ${escapeHtml(motivo)}</div>` : ''}
+        </td>
+    </tr>`;
+}
+
+function mapCampoFiscalKey(label) {
+    const map = {
+        CFOP: 'cfop',
+        'CSOSN/CST': 'csosn_cst',
+        'CST PIS': 'cst_pis',
+        'CST COFINS': 'cst_cofins',
+        'CST IPI': 'cst_ipi',
+        'Natureza da Operação': 'natureza_operacao'
+    };
+    return map[label] || null;
+}
+
+async function mostrarResumoFiscalObrigatorio(data, isUsoConsumo, isNotaAvulsa) {
+    let resumo;
+    try {
+        const resp = await fetch(`${API_URL}/compras/resumo-fiscal-entrada`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${localStorage.getItem('token') || ''}`
+            },
+            body: JSON.stringify({
+                xml: data.xml,
+                tipo_entrada: data.tipo_entrada,
+                dadosCompra: data,
+                fornecedor: data.fornecedor,
+                valor_total_nota: data.valor_total_nota || data.total
+            })
+        });
+        resumo = await resp.json();
+        if (!resp.ok) throw new Error(resumo.error || 'Falha no resumo fiscal');
+    } catch (err) {
+        showNotification(err.message || 'Não foi possível montar o resumo fiscal.', 'danger');
+        return;
+    }
+
+    const motivoSug = resumo.motivo || '';
+    const linhas = (resumo.campos || []).map((c) =>
+        campoFiscalDivergenteHtml(c.label, c.xml, c.utilizado, c.divergente ? motivoSug : '')
+    ).join('');
+
+    const modalId = 'resumoFiscalEntradaModal';
+    $(`#${modalId}`).remove();
+    const html = `
+        <div class="modal fade" id="${modalId}" tabindex="-1" data-bs-backdrop="static">
+            <div class="modal-dialog modal-lg modal-dialog-scrollable">
+                <div class="modal-content">
+                    <div class="modal-header bg-light">
+                        <h5 class="modal-title"><i class="fas fa-file-invoice-dollar me-2"></i>Validação Fiscal Obrigatória</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="alert alert-warning small mb-3">
+                            <strong>XML SEFAZ é imutável.</strong> Alterações abaixo afetam somente a escrituração fiscal interna da empresa.
+                        </div>
+                        <div class="row g-2 mb-3 small">
+                            <div class="col-md-6"><strong>Fornecedor</strong><div>${escapeHtml(resumo.fornecedor || data.fornecedor || '—')}</div></div>
+                            <div class="col-md-6"><strong>Tipo da Entrada</strong><div>${escapeHtml(resumo.tipoEntradaLabel || rotuloTipoEntradaCompra(data.tipo_entrada))}</div></div>
+                            <div class="col-md-6"><strong>Valor Total da NF-e</strong><div>${formatCurrency(resumo.valorTotal || data.valor_total_nota || data.total || 0)}</div></div>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle">
+                                <thead>
+                                    <tr><th>Campo</th><th>XML / Original</th><th>Escrituração</th></tr>
+                                </thead>
+                                <tbody>
+                                    ${linhas || '<tr><td colspan="3">Sem dados fiscais no XML — preencha a escrituração.</td></tr>'}
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label small">Motivo da alteração (quando divergente)</label>
+                            <input type="text" class="form-control form-control-sm" id="escrituracaoMotivoInput" value="${escapeHtml(motivoSug || '')}" placeholder="Ex.: Classificação Uso e Consumo">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Voltar</button>
+                        <button type="button" class="btn btn-primary" id="btnConfirmarEscrituracaoFiscal">
+                            <i class="fas fa-check me-1"></i> Confirmar e gravar entrada
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+    $('body').append(html);
+    const el = document.getElementById(modalId);
+    const modal = new bootstrap.Modal(el);
+    $('#btnConfirmarEscrituracaoFiscal').on('click', () => {
+        const payload = { ...data };
+        payload.cfop_xml = resumo.original?.cfop || null;
+        payload.csosn_cst_xml = resumo.original?.csosn_cst || null;
+        payload.cst_pis_xml = resumo.original?.cst_pis || null;
+        payload.cst_cofins_xml = resumo.original?.cst_cofins || null;
+        payload.cst_ipi_xml = resumo.original?.cst_ipi || null;
+        payload.natureza_operacao_xml = resumo.original?.natureza_operacao || null;
+
+        document.querySelectorAll(`#${modalId} .fiscal-campo-utilizado`).forEach((input) => {
+            const key = mapCampoFiscalKey(input.getAttribute('data-campo'));
+            if (key) payload[key] = String(input.value || '').trim();
+        });
+        payload.escrituracao_motivo = String($('#escrituracaoMotivoInput').val() || '').trim() || null;
+
+        modal.hide();
+        el.addEventListener('hidden.bs.modal', () => {
+            $(`#${modalId}`).remove();
+            executarGravacaoCompra(payload, isUsoConsumo, isNotaAvulsa);
+        }, { once: true });
+    });
+    modal.show();
+}
+
+function executarGravacaoCompra(data, isUsoConsumo, isNotaAvulsa) {
     $.ajax({
         url: `${API_URL}/compras`,
         method: 'POST',
         contentType: 'application/json',
         data: JSON.stringify(data)
-    }).done(function(resposta) {
+    }).done(function() {
         const docCentral = centralDocumentoIdAtual;
         centralDocumentoIdAtual = null;
+        classificacaoEntradaAtual = null;
         $('#compraModal').modal('hide');
-        showNotification(isNotaAvulsa ? 'Nota Fiscal Avulsa registrada com sucesso!' : 'Compra registrada com sucesso!', 'success');
+        showNotification(
+            isUsoConsumo ? 'Compra de Uso e Consumo registrada com sucesso!'
+                : (isNotaAvulsa ? 'Nota Fiscal Avulsa registrada com sucesso!' : 'Compra registrada com sucesso!'),
+            'success'
+        );
         loadCompras();
         if (docCentral && typeof loadPage === 'function') {
             sessionStorage.setItem('central_pos_gravacao', String(docCentral));
@@ -2051,8 +3111,10 @@ function toggleNotaFiscalAvulsa() {
 function recalcularTotalNotaAvulsa() {
     const valorTotalItens = Number($('#valor_total_itens').val()) || 0;
     const frete = Number($('#valor_frete').val()) || 0;
+    const seguro = Number($('#valor_seguro').val()) || 0;
     const outras = Number($('#valor_outras_despesas').val()) || 0;
-    const totalNota = Number((valorTotalItens + frete + outras).toFixed(2));
+    const ipi = Number($('#valor_ipi').val()) || 0;
+    const totalNota = Number((valorTotalItens + frete + seguro + outras + ipi).toFixed(2));
 
     $('#valor_produtos').val(formatNumberInput(valorTotalItens));
     $('#valor_total_nota').val(formatNumberInput(totalNota));
@@ -2107,7 +3169,9 @@ function viewCompra(id) {
                                 <strong>Valor produtos:</strong> ${formatCurrency(compra.valor_produtos || 0)}
                                 | <strong>Desconto:</strong> ${formatCurrency(compra.valor_desconto || 0)}
                                 | <strong>Frete:</strong> ${formatCurrency(compra.valor_frete || 0)}
+                                | <strong>Seguro:</strong> ${formatCurrency(compra.valor_seguro || 0)}
                                 | <strong>Outras despesas:</strong> ${formatCurrency(compra.valor_outras_despesas || 0)}
+                                | <strong>IPI:</strong> ${formatCurrency(compra.valor_ipi || 0)}
                             </p>
                             <p>
                                 <strong>Total nota:</strong> ${formatCurrency(compra.valor_total_nota || compra.total || 0)}
@@ -2253,26 +3317,42 @@ function abrirCadastroProdutoCentralMiip(item, callback) {
 }
 
 function finalizarImportacaoXmlCompra(data) {
-    compraImportadaXml = data;
-    preencherFormularioCompra(data);
-    aplicarMiipImportacaoXml(data);
-    showNotification('Dados da nota carregados pela Central Inteligente.', 'success');
+    (async () => {
+        const classificacao = await classificarEntradaCompraApi(data);
+        classificacaoEntradaAtual = classificacao;
+        mostrarDialogoPoliticaEntrada((tipo, classif) => {
+            compraImportadaXml = data;
+            tipoEntradaCompraAtual = tipo;
+            classificacaoEntradaAtual = classif || classificacao;
+            preencherFormularioCompra(data);
+            if (tipo === TIPOS_ENTRADA_COMPRA.USO_CONSUMO) {
+                definirTipoEntradaCompra(tipo, { silencioso: true });
+                aplicarPoliticaEntradaCompra();
+                showNotification('NF-e carregada para Uso e Consumo — sem produtos ou estoque.', 'success');
+            } else {
+                definirTipoEntradaCompra(tipo, { silencioso: true });
+                aplicarPoliticaEntradaCompra();
+                aplicarMiipImportacaoXml(data);
+                showNotification('Dados da nota carregados pela Central Inteligente.', 'success');
+            }
+        }, classificacao);
+    })();
 }
 
 function abrirCompraDesdeCentralEntradas(payload) {
     if (!payload?.dadosCompra) return;
 
-    centralDocumentoIdAtual = payload.documentoId || null;
+    // RC8.4.1 — deep clone do payload (sessionStorage / bridge) antes de usar
+    const payloadIsolado = clonarDadosItemCompra(payload);
+    centralDocumentoIdAtual = payloadIsolado.documentoId || null;
     showCompraModal();
-    finalizarImportacaoXmlCompra(payload.dadosCompra);
+    finalizarImportacaoXmlCompra(payloadIsolado.dadosCompra);
 }
 
-function abrirCentralInteligenteEntradas() {
-    const modalEl = document.getElementById('compraModal');
-    if (modalEl) {
-        const instancia = bootstrap.Modal.getInstance(modalEl);
-        if (instancia) instancia.hide();
-    }
+function voltarParaCentralAposGravacaoCompra() {
+    const docCentral = sessionStorage.getItem('central_pos_gravacao');
+    if (!docCentral) return false;
+    sessionStorage.removeItem('central_pos_gravacao');
 
     if (typeof loadPage === 'function') {
         loadPage('central-entradas');
@@ -2288,17 +3368,24 @@ function consumirPendenciaCompraCentral() {
         if (!raw) return;
 
         sessionStorage.removeItem('central_abrir_compra');
-        const payload = JSON.parse(raw);
+        // JSON.parse já gera objetos novos; clonar de novo isola nested se houver reuso
+        const payload = clonarDadosItemCompra(JSON.parse(raw));
         abrirCompraDesdeCentralEntradas(payload);
     } catch (error) {
         console.error('Erro ao abrir compra da Central:', error);
     }
 }
 
-function preencherFormularioCompra(data) {
+function preencherFormularioCompra(dataBruto) {
+    const data = clonarDadosItemCompra(dataBruto) || {};
     $('#data_emissao').val(data.data_emissao || $('#data_compra').val());
     $('#data_entrada').val(data.data_entrada || $('#data_compra').val());
     $('#fornecedor').val(data.fornecedor || '');
+    cnpjEmitenteXmlOriginal = String(data.fornecedor_cnpj || '').replace(/\D/g, '') || null;
+    $('#fornecedor_cnpj').val(typeof formatarCpfCnpj === 'function'
+        ? formatarCpfCnpj(data.fornecedor_cnpj || '')
+        : (data.fornecedor_cnpj || ''));
+    atualizarAlertaCnpjXmlDivergente();
     $('#numero_nf').val(data.numero_nf || '');
     $('#serie_nf').val(data.serie_nf || '');
     $('#modelo_nf').val(data.modelo_nf || '55');
@@ -2307,16 +3394,74 @@ function preencherFormularioCompra(data) {
     $('#valor_produtos').val(formatNumberInput(data.valor_produtos || 0));
     $('#valor_desconto').val(formatNumberInput(data.valor_desconto || 0));
     $('#valor_frete').val(formatNumberInput(data.valor_frete || 0));
+    $('#valor_seguro').val(formatNumberInput(data.valor_seguro || 0));
     $('#valor_outras_despesas').val(formatNumberInput(data.valor_outras_despesas || 0));
+    $('#valor_ipi').val(formatNumberInput(data.valor_ipi || 0));
     $('#valor_total_nota').val(formatNumberInput(data.valor_total_nota || 0));
 
-    // Itens
-    itensCompraAtual = (data.itens || []).map(item => normalizeItemCompra(item));
+    // Itens — cada linha com estado independente (deep clone via normalize + linha_id)
+    limparDraftCompra();
+    itensCompraAtual = (data.itens || []).map((item) => normalizeItemCompra(clonarDadosItemCompra(item)));
     renderItensCompraTabela();
 
-    // Pagamento padrão
-    $('#condicao_pagamento').val('avista');
+    // RC COMPRAS 5.4.1 — pagamento e parcelas do XML
+    const condicao = data.condicao_pagamento === 'prazo' ? 'prazo' : 'avista';
+    $('#condicao_pagamento').val(condicao);
+
+    const forma = data.forma_pagamento || '';
+    if (forma) {
+        const $fp = $('#forma_pagamento');
+        if ($fp.find(`option[value="${forma}"]`).length === 0) {
+            $fp.append(`<option value="${forma}">${rotuloFormaPagamento(forma)}</option>`);
+        }
+        $fp.val(forma);
+    }
+
+    parcelasCompraEditadasManual = false;
+    const gradeXml = Array.isArray(data.parcelas_detalhe) ? data.parcelas_detalhe : [];
+    if (condicao === 'prazo' && gradeXml.length > 0) {
+        $('#parcelas').val(gradeXml.length).prop('disabled', false);
+        $('#dias_entre_parcelas').prop('disabled', false);
+        if (data.data_vencimento) {
+            $('#data_vencimento').val(String(data.data_vencimento).slice(0, 10));
+        } else if (gradeXml[0]?.vencimento) {
+            $('#data_vencimento').val(String(gradeXml[0].vencimento).slice(0, 10));
+        }
+        parcelasCompraGrade = gradeXml.map((p, idx) => ({
+            numero: Number(p.numero) || (idx + 1),
+            vencimento: String(p.vencimento || '').slice(0, 10),
+            valor: moedaParcelaCompra(p.valor),
+            tipo: p.tipo || 'parcela',
+            documento: p.documento || null
+        }));
+        parcelasCompraEditadasManual = true;
+    } else {
+        $('#parcelas').val(1).prop('disabled', true);
+        $('#dias_entre_parcelas').val(0).prop('disabled', true);
+        parcelasCompraGrade = [];
+        parcelasCompraEditadasManual = false;
+    }
+
     atualizarVisibilidadePagamentoCompra();
+    if (condicao === 'prazo' && parcelasCompraGrade.length) {
+        renderizarGradeParcelasCompra();
+    }
+    recalcularTotaisCompraNota();
+}
+
+function abrirCentralInteligenteEntradas() {
+    const modalEl = document.getElementById('compraModal');
+    if (modalEl) {
+        const instancia = bootstrap.Modal.getInstance(modalEl);
+        if (instancia) instancia.hide();
+    }
+
+    if (typeof loadPage === 'function') {
+        loadPage('central-entradas');
+        return;
+    }
+
+    showNotification('Abra o menu Central Inteligente de Entradas.', 'info');
 }
 
 function abrirDevolucaoCompra(id) {

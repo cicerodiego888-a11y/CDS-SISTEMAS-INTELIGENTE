@@ -169,6 +169,28 @@ function validarDistribuicaoConversaoUnidadesItem(item = {}) {
 }
 
 function resolverQuantidadesEstoqueCompraItem(item = {}) {
+  const totalConvertido = obterTotalConvertidoItemCompra(item);
+  const uc = String(item.unidade_comercial || item.compra_em || '').toUpperCase();
+  const usaEmbalagemComercial = !itemCompraUsaConversaoUnidades(item)
+    && totalConvertido > 0
+    && uc
+    && uc !== 'UN';
+
+  // RC8.4.0 — embalagem comercial (PACOTE/CAIXA/…) → estoque em UN
+  if (usaEmbalagemComercial) {
+    const qtds = resolverQuantidadesCompraItem(item);
+    const soma = Number(qtds.quantidade_fiscal || 0) + Number(qtds.quantidade_nao_fiscal || 0);
+    const quantidade = soma > 0 && Math.abs(soma - Number(item.quantidade_embalagens || 0)) > 0.001
+      ? soma
+      : totalConvertido;
+    return {
+      quantidade_fiscal: Number(qtds.quantidade_fiscal || quantidade),
+      quantidade_nao_fiscal: Number(qtds.quantidade_nao_fiscal || 0),
+      quantidade,
+      quantidade_convertida: totalConvertido
+    };
+  }
+
   if (!itemCompraUsaConversaoUnidades(item)) {
     return {
       ...resolverQuantidadesCompraItem(item),
@@ -177,7 +199,6 @@ function resolverQuantidadesEstoqueCompraItem(item = {}) {
   }
 
   const qtds = resolverQuantidadesCompraItem(item);
-  const totalConvertido = obterTotalConvertidoItemCompra(item);
   const qtdEmbalagens = Number(item.quantidade_embalagens || 0);
   const quantidade_fiscal = Number(qtds.quantidade_fiscal || 0);
   const quantidade_nao_fiscal = Number(qtds.quantidade_nao_fiscal || 0);

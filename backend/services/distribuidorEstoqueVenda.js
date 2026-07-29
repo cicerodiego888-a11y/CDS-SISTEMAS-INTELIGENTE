@@ -533,27 +533,63 @@ function somarPagamentosNaoDinheiro(pagamentos = [], totalVenda = 0) {
 
 /**
  * Escolhe Valor Fiscal Efetivo dentro da faixa válida [min, max].
- * MIDP off → efetivo = máximo (legado).
- * MIDP on → menor fiscal que ainda cubra os meios não-dinheiro (preserva dinheiro no NF).
+ * FIXA + preservarDinheiro (midpAtivo) → PRESERVAR DINHEIRO (legado 3.8B/C).
+ * FIXA sem preservar → efetivo = máximo.
+ * FLEXIVEL → eletrônicos + % do dinheiro no fiscal (RC8.2).
+ *
+ * @param {object} [opcoes.politicaFiscalComercial] — PoliticaFiscalComercialV1 (RC8.2)
  */
 function calcularValorFiscalEfetivo({
   valorFiscalMaximo,
   valorFiscalMinimo,
   totalVenda,
   pagamentos = [],
-  midpAtivo = false
+  midpAtivo = false,
+  politicaFiscalComercial = null
 } = {}) {
   const max = round2(valorFiscalMaximo);
   const min = round2(valorFiscalMinimo);
   const total = round2(totalVenda);
+  const politica = politicaFiscalComercial || null;
+  const modo = politica && politica.modo === 'FLEXIVEL' ? 'FLEXIVEL' : 'FIXA';
 
-  if (!midpAtivo) {
+  // RC8.2 — FLEXÍVEL: max dinheiro no fiscal = percentual% do valor em dinheiro pago.
+  if (modo === 'FLEXIVEL') {
+    const percentual = Math.min(100, Math.max(0, Number(politica.percentualDinheiroFiscal || 0)));
+    const { valorDinheiro, valorNaoDinheiro } = somarPagamentosNaoDinheiro(pagamentos, total);
+    const dinheiroPermitidoFiscal = round2(valorDinheiro * (percentual / 100));
+    let efetivo = round2(valorNaoDinheiro + dinheiroPermitidoFiscal);
+    efetivo = Math.min(max, efetivo);
+    efetivo = Math.max(min, efetivo);
+    efetivo = round2(efetivo);
+    const preservacaoAplicada = efetivo + 0.009 < max;
+    return {
+      valorFiscalMaximo: max,
+      valorFiscalMinimo: min,
+      valorFiscalEfetivo: efetivo,
+      valorNaoFiscal: round2(total - efetivo),
+      preservacaoAplicada,
+      valorDinheiro,
+      valorNaoDinheiro,
+      dinheiroPermitidoFiscal,
+      modoPolitica: 'FLEXIVEL',
+      percentualDinheiroFiscal: percentual
+    };
+  }
+
+  // FIXA — midpAtivo: política.preservarDinheiro OU flag legado
+  const preservar = politica && politica.preservarDinheiro != null
+    ? Boolean(politica.preservarDinheiro)
+    : Boolean(midpAtivo);
+
+  if (!preservar) {
     return {
       valorFiscalMaximo: max,
       valorFiscalMinimo: min,
       valorFiscalEfetivo: max,
       valorNaoFiscal: round2(total - max),
-      preservacaoAplicada: false
+      preservacaoAplicada: false,
+      modoPolitica: 'FIXA'
     };
   }
 
@@ -568,7 +604,8 @@ function calcularValorFiscalEfetivo({
       valorNaoFiscal: round2(total - max),
       preservacaoAplicada: false,
       valorDinheiro,
-      valorNaoDinheiro
+      valorNaoDinheiro,
+      modoPolitica: 'FIXA'
     };
   }
 
@@ -586,7 +623,8 @@ function calcularValorFiscalEfetivo({
     valorNaoFiscal: round2(total - efetivo),
     preservacaoAplicada,
     valorDinheiro,
-    valorNaoDinheiro
+    valorNaoDinheiro,
+    modoPolitica: 'FIXA'
   };
 }
 
@@ -657,12 +695,17 @@ function ajustarItensParaValorFiscalEfetivo(itens = [], metaValorFiscalEfetivo) 
  * @param {boolean} opcoes.midpAtivo
  * @param {number} [opcoes.desconto=0]
  * @param {number} [opcoes.acrescimo=0]
+ * @param {object} [opcoes.politicaFiscalComercial] — RC8.1 MPFC (recebido; não utilizado nos cálculos)
  */
 function distribuirItensVendaComValorFiscalEfetivo(entradas = [], vendaFiscal = true, opcoes = {}) {
-  const midpAtivo = Boolean(opcoes.midpAtivo);
   const pagamentos = Array.isArray(opcoes.pagamentos) ? opcoes.pagamentos : [];
   const desconto = Number(opcoes.desconto || 0);
   const acrescimo = Number(opcoes.acrescimo || 0);
+  // RC8.2 — política oficial do MPFC (obrigatória para novos fluxos; opcional em testes legados)
+  const politicaFiscalComercial = opcoes.politicaFiscalComercial || null;
+  const midpAtivo = politicaFiscalComercial
+    ? Boolean(politicaFiscalComercial.preservarDinheiro)
+    : Boolean(opcoes.midpAtivo);
 
   const itensMax = [];
   let valorFiscalMinimo = 0;
@@ -713,7 +756,8 @@ function distribuirItensVendaComValorFiscalEfetivo(entradas = [], vendaFiscal = 
     valorFiscalMinimo,
     totalVenda: totalVendaBruto,
     pagamentos,
-    midpAtivo
+    midpAtivo,
+    politicaFiscalComercial
   });
 
   let itens = efetivo.preservacaoAplicada
@@ -789,7 +833,18 @@ function distribuirItensVendaComValorFiscalEfetivo(entradas = [], vendaFiscal = 
         ? integridade.valorFiscalEfetivoAjustado
         : totalFiscal
     },
-    meta: efetivo
+    meta: efetivo,
+    // RC8.2 — eco da política aplicada no cálculo de efetivo
+    politicaFiscalComercialRecebida: politicaFiscalComercial
+      ? {
+          versao: politicaFiscalComercial.versao,
+          codigoPolitica: politicaFiscalComercial.codigoPolitica,
+          modo: politicaFiscalComercial.modo,
+          percentualDinheiroFiscal: politicaFiscalComercial.percentualDinheiroFiscal,
+          utilizada: true,
+          modoPoliticaEfetivo: efetivo.modoPolitica || politicaFiscalComercial.modo
+        }
+      : null
   };
 }
 

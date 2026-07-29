@@ -8,6 +8,14 @@
 const HealthRepository = require('./HealthRepository');
 const { avaliarDocumento, consolidar, formatarDuracao } = require('./HealthRules');
 const { HealthNiveis, obterLabel, obterIndicador } = require('./HealthNiveis');
+const { DocumentoFiscalStatus } = require('../core/DocumentoFiscalStatus');
+
+const STATUS_ENCERRADOS = new Set([
+  DocumentoFiscalStatus.XML_INDISPONIVEL,
+  DocumentoFiscalStatus.GRAVADA,
+  DocumentoFiscalStatus.DESCARTADA,
+  DocumentoFiscalStatus.DUPLICADA
+]);
 
 class HealthAnalyzer {
   /**
@@ -54,12 +62,18 @@ class HealthAnalyzer {
 
     const ind = obterIndicador(nivel);
     const principal = cons.alertaPrincipal;
+    const encerrado = STATUS_ENCERRADOS.has(doc.status) || nivel === HealthNiveis.BLOQUEADO;
 
     return {
       documentoId: doc.id,
       chave: doc.chave,
       fornecedor: doc.fornecedor,
       status: doc.status,
+      dataEmissao: doc.dataEmissao || null,
+      numero: doc.numero != null ? doc.numero : null,
+      serie: doc.serie != null ? doc.serie : null,
+      /** Data em que o documento entrou no estado terminal / bloqueado. */
+      dataEncerramento: encerrado ? (doc.updatedAt || null) : null,
       nivel,
       nivelLabel: obterLabel(nivel),
       indicador: ind.emoji,

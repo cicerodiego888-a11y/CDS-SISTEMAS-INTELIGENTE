@@ -604,6 +604,46 @@ router.get('/:id/historico-precos', (req, res) => {
   });
 });
 
+// RC3.7.6.4 — Últimas compras do produto (READ-ONLY; não altera payload/MIIP/compras)
+router.get('/:id/ultimas-compras', (req, res) => {
+  const produtoId = Number(req.params.id);
+  if (!Number.isFinite(produtoId) || produtoId <= 0) {
+    return res.status(400).json({ error: 'produto_id inválido' });
+  }
+  const limiteRaw = Number(req.query.limite);
+  const limite = Number.isFinite(limiteRaw) && limiteRaw > 0
+    ? Math.min(Math.floor(limiteRaw), 20)
+    : 5;
+
+  db.all(`
+    SELECT
+      c.id AS compra_id,
+      COALESCE(c.data_compra, c.data_entrada, c.data_emissao, c.created_at) AS data,
+      c.fornecedor AS fornecedor,
+      COALESCE(
+        NULLIF(ci.custo_unitario_final, 0),
+        NULLIF(ci.preco_unitario, 0),
+        ci.preco_unitario
+      ) AS custo,
+      ci.quantidade AS quantidade,
+      COALESCE(c.numero_nf, '') AS nfe
+    FROM compras_itens ci
+    INNER JOIN compras c ON c.id = ci.compra_id
+    WHERE ci.produto_id = ?
+      AND (c.cancelada_em IS NULL OR TRIM(COALESCE(c.cancelada_em, '')) = '')
+    ORDER BY
+      COALESCE(c.data_compra, c.data_entrada, c.data_emissao, c.created_at) DESC,
+      c.id DESC,
+      ci.id DESC
+    LIMIT ?
+  `, [produtoId, limite], (err, rows) => {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+    return res.json(rows || []);
+  });
+});
+
 // Histórico de ajustes de estoque do produto
 router.get('/:id/historico-estoque', (req, res) => {
   const { id } = req.params;
@@ -754,6 +794,10 @@ router.get('/consulta-pdv/buscar', (req, res) => {
       p.codigo_barras,
       p.nome,
       p.unidade,
+      COALESCE(p.unidade_comercial, 'UN') AS unidade_comercial,
+      COALESCE(p.quantidade_por_embalagem, 0) AS quantidade_por_embalagem,
+      COALESCE(p.compra_por_embalagem, 0) AS compra_por_embalagem,
+      COALESCE(p.valor_compra_embalagem, 0) AS valor_compra_embalagem,
       p.preco_compra,
       p.preco_venda,
       ${SQL_PLU_SUBQUERY},
@@ -2093,6 +2137,26 @@ router.post('/', (req, res) => {
       }
 
       const produtoId = this.lastID;
+      try {
+        const MotorUM = require('../services/unidades/MotorUnidadesMedida');
+        const compraPorEmb = Number(req.body.compra_por_embalagem || 0) === 1 ? 1 : 0;
+        const uc = compraPorEmb
+          ? MotorUM.normalizarUnidadeComercial(req.body.unidade_comercial)
+          : 'UN';
+        const qpe = compraPorEmb ? Number(req.body.quantidade_por_embalagem || 0) : 0;
+        const valorEmb = compraPorEmb ? Number(req.body.valor_compra_embalagem || 0) : 0;
+        db.run(
+          `UPDATE produtos SET
+             unidade_comercial = ?,
+             quantidade_por_embalagem = ?,
+             compra_por_embalagem = ?,
+             valor_compra_embalagem = ?
+           WHERE id = ?`,
+          [uc, qpe > 0 ? qpe : 0, compraPorEmb, valorEmb > 0 ? valorEmb : 0, produtoId]
+        );
+      } catch (umErr) {
+        console.warn('[RC8.4.2] unidade comercial no POST:', umErr.message);
+      }
       // MIP — dual-write codigo/barras/PLU (aguardar antes da resposta para o GET/editar ver o PLU)
       const camposEspelho = { codigo: codigoFinal, codigo_barras };
       if (pluValidacao.informado) {
@@ -2325,6 +2389,47 @@ router.put('/:id', (req, res) => {
     }
     if (Object.prototype.hasOwnProperty.call(bodyUpdates, 'imagem_principal')) {
       bodyUpdates.imagem_principal = normalizarImagemPrincipalOpcional(bodyUpdates.imagem_principal);
+    }
+
+    // RC8.4.2 — normalizar modo compra por embalagem (opt-in)
+    if (
+      Object.prototype.hasOwnProperty.call(bodyUpdates, 'compra_por_embalagem')
+      || Object.prototype.hasOwnProperty.call(bodyUpdates, 'unidade_comercial')
+      || Object.prototype.hasOwnProperty.call(bodyUpdates, 'quantidade_por_embalagem')
+      || Object.prototype.hasOwnProperty.call(bodyUpdates, 'valor_compra_embalagem')
+    ) {
+      try {
+        const MotorUM = require('../services/unidades/MotorUnidadesMedida');
+        const compraPorEmb = Number(
+          bodyUpdates.compra_por_embalagem !== undefined
+            ? bodyUpdates.compra_por_embalagem
+            : old.compra_por_embalagem
+        ) === 1 ? 1 : 0;
+        bodyUpdates.compra_por_embalagem = compraPorEmb;
+        if (!compraPorEmb) {
+          bodyUpdates.unidade_comercial = 'UN';
+          bodyUpdates.quantidade_por_embalagem = 0;
+          bodyUpdates.valor_compra_embalagem = 0;
+        } else {
+          bodyUpdates.unidade_comercial = MotorUM.normalizarUnidadeComercial(
+            bodyUpdates.unidade_comercial !== undefined
+              ? bodyUpdates.unidade_comercial
+              : old.unidade_comercial
+          );
+          bodyUpdates.quantidade_por_embalagem = Number(
+            bodyUpdates.quantidade_por_embalagem !== undefined
+              ? bodyUpdates.quantidade_por_embalagem
+              : old.quantidade_por_embalagem
+          ) || 0;
+          bodyUpdates.valor_compra_embalagem = Number(
+            bodyUpdates.valor_compra_embalagem !== undefined
+              ? bodyUpdates.valor_compra_embalagem
+              : old.valor_compra_embalagem
+          ) || 0;
+        }
+      } catch (umErr) {
+        console.warn('[RC8.4.2] normalização embalagem no PUT:', umErr.message);
+      }
     }
 
     const imagemAnterior = old.imagem_principal;

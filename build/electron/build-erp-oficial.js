@@ -77,7 +77,7 @@ function main() {
     fail(`app.asar não encontrado após build: ${asarPath}`);
   }
 
-  const cmp = compararRepoComAsar(root, asarPath, { manifesto });
+  const cmp = compararRepoComAsar(root, asarPath, { manifesto, modulo: 'erp' });
   if (!cmp.ok) {
     try {
       fs.rmSync(distErp, { recursive: true, force: true });

@@ -14,7 +14,17 @@ const tefContrato = require('./tef/tefContrato');
 const tefConfigService = require('./tef/tefConfigService');
 const tefFluxoPagamento = require('./tef/tefFluxoPagamento');
 const midp = require('./midp');
-const configService = require('./configuracaoService');
+
+/**
+ * ORQUESTRADOR DE PAGAMENTOS - ARQUITETURA OFICIAL CDS SISTEMAS
+ *
+ * FLUXO OBRIGATÓRIO (RC8.2+):
+ * Venda → Motor F×NF → MPFC (política) → MIDP (distribuição de meios) →
+ * Orquestrador (TEF/confirmação) → status → NFC-e / Financeiro
+ *
+ * Sprint 3.8C — MIDP V1: política PRESERVAR DINHEIRO (via midpAtivo da política MPFC).
+ * RC8.2.2 — Orquestrador NÃO lê isMidpAtivado(); recebe midpAtivo do núcleo/MPFC.
+ */
 
 /**
  * Processa o fluxo completo de pagamento de uma venda
@@ -28,7 +38,8 @@ async function processarFluxoPagamentoVenda({
   tefHabilitado,
   modoConfirmacaoFiscal,
   valorFiscalMaximo,
-  preservacaoAplicada
+  preservacaoAplicada,
+  midpAtivo: midpAtivoEntrada
 }) {
   // Validações básicas
   totalFiscal = Number(totalFiscal || 0);
@@ -40,8 +51,9 @@ async function processarFluxoPagamentoVenda({
   // Normalizar pagamentos de entrada
   const pagamentosEntrada = normalizarPagamentosEntrada(pagamentos, formaPagamento);
   
-  // MIDP V1 (3.8C) — política única PRESERVAR DINHEIRO; consome só efetivo do Motor
-  const midpAtivo = Boolean(configService.isMidpAtivado && configService.isMidpAtivado());
+  // RC8.2.2 — midpAtivo vem exclusivamente da política MPFC (núcleo).
+  // Migração: omitido → false (não consulta configuracaoService).
+  const midpAtivo = midpAtivoEntrada != null ? Boolean(midpAtivoEntrada) : false;
   const resultadoMidp = midp.executar({
     pagamentosComerciais: pagamentosEntrada,
     valorFiscalLiquido: totalFiscal,
