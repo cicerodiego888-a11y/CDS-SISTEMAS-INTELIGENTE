@@ -559,9 +559,27 @@ function renderCompras(compras) {
                                             <i class="fas fa-undo"></i>
                                         </button>
 
-                                        <button class="btn btn-sm btn-danger" onclick="abrirModalNFeDevolucaoCompra(${c.id})" title="NF-e devolução SEFAZ">
-                                            <i class="fas fa-file-invoice"></i>
-                                        </button>
+                                        ${(() => {
+                                            const chaveOk = String(c.chave_acesso || '').replace(/\D/g, '').length === 44;
+                                            if (!chaveOk) return '';
+                                            const comprada = Number(c.qtd_comprada_total || 0);
+                                            const devolvida = Number(c.qtd_devolvida_fiscal || 0);
+                                            const totalDev = comprada > 0 && devolvida >= comprada - 1e-9;
+                                            const parcial = devolvida > 0 && !totalDev;
+                                            const titulo = totalDev
+                                              ? 'Compra totalmente devolvida'
+                                              : (parcial ? 'Emitir nova NF-e de Devolução (parcial)' : 'Emitir NF-e de Devolução');
+                                            const label = totalDev
+                                              ? 'Devolução total'
+                                              : (parcial ? 'Devolver saldo' : 'Emitir NF-e de Devolução');
+                                            return `
+                                        <button class="btn btn-sm btn-danger"
+                                            onclick="abrirModalNFeDevolucaoCompra(${c.id})"
+                                            title="${titulo}"
+                                            ${totalDev ? 'disabled' : ''}>
+                                            <i class="fas fa-file-invoice"></i> ${label}
+                                        </button>`;
+                                        })()}
 
                                         <button class="btn btn-sm btn-warning" onclick="cancelarCompra(${c.id})" title="Cancelar compra">
                                             <i class="fas fa-ban"></i>
@@ -3179,6 +3197,12 @@ function viewCompra(id) {
                                 | <strong>Forma:</strong> ${rotuloFormaPagamento(compra.forma_pagamento)}
                             </p>
                             <p><strong>Observação:</strong> ${escapeHtml(compra.observacao || '-')}</p>
+                            ${String(compra.chave_acesso || '').replace(/\D/g, '').length === 44 ? `
+                            <div class="mb-3">
+                                <button class="btn btn-danger btn-sm" onclick="$('#viewCompraModal').modal('hide'); setTimeout(function(){ abrirModalNFeDevolucaoCompra(${compra.id}); }, 300);">
+                                    <i class="fas fa-file-invoice"></i> Emitir NF-e de Devolução
+                                </button>
+                            </div>` : ''}
                             <h6>Itens</h6>
                             <table class="table table-bordered"><thead><tr><th>Produto</th><th>Qtd</th><th>Preço compra</th><th>Margem</th><th>Venda sugerida</th><th>Subtotal</th></tr></thead><tbody>${itensHtml}</tbody></table>
                             <h6>Lançamentos financeiros gerados</h6>
@@ -3624,23 +3648,158 @@ function confirmarDevolucaoCompra(id) {
 
 function abrirModalNFeDevolucaoCompra(id) {
     $.ajax({
-        url: `${API_URL}/compras/${id}`,
+        url: `${API_URL}/compras/${id}/nfe-devolucao/preparar`,
         method: 'GET'
-    }).done(function(compra) {
-        const itens = compra.itens || [];
+    }).done(function(prep) {
+        if (!prep || prep.success === false) {
+            showNotification(prep?.error || 'Não foi possível preparar a NF-e de devolução.', 'warning');
+            return;
+        }
 
-        const itensDevolvidos = itens.filter(item => Number(item.quantidade_devolvida || 0) > 0);
+        const compra = prep.compra || {};
+        const itens = prep.itens || [];
+        const itensPainel = prep.itensPainel || [];
+        const chave = String(prep.refNFe || compra.chave_acesso || '').replace(/\D/g, '');
+        const bloqueado = !prep.podeEmitir;
+        const ctrl = prep.controleSaldo || {};
+        const statusCompraUi = ctrl.statusCompraUi || {};
 
-        const linhas = itensDevolvidos.map(item => `
+        const badgeSaldo = (st) => {
+            const ui = st || {};
+            if (ui.cor === 'verde') return `<span class="badge bg-success">${ui.emoji || ''} ${escapeHtml(ui.label || 'Não devolvido')}</span>`;
+            if (ui.cor === 'amarelo') return `<span class="badge bg-warning text-dark">${ui.emoji || ''} ${escapeHtml(ui.label || 'Parcial')}</span>`;
+            if (ui.cor === 'azul') return `<span class="badge bg-primary">${ui.emoji || ''} ${escapeHtml(ui.label || 'Total')}</span>`;
+            if (ui.cor === 'vermelho') return `<span class="badge bg-danger">${ui.emoji || ''} ${escapeHtml(ui.label || 'Saldo insuficiente')}</span>`;
+            return `<span class="badge bg-secondary">${escapeHtml(ui.label || '-')}</span>`;
+        };
+
+        const linhasPainel = (itensPainel.length ? itensPainel : itens).map((item) => `
             <tr>
-                <td>${escapeHtml(item.produto_nome || item.descricao_produto || '-')}</td>
-                <td>${Number(item.quantidade_devolvida || 0)}</td>
-                <td>${formatCurrency(item.custo_unitario_final || item.preco_unitario || 0)}</td>
-                <td>${formatCurrency(Number(item.quantidade_devolvida || 0) * Number(item.custo_unitario_final || item.preco_unitario || 0))}</td>
+                <td>${escapeHtml(item.produto_nome || '-')}</td>
+                <td class="text-end">${Number(item.quantidade_comprada != null ? item.quantidade_comprada : (item.quantidade || 0))}</td>
+                <td class="text-end">${Number(item.quantidade_devolvida || 0)}</td>
+                <td class="text-end fw-semibold">${Number(item.saldo != null ? item.saldo : (item.quantidade_maxima || 0))}</td>
+                <td>${badgeSaldo(item.status_ui)}</td>
             </tr>
         `).join('');
 
-        const chaveAtual = String(compra.chave_acesso || '').replace(/\D/g, '');
+        const linhas = itens.map((item, idx) => `
+            <tr data-idx="${idx}">
+                <td>${escapeHtml(item.produto_nome || '-')}</td>
+                <td class="text-end small">${Number(item.quantidade_comprada || 0)}</td>
+                <td class="text-end small">${Number(item.quantidade_devolvida || 0)}</td>
+                <td class="text-end small text-primary">${Number(item.saldo != null ? item.saldo : (item.quantidade_maxima || 0))}</td>
+                <td>
+                    <input type="number" min="0.001" step="0.001"
+                        class="form-control form-control-sm nfe-dev-qtd"
+                        data-compra-item-id="${item.compra_item_id}"
+                        data-produto-id="${item.produto_id || ''}"
+                        data-valor-unitario="${Number(item.valor_unitario || 0)}"
+                        data-max="${Number(item.saldo != null ? item.saldo : (item.quantidade_maxima || item.quantidade || 0))}"
+                        value="${Number(item.quantidade || 0)}"
+                        ${bloqueado ? 'disabled' : ''}
+                    >
+                </td>
+                <td>
+                    <input type="text" maxlength="4" class="form-control form-control-sm nfe-dev-cfop"
+                        value="${escapeHtml(item.cfop || prep.cfopSugerido || '5202')}"
+                        ${bloqueado ? 'disabled' : ''}
+                    >
+                </td>
+                <td class="small text-muted">
+                    ${badgeSaldo(item.status_ui)}
+                    <br>CSOSN/CST: ${escapeHtml(item.csosn || item.cst || '-')}
+                    ${item.espelhamento_ok ? '<br><span class="badge bg-success">Espelhado</span>' : ''}
+                </td>
+            </tr>
+        `).join('');
+
+        const tribOrig = prep.tributacaoOriginal || {};
+        const painelTribHtml = Object.keys(tribOrig).length
+            ? Object.entries(tribOrig).map(([nome, info]) => `
+                <div class="d-flex justify-content-between border-bottom py-1 small">
+                    <span>${info.presente ? '✔' : '○'} <strong>${escapeHtml(nome)}</strong></span>
+                    <span class="${info.presente ? 'text-success' : 'text-muted'}">${escapeHtml(info.texto || '')}</span>
+                </div>
+              `).join('')
+            : '<div class="text-muted small">Tributação original indisponível (XML não carregado).</div>';
+
+        const badgeCmp = (linha) => {
+            if (linha.cor === 'verde') return '<span class="badge bg-success">Igual</span>';
+            if (linha.cor === 'amarelo') return '<span class="badge bg-warning text-dark">Adaptado</span>';
+            return '<span class="badge bg-danger">Divergente</span>';
+        };
+        const comparacaoHtml = (prep.comparacaoFiscal || []).length
+            ? (prep.comparacaoFiscal || []).map((cmp) => `
+                <div class="mb-3">
+                    <div class="fw-semibold mb-1">${escapeHtml(cmp.produto || `Item ${cmp.nItemOrigem || ''}`)}
+                        <small class="text-muted">(fator ${cmp.fator != null ? cmp.fator : 1})</small>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-bordered mb-0">
+                            <thead><tr><th>Campo</th><th>NF Original</th><th>NF Devolução</th><th>Status</th></tr></thead>
+                            <tbody>
+                                ${(cmp.linhas || []).map((l) => `
+                                    <tr>
+                                        <td>${escapeHtml(l.campo)}</td>
+                                        <td>${escapeHtml(l.original != null && l.original !== '' ? String(l.original) : '—')}</td>
+                                        <td>${escapeHtml(l.devolucao != null && l.devolucao !== '' ? String(l.devolucao) : '—')}</td>
+                                        <td>${badgeCmp(l)}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+              `).join('')
+            : '<div class="alert alert-secondary mb-0">Comparação fiscal será exibida após carregar o XML da NF-e original.</div>';
+
+        const historicoDev = (prep.nfeDevolucoes || []).length
+            ? `
+            <div class="border rounded p-3 mt-3 bg-light">
+                <h6 class="mb-2">Histórico — NF-e de Devolução (vínculo com a compra)</h6>
+                <div class="small mb-2"><strong>NF-e Original:</strong> ${escapeHtml(chave || '-')}</div>
+                <ol class="mb-0 ps-3">
+                    ${(prep.nfeDevolucoes || []).map((n) => {
+                        const ui = n.statusUi || {};
+                        const emoji = ui.emoji || '⚪';
+                        const label = ui.label || n.status || '-';
+                        const acoes = n.acoes || {};
+                        return `
+                        <li class="mb-3">
+                            <div>
+                                <strong>NF-e ${escapeHtml(String(n.numero || n.id))}/${escapeHtml(String(n.serie || '-'))}</strong>
+                                — ${emoji} ${escapeHtml(label)}
+                                ${n.quantidade_total != null ? ` · qtd ${Number(n.quantidade_total)}` : ''}
+                            </div>
+                            <pre class="border rounded p-2 bg-dark text-light small mt-2 mb-2" style="font-family: Consolas, monospace; white-space: pre-wrap;">═══════════════════════════════
+STATUS DA NF-e
+
+${emoji} ${escapeHtml(label)}
+
+Número: ${escapeHtml(String(n.numero || '-'))}
+Série: ${escapeHtml(String(n.serie || '-'))}
+Recibo: ${escapeHtml(n.recibo || '-')}
+Protocolo: ${escapeHtml(n.protocolo || '-')}
+Última consulta: ${escapeHtml(n.consultado_em || n.sincronizado_em || '-')}
+═══════════════════════════════</pre>
+                            ${n.rejeicao ? `<div class="alert alert-danger py-2 small mb-2" style="white-space:pre-wrap">${escapeHtml(n.rejeicao)}</div>` : ''}
+                            <div class="text-muted small" style="word-break:break-all">Chave: ${escapeHtml(n.chave_acesso || '-')}</div>
+                            <div class="d-flex flex-wrap gap-2 mt-2">
+                                ${acoes.downloadXml || n.tem_xml ? `<a class="btn btn-sm btn-outline-primary" target="_blank" href="${API_URL}/compras/nfe-devolucao/${n.id}/xml?tipo=assinado">XML</a>` : ''}
+                                ${n.tem_danfe ? `<a class="btn btn-sm btn-outline-secondary" target="_blank" href="${API_URL}/compras/nfe-devolucao/${n.id}/danfe">DANFE</a>` : ''}
+                                ${n.tem_danfe_cancelado ? `<a class="btn btn-sm btn-outline-secondary" target="_blank" href="${API_URL}/compras/nfe-devolucao/${n.id}/danfe?tipo=cancelado">DANFE cancelado</a>` : ''}
+                                ${acoes.consultar !== false && n.chave_acesso ? `<button type="button" class="btn btn-sm btn-outline-info" onclick="consultarSituacaoNfeDevolucao(${n.id}, ${compra.id || id})">Consultar Situação</button>` : ''}
+                                ${acoes.reenviar ? `<button type="button" class="btn btn-sm btn-outline-warning" onclick="reenviarNfeDevolucaoCompra(${n.id}, ${compra.id || id})">Reenviar</button>` : ''}
+                                ${acoes.cancelar ? `<button type="button" class="btn btn-sm btn-outline-danger" onclick="cancelarNfeDevolucaoCompra(${n.id}, ${compra.id || id})">Cancelar (SEFAZ)</button>` : ''}
+                                <button type="button" class="btn btn-sm btn-outline-dark" onclick="abrirTimelineNfeDevolucao(${n.id})">Histórico / Timeline</button>
+                            </div>
+                            <div id="nfeDevTimeline-${n.id}" class="mt-2 small" style="display:none"></div>
+                        </li>`;
+                    }).join('')}
+                </ol>
+            </div>`
+            : '<div class="text-muted small mt-3" id="nfeDevHistoricoVazio">Nenhuma NF-e de devolução emitida ainda.</div>';
 
         const modalHtml = `
             <div class="modal fade" id="modalNFeDevolucaoCompra" tabindex="-1">
@@ -3648,83 +3807,134 @@ function abrirModalNFeDevolucaoCompra(id) {
                     <div class="modal-content">
                         <div class="modal-header bg-danger text-white">
                             <h5 class="modal-title">
-                                <i class="fas fa-file-invoice"></i> NF-e de Devolução SEFAZ - Compra #${compra.id}
+                                <i class="fas fa-file-invoice"></i> Central NF-e — Modo DEVOLUÇÃO
                             </h5>
                             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                         </div>
-
                         <div class="modal-body">
-                            <div class="alert alert-warning">
-                                Antes de emitir para a SEFAZ, registre primeiro a <strong>devolução interna</strong>.
-                                A NF-e de devolução será emitida somente para os itens já devolvidos.
-                            </div>
+                            <pre class="border rounded p-3 bg-dark text-warning text-center mb-3" style="font-family: Consolas, monospace; white-space: pre-wrap;">═══════════════════════════════
+        NF-e DE DEVOLUÇÃO
 
-                            <div class="row mb-3">
-                                <div class="col-md-6">
-                                    <strong>Fornecedor:</strong><br>
-                                    ${escapeHtml(compra.fornecedor || '-')}
+Compra nº: ${compra.id || id}
+Fornecedor: ${escapeHtml(compra.fornecedor || '-')}
+Referenciando NF-e: ${escapeHtml(chave || '-')}
+═══════════════════════════════</pre>
+
+                            ${prep.motivoBloqueio ? `<div class="alert alert-warning">${escapeHtml(prep.motivoBloqueio)}</div>` : ''}
+                            ${prep.fonteXmlOrigem ? `<div class="alert alert-success py-2 small">XML original carregado (${escapeHtml(prep.fonteXmlOrigem)}). Tributação espelhada item a item.</div>` : ''}
+
+                            <ul class="nav nav-tabs mb-3" role="tablist">
+                                <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#nfeDevTabEmissao" type="button">Emissão</button></li>
+                                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#nfeDevTabComparacao" type="button">Comparação Fiscal</button></li>
+                                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#nfeDevTabCiclo" type="button">Ciclo de Vida</button></li>
+                            </ul>
+
+                            <div class="tab-content">
+                              <div class="tab-pane fade show active" id="nfeDevTabEmissao">
+                                <div class="row mb-3">
+                                    <div class="col-md-4">
+                                        <label class="form-label">Emitente</label>
+                                        <input class="form-control" value="Empresa (bloqueado)" disabled>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label">Destinatário (fornecedor)</label>
+                                        <input class="form-control" value="${escapeHtml(compra.fornecedor || '')}" disabled>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label">Chave referenciada (NF original)</label>
+                                        <input type="text" id="chaveNFeFornecedorDevolucao" class="form-control"
+                                            maxlength="44" value="${escapeHtml(chave)}" disabled>
+                                    </div>
                                 </div>
-                                <div class="col-md-3">
-                                    <strong>Total da compra:</strong><br>
-                                    ${formatCurrency(compra.total)}
+
+                                <div class="border rounded p-3 mb-3">
+                                    <div class="d-flex flex-wrap justify-content-between align-items-center mb-2 gap-2">
+                                        <h6 class="mb-0">Controle de Saldo</h6>
+                                        ${badgeSaldo(statusCompraUi)}
+                                    </div>
+                                    <div class="row small mb-2">
+                                        <div class="col-md-4"><strong>Comprado:</strong> ${Number(ctrl.totais?.comprado || 0)}</div>
+                                        <div class="col-md-4"><strong>Devolvido:</strong> ${Number(ctrl.totais?.devolvido || 0)}</div>
+                                        <div class="col-md-4"><strong>Saldo:</strong> ${Number(ctrl.totais?.saldo || 0)}</div>
+                                    </div>
+                                    <div class="table-responsive">
+                                        <table class="table table-sm table-bordered mb-0">
+                                            <thead>
+                                                <tr>
+                                                    <th>Produto</th>
+                                                    <th class="text-end">Comprado</th>
+                                                    <th class="text-end">Devolvido</th>
+                                                    <th class="text-end">Saldo</th>
+                                                    <th>Status</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                ${linhasPainel || '<tr><td colspan="5" class="text-center text-muted">Sem itens</td></tr>'}
+                                            </tbody>
+                                        </table>
+                                    </div>
                                 </div>
-                                <div class="col-md-3">
-                                    <strong>Status:</strong><br>
-                                    ${escapeHtml(compra.status || '-')}
+
+                                <div class="border rounded p-3 mb-3">
+                                    <h6 class="mb-2">Tributação Original</h6>
+                                    ${painelTribHtml}
                                 </div>
-                            </div>
 
-                            <div class="mb-3">
-                                <label class="form-label">
-                                    Chave de acesso da NF-e original do fornecedor
-                                </label>
-                                <input
-                                    type="text"
-                                    id="chaveNFeFornecedorDevolucao"
-                                    class="form-control"
-                                    maxlength="44"
-                                    placeholder="Digite ou cole a chave de 44 dígitos"
-                                    value="${escapeHtml(chaveAtual)}"
-                                >
-                                <small class="text-muted">
-                                    Obrigatório para emitir NF-e de devolução. Deve conter 44 dígitos.
-                                </small>
-                            </div>
+                                <div class="row mb-3">
+                                    <div class="col-md-3">
+                                        <label class="form-label">CFOP padrão</label>
+                                        <input type="text" id="nfeDevCfopPadrao" class="form-control"
+                                            maxlength="4" value="${escapeHtml(prep.cfopSugerido || '5202')}"
+                                            ${bloqueado ? 'disabled' : ''}>
+                                    </div>
+                                    <div class="col-md-9">
+                                        <label class="form-label">Observações</label>
+                                        <input type="text" id="nfeDevObservacoes" class="form-control"
+                                            maxlength="500"
+                                            placeholder="Opcional — complementar à referência da NF original"
+                                            ${bloqueado ? 'disabled' : ''}>
+                                    </div>
+                                </div>
 
-                            <h6>Itens já devolvidos internamente</h6>
+                                <h6>Itens desta emissão (somente com saldo; qtd ≤ saldo)</h6>
+                                <div class="table-responsive">
+                                    <table class="table table-sm table-bordered align-middle">
+                                        <thead>
+                                            <tr>
+                                                <th>Produto</th>
+                                                <th class="text-end">Comprado</th>
+                                                <th class="text-end">Devolvido</th>
+                                                <th class="text-end">Saldo</th>
+                                                <th>Qtd desta NF-e</th>
+                                                <th>CFOP</th>
+                                                <th>Status / Tributos</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            ${linhas || '<tr><td colspan="7" class="text-center text-danger">Nenhum item com saldo disponível.</td></tr>'}
+                                        </tbody>
+                                    </table>
+                                </div>
 
-                            <div class="table-responsive">
-                                <table class="table table-sm table-bordered align-middle">
-                                    <thead>
-                                        <tr>
-                                            <th>Produto</th>
-                                            <th>Qtd devolvida</th>
-                                            <th>Valor unitário</th>
-                                            <th>Total</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        ${linhas || '<tr><td colspan="4" class="text-center text-danger">Nenhum item devolvido internamente. Faça primeiro a devolução interna.</td></tr>'}
-                                    </tbody>
-                                </table>
+                                ${historicoDev}
+                              </div>
+                              <div class="tab-pane fade" id="nfeDevTabComparacao">
+                                <p class="small text-muted">NF Original → NF Devolução (CST, CSOSN, CFOP, ICMS, IPI, PIS, COFINS, ST, FCP, DIFAL)</p>
+                                ${comparacaoHtml}
+                              </div>
+                              <div class="tab-pane fade" id="nfeDevTabCiclo">
+                                <p class="small text-muted mb-2">Linha do tempo: XML → Assinatura → Validação → Envio → Autorização → Cancelamento</p>
+                                ${historicoDev}
+                              </div>
                             </div>
                         </div>
-
                         <div class="modal-footer">
-                            <button class="btn btn-secondary" data-bs-dismiss="modal">
-                                Fechar
-                            </button>
-
-                            <button class="btn btn-primary" onclick="salvarChaveNFeFornecedor(${compra.id})">
-                                Salvar chave
-                            </button>
-
-                            <button
-                                class="btn btn-danger"
-                                onclick="confirmarEmissaoNFeDevolucaoCompra(${compra.id})"
-                                ${itensDevolvidos.length === 0 ? 'disabled' : ''}
-                            >
-                                Emitir NF-e devolução SEFAZ
+                            <button class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
+                            <button class="btn btn-danger"
+                                id="btnEmitirNfeDevolucao"
+                                onclick="confirmarEmissaoNFeDevolucaoCompra(${compra.id || id})"
+                                ${bloqueado || !itens.length ? 'disabled' : ''}>
+                                Emitir NF-e de Devolução
                             </button>
                         </div>
                     </div>
@@ -3735,12 +3945,110 @@ function abrirModalNFeDevolucaoCompra(id) {
         $('#modalNFeDevolucaoCompra').remove();
         $('body').append(modalHtml);
         $('#modalNFeDevolucaoCompra').modal('show');
-
         $('#modalNFeDevolucaoCompra').on('hidden.bs.modal', function () {
             $('#modalNFeDevolucaoCompra').remove();
         });
+
+        if (bloqueado) {
+            $('#btnEmitirNfeDevolucao').prop('disabled', true);
+        }
     }).fail(function(xhr) {
-        showNotification(xhr.responseJSON?.error || 'Erro ao carregar compra.', 'danger');
+        const msg = xhr.responseJSON?.error || 'Erro ao carregar pré-preenchimento da devolução.';
+        showNotification(msg, 'danger');
+    });
+}
+
+function cancelarNfeDevolucaoCompra(notaId, compraId) {
+    const motivo = prompt('Motivo do cancelamento da NF-e de devolução (mín. 15 caracteres):');
+    if (motivo == null) return;
+    if (String(motivo).trim().length < 15) {
+        showNotification('Informe um motivo com pelo menos 15 caracteres.', 'warning');
+        return;
+    }
+    if (!confirm('Enviar evento oficial de cancelamento à SEFAZ e reabrir o saldo?')) return;
+
+    $.ajax({
+        url: `${API_URL}/compras/nfe-devolucao/${notaId}/cancelar`,
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ motivo: String(motivo).trim() })
+    }).done(function(resp) {
+        if (resp.success === false) {
+            showNotification(resp.message || resp.error || 'Cancelamento rejeitado pela SEFAZ.', 'danger');
+        } else {
+            showNotification(resp.message || 'NF-e cancelada na SEFAZ. Saldo reaberto.', 'success');
+        }
+        $('#modalNFeDevolucaoCompra').modal('hide');
+        abrirModalNFeDevolucaoCompra(compraId);
+        if (typeof loadCompras === 'function') loadCompras();
+    }).fail(function(xhr) {
+        const body = xhr.responseJSON || {};
+        showNotification(body.message || body.error || 'Erro ao cancelar devolução.', 'danger');
+    });
+}
+
+function consultarSituacaoNfeDevolucao(notaId, compraId) {
+    $.ajax({
+        url: `${API_URL}/compras/nfe-devolucao/${notaId}/consultar`,
+        method: 'POST',
+        contentType: 'application/json',
+        data: '{}'
+    }).done(function(resp) {
+        const msg = resp.mensagem || resp.xMotivo || `Status: ${resp.status}`;
+        showNotification(msg, resp.status === 'autorizada' ? 'success' : 'info');
+        if (compraId) {
+            $('#modalNFeDevolucaoCompra').modal('hide');
+            abrirModalNFeDevolucaoCompra(compraId);
+        }
+    }).fail(function(xhr) {
+        showNotification(xhr.responseJSON?.error || 'Erro na consulta SEFAZ.', 'danger');
+    });
+}
+
+function reenviarNfeDevolucaoCompra(notaId, compraId) {
+    if (!confirm('Reenviar o XML assinado à SEFAZ? (somente se rejeitada / erro de comunicação)')) return;
+    $.ajax({
+        url: `${API_URL}/compras/nfe-devolucao/${notaId}/reenviar`,
+        method: 'POST',
+        contentType: 'application/json',
+        data: '{}'
+    }).done(function(resp) {
+        showNotification(resp.message || `Status: ${resp.status}`, resp.success ? 'success' : 'warning');
+        $('#modalNFeDevolucaoCompra').modal('hide');
+        abrirModalNFeDevolucaoCompra(compraId);
+    }).fail(function(xhr) {
+        showNotification(xhr.responseJSON?.error || 'Reenvio bloqueado ou falhou.', 'danger');
+    });
+}
+
+function abrirTimelineNfeDevolucao(notaId) {
+    const $box = $(`#nfeDevTimeline-${notaId}`);
+    if (!$box.length) return;
+    if ($box.is(':visible') && $box.data('loaded')) {
+        $box.hide();
+        return;
+    }
+    $.ajax({
+        url: `${API_URL}/compras/nfe-devolucao/${notaId}/eventos`,
+        method: 'GET'
+    }).done(function(resp) {
+        const eventos = resp.eventos || [];
+        if (!eventos.length) {
+            $box.html('<div class="text-muted">Nenhum evento registrado ainda.</div>').show().data('loaded', true);
+            return;
+        }
+        const html = `<div class="border rounded p-2 bg-white"><strong>Linha do tempo</strong><ul class="mb-0 mt-2 ps-3">${
+            eventos.map((e) => `
+                <li class="mb-1">
+                    <span class="text-muted">${escapeHtml(e.hora || String(e.createdAt || '').slice(11, 16) || '-')}</span>
+                    — <strong>${escapeHtml(e.mensagem || e.evento || '-')}</strong>
+                    ${e.cStat ? ` <span class="badge bg-secondary">${escapeHtml(String(e.cStat))}</span>` : ''}
+                </li>
+            `).join('')
+        }</ul></div>`;
+        $box.html(html).show().data('loaded', true);
+    }).fail(function() {
+        showNotification('Erro ao carregar histórico de eventos.', 'danger');
     });
 }
 
@@ -3768,56 +4076,102 @@ function confirmarEmissaoNFeDevolucaoCompra(id) {
     const chave = String($('#chaveNFeFornecedorDevolucao').val() || '').replace(/\D/g, '');
 
     if (chave.length !== 44) {
-        showNotification('Salve uma chave de NF-e válida com 44 dígitos antes de emitir.', 'warning');
+        showNotification('Compra sem chave da NF-e (44 dígitos).', 'warning');
         return;
     }
 
-    if (!confirm('Confirma a emissão da NF-e modelo 55 de devolução para a SEFAZ?')) {
+    const itens = [];
+    let excedeu = false;
+    $('#modalNFeDevolucaoCompra .nfe-dev-qtd').each(function() {
+        const qtd = Number($(this).val() || 0);
+        if (!(qtd > 0)) return;
+        const max = Number($(this).data('max') || 0);
+        if (qtd > max + 1e-9) {
+            showNotification(`Quantidade ${qtd} excede o saldo disponível (${max}).`, 'warning');
+            excedeu = true;
+            return false;
+        }
+        const $tr = $(this).closest('tr');
+        itens.push({
+            compra_item_id: Number($(this).data('compra-item-id')),
+            produto_id: Number($(this).data('produto-id')) || null,
+            quantidade: qtd,
+            valor_unitario: Number($(this).data('valor-unitario') || 0),
+            cfop: String($tr.find('.nfe-dev-cfop').val() || $('#nfeDevCfopPadrao').val() || '').replace(/\D/g, '').slice(0, 4)
+        });
+    });
+
+    if (excedeu) return;
+
+    if (!itens.length) {
+        showNotification('Informe a quantidade devolvida de pelo menos um item.', 'warning');
         return;
     }
 
-    salvarChaveNFeFornecedor(id);
+    if (!confirm('Confirma a emissão da NF-e de Devolução para a SEFAZ?\n\nSerá gerada nota com finNFe=4 referenciando a NF-e original.')) {
+        return;
+    }
 
-    setTimeout(function() {
-        $.ajax({
-            url: `${API_URL}/compras/${id}/emitir-nfe-devolucao`,
-            method: 'POST',
-            contentType: 'application/json'
-        }).done(function(resp) {
-            showNotification(resp.message || 'NF-e de devolução emitida.', 'success');
-            console.log('Retorno NF-e devolução:', resp);
+    const payload = {
+        tipoDocumento: 'DEVOLUCAO',
+        finNFe: 4,
+        origem: 'COMPRA',
+        compraId: id,
+        refNFe: chave,
+        observacoes: String($('#nfeDevObservacoes').val() || '').trim() || undefined,
+        cfop: String($('#nfeDevCfopPadrao').val() || '').replace(/\D/g, '').slice(0, 4) || undefined,
+        itens
+    };
 
+    const $btn = $('#btnEmitirNfeDevolucao');
+    $btn.prop('disabled', true).text('Transmitindo…');
+
+    $.ajax({
+        url: `${API_URL}/compras/${id}/emitir-nfe-devolucao`,
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify(payload)
+    }).done(function(resp) {
+        const r = resp.resultado || resp;
+        showNotification(resp.message || r.message || 'NF-e de devolução processada.', r.success === false ? 'warning' : 'success');
+
+        if (r.success || r.status === 'autorizada') {
             $('#modalNFeDevolucaoCompra').modal('hide');
             loadCompras();
-        }).fail(function(xhr) {
-            const resposta = xhr.responseJSON || { respostaBruta: xhr.responseText };
-
-            console.error('RETORNO COMPLETO SEFAZ:', resposta);
-            console.error('STATUS:', xhr.status);
-            console.error('DATA:', resposta);
-
-            const motivo =
-                resposta?.xMotivo ||
-                resposta?.motivo ||
-                resposta?.retorno?.xMotivo ||
-                resposta?.retorno?.xmotivo ||
-                resposta?.erro ||
-                resposta?.mensagem ||
-                resposta?.error ||
-                'Motivo não informado pelo backend.';
-
-            const cStat =
-                resposta?.cStat ||
-                resposta?.retorno?.cStat ||
-                resposta?.statusSefaz ||
-                '';
-
+            if (typeof apresentarDocumentoNfePosEmissao === 'function' && (resp.notaId || r.notaId)) {
+                // Central documental de vendas não lista devolução de compra; histórico fica no modal.
+            }
             alert(
-                `NF-e de devolução rejeitada pela SEFAZ.\n\n` +
-                `cStat: ${cStat || 'não informado'}\n` +
-                `Motivo: ${motivo}`
+                `NF-e de devolução autorizada.\n\n` +
+                `Número: ${r.numero || '-'}  Série: ${r.serie || '-'}\n` +
+                `Chave: ${r.chaveAcesso || r.chave || '-'}\n` +
+                `Protocolo: ${r.protocolo || '-'}\n` +
+                `Referência: ${chave}`
             );
-        });
+            return;
+        }
+
+        abrirModalNFeDevolucaoCompra(id);
+    }).fail(function(xhr) {
+        const resposta = xhr.responseJSON || {};
+        const motivo =
+            resposta?.xMotivo ||
+            resposta?.mensagem ||
+            resposta?.error ||
+            resposta?.resultado?.xMotivo ||
+            resposta?.resultado?.message ||
+            'Motivo não informado.';
+        const cStat = resposta?.cStat || resposta?.resultado?.cStat || '';
+        const status = resposta?.resultado?.status || '';
+
+        let titulo = 'Falha na emissão da NF-e de devolução';
+        if (status === 'erro_assinatura') titulo = 'Erro de assinatura digital';
+        else if (status === 'erro_comunicacao') titulo = 'Erro de comunicação com a SEFAZ';
+        else if (status === 'erro_validacao') titulo = 'XML inválido';
+        else if (status === 'rejeitada' || cStat) titulo = 'Rejeição da SEFAZ';
+
+        alert(`${titulo}.\n\ncStat: ${cStat || 'não informado'}\nMotivo: ${motivo}`);
+        $btn.prop('disabled', false).text('Emitir NF-e de Devolução');
     });
 }
 

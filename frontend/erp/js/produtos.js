@@ -1541,7 +1541,7 @@ function renderProdutos(produtos) {
                 </div>
             </div>
         </div>
-        <div class="card">
+        <div class="card cds-prod-lista" id="cdsProdLista" data-cds-prod-visualizacao="default">
             <div class="card-header cds-prod-lista-header">
                 <div class="cds-prod-lista-header__top">
                     <div class="cds-prod-lista-header__title">
@@ -1575,6 +1575,11 @@ function renderProdutos(produtos) {
                         <option value="">Todas as categorias</option>
                         ${montarOptionsFiltroCategorias(produtos)}
                     </select>
+                    <div class="cds-prod-lista-header__zoom" role="group" aria-label="Tamanho da visualização">
+                        <button type="button" class="btn btn-outline-secondary btn-sm" id="btnProdutosZoomPadrao" title="Tamanho padrão" aria-label="Tamanho padrão">A Padrão</button>
+                        <button type="button" class="btn btn-outline-secondary btn-sm" id="btnProdutosZoomMais" title="Aumentar visualização" aria-label="Aumentar visualização">A+</button>
+                        <button type="button" class="btn btn-outline-secondary btn-sm" id="btnProdutosZoomMenos" title="Diminuir visualização" aria-label="Diminuir visualização">A−</button>
+                    </div>
                 </div>
             </div>
 
@@ -1616,11 +1621,71 @@ function renderProdutos(produtos) {
         aplicarFiltrosProdutos(produtos);
     });
 
+    inicializarZoomListagemProdutos();
+
     carregarCategoriasProdutos();
     inicializarCardEstoqueBaixo();
     inicializarModalVencimentosProdutos();
     carregarVencimentosProdutos();
     carregarDashboardPromocoes();
+}
+
+/** Sprint UX-01 — densidade visual da listagem (somente CSS + localStorage). */
+const CDS_PRODUTOS_VISUALIZACAO_KEY = 'cds_produtos_visualizacao';
+const CDS_PRODUTOS_VISUALIZACAO_MODOS = ['default', 'medium', 'large'];
+
+function lerPreferenciaVisualizacaoProdutos() {
+    try {
+        const raw = String(localStorage.getItem(CDS_PRODUTOS_VISUALIZACAO_KEY) || 'default').toLowerCase();
+        return CDS_PRODUTOS_VISUALIZACAO_MODOS.includes(raw) ? raw : 'default';
+    } catch (_) {
+        return 'default';
+    }
+}
+
+function salvarPreferenciaVisualizacaoProdutos(modo) {
+    try {
+        localStorage.setItem(CDS_PRODUTOS_VISUALIZACAO_KEY, modo);
+    } catch (_) { /* ignore */ }
+}
+
+function aplicarVisualizacaoProdutos(modo) {
+    const normalizado = CDS_PRODUTOS_VISUALIZACAO_MODOS.includes(modo) ? modo : 'default';
+    const $root = $('#cdsProdLista');
+    if (!$root.length) return normalizado;
+
+    $root.attr('data-cds-prod-visualizacao', normalizado);
+
+    const idx = CDS_PRODUTOS_VISUALIZACAO_MODOS.indexOf(normalizado);
+    $('#btnProdutosZoomPadrao').toggleClass('is-active', normalizado === 'default');
+    $('#btnProdutosZoomMais').prop('disabled', idx >= CDS_PRODUTOS_VISUALIZACAO_MODOS.length - 1);
+    $('#btnProdutosZoomMenos').prop('disabled', idx <= 0);
+
+    return normalizado;
+}
+
+function inicializarZoomListagemProdutos() {
+    const atual = aplicarVisualizacaoProdutos(lerPreferenciaVisualizacaoProdutos());
+    salvarPreferenciaVisualizacaoProdutos(atual);
+
+    $('#btnProdutosZoomPadrao').off('click.prodZoom').on('click.prodZoom', function () {
+        const modo = aplicarVisualizacaoProdutos('default');
+        salvarPreferenciaVisualizacaoProdutos(modo);
+    });
+
+    $('#btnProdutosZoomMais').off('click.prodZoom').on('click.prodZoom', function () {
+        const atualIdx = CDS_PRODUTOS_VISUALIZACAO_MODOS.indexOf(lerPreferenciaVisualizacaoProdutos());
+        const proximo = CDS_PRODUTOS_VISUALIZACAO_MODOS[Math.min(atualIdx + 1, CDS_PRODUTOS_VISUALIZACAO_MODOS.length - 1)];
+        const modo = aplicarVisualizacaoProdutos(proximo);
+        salvarPreferenciaVisualizacaoProdutos(modo);
+    });
+
+    $('#btnProdutosZoomMenos').off('click.prodZoom').on('click.prodZoom', function () {
+        const atualIdx = CDS_PRODUTOS_VISUALIZACAO_MODOS.indexOf(lerPreferenciaVisualizacaoProdutos());
+        const anterior = CDS_PRODUTOS_VISUALIZACAO_MODOS[Math.max(atualIdx - 1, 0)];
+        const modo = aplicarVisualizacaoProdutos(anterior);
+        salvarPreferenciaVisualizacaoProdutos(modo);
+    });
 }
 
 function renderCategoriasProdutos(produtos) {

@@ -22,7 +22,18 @@ const {
   calcularSubtotalFinanceiroItemCompra,
   resolverQuantidadesCompraItem
 } = require('../lib/motorConversaoUnidades');
-const { emitirNFeDevolucaoCompra } = require('../services/fiscal/nfeDevolucaoCompra');
+const {
+  emitirNFeDevolucaoCompra,
+  prepararNfeDevolucaoCompra,
+  obterNfeDevolucaoPorId,
+  listarHistoricoDevolucaoCompra,
+  cancelarNfeDevolucaoOficial,
+  consultarSituacaoDevolucao,
+  reenviarNfeDevolucao,
+  listarEventosDevolucao,
+  obterPainelStatus,
+  obterXmlVersionado
+} = require('../services/fiscal/nfeDevolucaoCompra');
 const { getMiipService } = require('../motores/miip/getMiipService');
 const centralOrchestrator = require('../motores/central-entradas/CentralEntradasOrchestrator');
 const { logCentralErro } = require('../motores/central-entradas/utils/centralLog');
@@ -1031,16 +1042,30 @@ router.post('/resumo-fiscal-entrada', (req, res) => {
 });
 
 router.get('/', (req, res) => {
-  db.all(`
-    SELECT c.*, 
-      (SELECT COUNT(*) FROM compras_itens WHERE compra_id = c.id) as total_itens,
-      (SELECT COUNT(*) FROM financeiro f WHERE f.compra_id = c.id AND f.status = 'pendente') as parcelas_pendentes
-    FROM compras c 
-    ORDER BY c.data_compra DESC, c.id DESC
-  `, (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(rows);
-  });
+  const { garantirTabelas } = require('../services/fiscal/nfeDevolucaoCompra');
+  const { garantirTabelasSaldoDevolucao } = require('../services/fiscal/controleSaldoDevolucaoCompra');
+  Promise.resolve(garantirTabelas())
+    .then(() => garantirTabelasSaldoDevolucao())
+    .then(() => {
+    db.all(`
+      SELECT c.*, 
+        (SELECT COUNT(*) FROM compras_itens WHERE compra_id = c.id) as total_itens,
+        (SELECT COUNT(*) FROM financeiro f WHERE f.compra_id = c.id AND f.status = 'pendente') as parcelas_pendentes,
+        (SELECT d.id FROM nfe_devolucoes_compra d
+          WHERE d.compra_id = c.id AND d.status = 'autorizada'
+          ORDER BY d.id DESC LIMIT 1) as nfe_devolucao_autorizada_id,
+        (SELECT COALESCE(SUM(i.quantidade), 0)
+          FROM nfe_devolucao_compra_itens i
+          INNER JOIN nfe_devolucoes_compra n ON n.id = i.nfe_devolucao_id
+          WHERE i.compra_id = c.id AND n.status = 'autorizada') as qtd_devolvida_fiscal,
+        (SELECT COALESCE(SUM(ci.quantidade), 0) FROM compras_itens ci WHERE ci.compra_id = c.id) as qtd_comprada_total
+      FROM compras c 
+      ORDER BY c.data_compra DESC, c.id DESC
+    `, (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json(rows);
+    });
+  }).catch((err) => res.status(500).json({ error: err.message }));
 });
 
 router.get('/:id', (req, res) => {
@@ -1661,17 +1686,162 @@ router.post('/parse-xml', async (req, res) => {
   });
 });
 
+/** RC1 — pré-preenchimento Central NF-e modo DEVOLUÇÃO */
+router.get('/:id/nfe-devolucao/preparar', async (req, res) => {
+  try {
+    const prep = await prepararNfeDevolucaoCompra(Number(req.params.id));
+    res.json({ success: true, ...prep });
+  } catch (error) {
+    console.error('Erro ao preparar NF-e de devolução:', error);
+    res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message,
+      code: error.code || null
+    });
+  }
+});
+
+router.get('/:id/nfe-devolucao/historico', async (req, res) => {
+  try {
+    const historico = await listarHistoricoDevolucaoCompra(Number(req.params.id));
+    res.json({ success: true, ...historico });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/nfe-devolucao/:notaId/xml', async (req, res) => {
+  try {
+    const tipo = String(req.query.tipo || 'assinado').toLowerCase();
+    const xml = await obterXmlVersionado(Number(req.params.notaId), tipo);
+    const nota = await obterNfeDevolucaoPorId(Number(req.params.notaId));
+    if (!nota) return res.status(404).json({ error: 'NF-e de devolução não encontrada.' });
+    if (!xml) return res.status(404).json({ error: `XML (${tipo}) não disponível.` });
+    res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="nfe-devolucao-${tipo}-${nota.chave_acesso || nota.id}.xml"`
+    );
+    res.send(xml);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/nfe-devolucao/:notaId/danfe', async (req, res) => {
+  try {
+    const nota = await obterNfeDevolucaoPorId(Number(req.params.notaId));
+    if (!nota) return res.status(404).json({ error: 'NF-e de devolução não encontrada.' });
+    const cancelado = String(req.query.tipo || '').toLowerCase() === 'cancelado';
+    const html = cancelado ? nota.danfe_html_cancelado : nota.danfe_html;
+    if (!html) {
+      return res.status(404).json({
+        error: cancelado ? 'DANFE cancelado não disponível.' : 'DANFE não disponível.'
+      });
+    }
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(html);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/nfe-devolucao/:notaId/status', async (req, res) => {
+  try {
+    const painel = await obterPainelStatus(Number(req.params.notaId));
+    if (!painel) return res.status(404).json({ success: false, error: 'NF-e de devolução não encontrada.' });
+    res.json({ success: true, ...painel });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/nfe-devolucao/:notaId/eventos', async (req, res) => {
+  try {
+    const eventos = await listarEventosDevolucao(Number(req.params.notaId));
+    res.json({ success: true, eventos });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/nfe-devolucao/:notaId/consultar', async (req, res) => {
+  try {
+    const out = await consultarSituacaoDevolucao(Number(req.params.notaId), {
+      usuarioId: req.usuario?.id || req.user?.id || null,
+      usuarioNome: req.usuario?.nome || req.user?.nome || req.usuario?.username || null,
+      ip: req.ip || req.headers['x-forwarded-for'] || null,
+      computador: req.headers['x-computer-name'] || req.headers['x-client-host'] || null
+    });
+    res.json(out);
+  } catch (error) {
+    res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message,
+      code: error.code || null
+    });
+  }
+});
+
+router.post('/nfe-devolucao/:notaId/reenviar', async (req, res) => {
+  try {
+    const out = await reenviarNfeDevolucao(Number(req.params.notaId), {
+      usuarioId: req.usuario?.id || req.user?.id || null,
+      usuarioNome: req.usuario?.nome || req.user?.nome || req.usuario?.username || null,
+      ip: req.ip || req.headers['x-forwarded-for'] || null,
+      computador: req.headers['x-computer-name'] || req.headers['x-client-host'] || null
+    });
+    res.json(out);
+  } catch (error) {
+    res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message,
+      code: error.code || null
+    });
+  }
+});
+
+router.post('/nfe-devolucao/:notaId/cancelar', async (req, res) => {
+  try {
+    const out = await cancelarNfeDevolucaoOficial(Number(req.params.notaId), {
+      motivo: req.body?.motivo || req.body?.justificativa,
+      usuarioId: req.usuario?.id || req.user?.id || null,
+      usuarioNome: req.usuario?.nome || req.user?.nome || req.usuario?.username || null,
+      ip: req.ip || req.headers['x-forwarded-for'] || null,
+      computador: req.headers['x-computer-name'] || req.headers['x-client-host'] || null,
+      forcarPrazo: Boolean(req.body?.forcarPrazo)
+    });
+    res.status(out.success ? 200 : 422).json(out);
+  } catch (error) {
+    res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message,
+      code: error.code || error.codigo || null
+    });
+  }
+});
+
 router.post('/:id/emitir-nfe-devolucao', async (req, res) => {
   try {
     const compraId = Number(req.params.id);
+    const body = req.body || {};
 
-    const resultado = await emitirNFeDevolucaoCompra(compraId);
+    const resultado = await emitirNFeDevolucaoCompra(compraId, {
+      itens: body.itens,
+      observacoes: body.observacoes,
+      cfop: body.cfop,
+      refNFe: body.refNFe || body.chave_referenciada || body.chaveReferenciada,
+      usuarioId: req.usuario?.id || req.user?.id || body.usuarioId || null,
+      usuarioNome: req.usuario?.nome || req.user?.nome || req.usuario?.username || body.usuarioNome || null,
+      ip: req.ip || req.headers['x-forwarded-for'] || null,
+      computador: req.headers['x-computer-name'] || req.headers['x-client-host'] || null
+    });
 
     if (!resultado.success && resultado.status === 'rejeitada') {
       return res.status(400).json({
         sucesso: false,
         autorizado: false,
-        mensagem: 'NF-e de devolução rejeitada pela SEFAZ.',
+        mensagem: resultado.message || 'NF-e de devolução rejeitada pela SEFAZ.',
         cStat: resultado.cStat,
         xMotivo: resultado.xMotivo,
         retornoSefaz: resultado.retorno,
@@ -1679,15 +1849,36 @@ router.post('/:id/emitir-nfe-devolucao', async (req, res) => {
       });
     }
 
+    if (!resultado.success && ['erro_assinatura', 'erro_comunicacao', 'erro_validacao', 'modulo_desabilitado'].includes(resultado.status)) {
+      return res.status(400).json({
+        sucesso: false,
+        error: resultado.message,
+        code: resultado.code || resultado.status,
+        resultado
+      });
+    }
+
     res.json({
-      message: resultado.success
-        ? 'NF-e de devolução autorizada com sucesso.'
-        : 'NF-e de devolução enviada/processada.',
-      resultado
+      message: resultado.message
+        || (resultado.success
+          ? 'NF-e de devolução autorizada com sucesso.'
+          : 'NF-e de devolução enviada/processada.'),
+      resultado,
+      notaId: resultado.notaId || resultado.idNota,
+      status: resultado.status,
+      chaveAcesso: resultado.chaveAcesso || resultado.chave,
+      protocolo: resultado.protocolo,
+      recibo: resultado.recibo || null,
+      numero: resultado.numero,
+      serie: resultado.serie
     });
   } catch (error) {
     console.error('Erro ao emitir NF-e de devolução:', error);
-    res.status(500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({
+      error: error.message,
+      code: error.code || null,
+      erros: error.erros || null
+    });
   }
 });
 

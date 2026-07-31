@@ -187,10 +187,13 @@
     }
   }
 
-  function limparCampo() {
+  function limparCampo(opcoes) {
+    const opts = opcoes && typeof opcoes === 'object' ? opcoes : {};
     const input = obterInput();
     if (input) input.value = '';
     fecharLista();
+    // Não devolver foco à busca quando um modal de quantidade/modo vai abrir
+    if (opts.focar === false) return;
     if (typeof global.focarCampoCodigo === 'function') {
       global.focarCampoCodigo();
     }
@@ -211,14 +214,14 @@
 
     if (typeof global.adicionarProdutoConsultaPDV === 'function') {
       global.adicionarProdutoConsultaPDV(produto.id);
-      limparCampo();
+      limparCampo({ focar: false });
       return;
     }
 
     if (typeof global.adicionarProdutoPorCodigo === 'function') {
       const codigo = produto.codigo_barras || produto.codigo || String(produto.id);
       global.adicionarProdutoPorCodigo(codigo);
-      limparCampo();
+      limparCampo({ focar: false });
     }
   }
 
@@ -241,7 +244,7 @@
     ) {
       if (typeof global.adicionarProdutoPorCodigo === 'function') {
         global.adicionarProdutoPorCodigo(termo);
-        limparCampo();
+        limparCampo({ focar: false });
       }
       return;
     }

@@ -278,14 +278,116 @@
         } catch { /* ignore quota */ }
     }
 
+    /**
+     * RC3.7.5.3 — cooldown 656 pós AUTO_SYNC_NSU (somente apresentação).
+     * Ativo quando há espera SEFAZ (gate ou NSU) e evidência de recuperação NSU.
+     */
+    function nsuNumericoCentral(valor) {
+        const digits = String(valor == null ? '' : valor).replace(/\D/g, '');
+        if (!digits) return 0;
+        return Number(digits.replace(/^0+(?=\d)/, '')) || 0;
+    }
+
+    function formatarHoraCurtaCentral(iso) {
+        if (!iso) return '—';
+        const d = new Date(iso);
+        if (Number.isNaN(d.getTime())) return '—';
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+
+    function formatarMinutosRestantesCentral(restanteMs) {
+        const ms = Math.max(0, Number(restanteMs) || 0);
+        if (ms <= 0) return 'agora';
+        const minutos = Math.max(1, Math.ceil(ms / 60000));
+        return minutos === 1 ? '1 minuto' : `${minutos} minutos`;
+    }
+
+    function resolverCooldownSefaz656Ux(state = {}, agora = Date.now()) {
+        const sefaz = state.sefazOperacional || {};
+        const nsu = state.sincronizacaoNsu || state.sincronizacao || {};
+        const ultimo = (state.servicoStatus || {}).ultimoResultado || {};
+        const bloqueio = sefaz.bloqueio656 || null;
+        const gateBloqueado = Boolean(
+            bloqueio?.ativo
+            || sefaz.estadoOperacional?.codigo === 'BLOCKED'
+            || sefaz.consultaBloqueada
+        );
+        const cStat = String(
+            sefaz.ultimoCStat
+            || bloqueio?.cStat
+            || nsu.ultimoCstat
+            || ultimo.cStat
+            || ''
+        );
+        const is656 = cStat === '656'
+            || /656|Consumo Indevido|CONSUMO_INDEVIDO/i.test(String(ultimo.mensagem || ultimo.codigoErro || ''));
+
+        const candidatos = [
+            bloqueio?.bloqueadoAte,
+            sefaz.proximaConsulta,
+            nsu.cooldownAte
+        ].filter(Boolean);
+        let proximaTentativa = null;
+        let restanteMs = 0;
+        for (let i = 0; i < candidatos.length; i += 1) {
+            const t = new Date(candidatos[i]).getTime();
+            if (Number.isNaN(t)) continue;
+            const rest = t - agora;
+            if (rest > restanteMs) {
+                restanteMs = rest;
+                proximaTentativa = candidatos[i];
+            }
+        }
+        // tempoRestanteMs do gate só reforça se ainda houver alvo futuro
+        if (
+            proximaTentativa
+            && restanteMs > 0
+            && sefaz.tempoRestanteMs != null
+            && Number(sefaz.tempoRestanteMs) > restanteMs
+        ) {
+            restanteMs = Number(sefaz.tempoRestanteMs);
+        }
+
+        const cooldownNsuAtivo = Boolean(
+            nsu.cooldownAte && new Date(nsu.cooldownAte).getTime() > agora
+        );
+        const cooldownAtivo = (gateBloqueado || cooldownNsuAtivo) && restanteMs > 0;
+        const nsuLocal = nsuNumericoCentral(nsu.ultNsu);
+        const autoSyncNsu = Boolean(
+            nsuLocal > 0
+            && (is656 || String(nsu.ultimoCstat || '') === '656')
+            && (cooldownAtivo || cooldownNsuAtivo || gateBloqueado)
+        );
+
+        const ativo = Boolean(cooldownAtivo && (autoSyncNsu || (is656 && nsuLocal > 0)));
+
+        return {
+            ativo,
+            autoSyncNsu,
+            cStat: cStat || (ativo ? '656' : null),
+            proximaTentativa,
+            restanteMs: ativo ? restanteMs : 0,
+            proximaLabel: ativo ? formatarHoraCurtaCentral(proximaTentativa) : '—',
+            restanteLabel: ativo ? formatarMinutosRestantesCentral(restanteMs) : '—',
+            indicador: '🟡',
+            estado: 'AGUARDANDO_COOLDOWN_SEFAZ',
+            label: 'AGUARDANDO COOLDOWN DA SEFAZ',
+            descricao: 'Aguardando liberação da SEFAZ',
+            tooltipSync: 'A SEFAZ bloqueia novas consultas durante o período de espera.'
+        };
+    }
+
     function resolverEstadoServicoCentral(state) {
         const s = state.servicoStatus || {};
         const executando = s.executando || state.sincronizando;
         const syncAuto = s.syncAutomaticaHabilitada || s.servicoAtivo;
         const ultimo = s.ultimoResultado || {};
         const erroRecente = ultimo.sucesso === false && !executando;
+        const online = typeof navigator === 'undefined' ? true : navigator.onLine;
+        const cooldown = resolverCooldownSefaz656Ux(state);
 
-        if (!navigator.onLine) {
+        if (!online) {
             return {
                 codigo: 'offline',
                 label: 'Offline',
@@ -301,6 +403,17 @@
                 descricao: 'Buscando documentos na SEFAZ',
                 icone: 'fa-sync-alt fa-spin',
                 classe: 'central-ux-servico--sincronizando'
+            };
+        }
+        // RC3.7.5.3 — 656 + AUTO_SYNC_NSU: não exibir como ERRO
+        if (cooldown.ativo) {
+            return {
+                codigo: 'cooldown_656',
+                label: cooldown.label,
+                descricao: `${cooldown.indicador} ${cooldown.descricao} · Próxima tentativa: ${cooldown.proximaLabel} · Tempo restante: ${cooldown.restanteLabel}`,
+                icone: 'fa-hourglass-half',
+                classe: 'central-ux-servico--cooldown',
+                cooldown
             };
         }
         if (erroRecente) {
@@ -1220,13 +1333,33 @@
 
     function renderPainelSaudeSefazCentral(sefaz, statusBg = {}) {
         const est = sefaz?.estadoOperacional || { indicador: '🟢', label: 'Operando normalmente', codigo: 'NORMAL' };
-        const label = est.codigo === 'NORMAL' ? 'Operando normalmente' : (est.label || est.codigo);
+        const cooldown = resolverCooldownSefaz656Ux({
+            sefazOperacional: sefaz,
+            sincronizacaoNsu: statusBg.sincronizacaoNsu || statusBg.sincronizacao || null,
+            servicoStatus: statusBg
+        });
+        let label = est.codigo === 'NORMAL' ? 'Operando normalmente' : (est.label || est.codigo);
+        let indicador = est.indicador || '🟢';
+        // RC3.7.5.3 — BLOCKED/656 pós recovery não é "Erro"
+        if (cooldown.ativo) {
+            label = cooldown.label;
+            indicador = cooldown.indicador;
+        } else if (est.codigo === 'BLOCKED' && String(sefaz?.ultimoCStat || '') === '656') {
+            label = 'AGUARDANDO COOLDOWN DA SEFAZ';
+            indicador = '🟡';
+        }
         return `
             <div class="central-rc75-saude" id="centralRc75Saude" aria-label="SEFAZ Operacional">
                 <div class="central-rc75-saude__head">
                     <strong>SEFAZ OPERACIONAL</strong>
-                    <span>${escapeUx(est.indicador || '🟢')} ${escapeUx(label)}</span>
+                    <span>${escapeUx(indicador)} ${escapeUx(label)}</span>
                 </div>
+                ${cooldown.ativo ? `
+                <div class="central-rc75-saude__cooldown" role="status">
+                    <div><span class="central-rc75-k">Estado</span><span class="central-rc75-v">${escapeUx(cooldown.indicador)} ${escapeUx(cooldown.descricao)}</span></div>
+                    <div><span class="central-rc75-k">Próxima tentativa</span><span class="central-rc75-v">${escapeUx(cooldown.proximaLabel)}</span></div>
+                    <div><span class="central-rc75-k">Tempo restante</span><span class="central-rc75-v">${escapeUx(cooldown.restanteLabel)}</span></div>
+                </div>` : ''}
                 <div class="central-rc75-saude__grid">
                     <div><span class="central-rc75-k">Background</span><span class="central-rc75-v" data-central-live="bg-status">${escapeUx(statusBg.servicoAtivo ? 'ATIVO' : 'PARADO')}</span></div>
                     <div><span class="central-rc75-k">XML Wait</span><span class="central-rc75-v" data-central-live="xmlwait-status">${escapeUx(statusBg.xmlWait?.ativo ? 'ATIVO' : (statusBg.xmlWait?.telemetria?.schedulerAtivo ? 'ATIVO' : '—'))}</span></div>
@@ -1474,6 +1607,7 @@
         renderTendenciaKpiCentral,
         obterSnapshotKpisCentral,
         salvarSnapshotKpisCentral,
+        resolverCooldownSefaz656Ux,
         resolverEstadoServicoCentral,
         formatarDataHoraSeparadoCentral,
         formatarDataEmissaoCurtaCentral,

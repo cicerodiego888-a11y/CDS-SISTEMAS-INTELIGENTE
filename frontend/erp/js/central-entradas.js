@@ -909,6 +909,15 @@ function renderIndicadoresFiscaisCentral() {
 
 function renderSefazOperacionalChipCentral(painel) {
     if (!painel || !painel.estadoOperacional) return '';
+    const UX = centralUx();
+    const cooldown = UX.resolverCooldownSefaz656Ux?.(centralEntradasState);
+    if (cooldown?.ativo) {
+        return `<span class="central-ux1-sync-info central-ux1-sync-info--cooldown" title="${escapeHtmlCentralEntradas(cooldown.tooltipSync)}">
+            <span aria-hidden="true">${escapeHtmlCentralEntradas(cooldown.indicador)}</span>
+            SEFAZ: ${escapeHtmlCentralEntradas(cooldown.label)}
+            <small class="central-ux1-sync-cooldown-meta">· ${escapeHtmlCentralEntradas(cooldown.proximaLabel)} · ${escapeHtmlCentralEntradas(cooldown.restanteLabel)}</small>
+        </span>`;
+    }
     const est = painel.estadoOperacional;
     const label = (!est.codigo || est.codigo === 'NORMAL') ? 'Normal' : (est.label || 'Atenção');
     return `<span class="central-ux1-sync-info" title="Status da SEFAZ">
@@ -927,6 +936,11 @@ function renderCabecalhoUx1Central() {
     const podeDiagnostico = typeof usuarioPodeAcessarDiagnosticoCentral === 'function'
         && usuarioPodeAcessarDiagnosticoCentral();
     const notifQtd = centralEntradasState.notificacoesNaoLidas || 0;
+    const cooldown = UX.resolverCooldownSefaz656Ux?.(centralEntradasState) || { ativo: false };
+    const syncDesabilitado = Boolean(centralEntradasState.sincronizando || cooldown.ativo);
+    const syncTitle = cooldown.ativo
+        ? cooldown.tooltipSync
+        : 'Sincronizar agora com a SEFAZ';
 
     container.innerHTML = `
         <div class="central-rc40-header">
@@ -939,9 +953,19 @@ function renderCabecalhoUx1Central() {
                     </span>
                     ${renderSefazOperacionalChipCentral(centralEntradasState.sefazOperacional)}
                 </div>
+                ${cooldown.ativo ? `
+                <div class="central-ux1-cooldown-banner" role="status" aria-live="polite">
+                    <span aria-hidden="true">🟡</span>
+                    <span>Aguardando liberação da SEFAZ</span>
+                    <span class="central-ux1-cooldown-banner__meta">Próxima tentativa: <strong>${escapeHtmlCentralEntradas(cooldown.proximaLabel)}</strong></span>
+                    <span class="central-ux1-cooldown-banner__meta">Tempo restante: <strong>${escapeHtmlCentralEntradas(cooldown.restanteLabel)}</strong></span>
+                </div>` : ''}
             </div>
             <div class="central-rc40-header-acoes">
-                <button type="button" class="btn btn-light btn-sm" id="centralBtnSincronizar" title="Sincronizar agora com a SEFAZ">
+                <button type="button" class="btn btn-light btn-sm" id="centralBtnSincronizar"
+                    ${syncDesabilitado ? 'disabled' : ''}
+                    title="${escapeHtmlCentralEntradas(syncTitle)}"
+                    aria-disabled="${syncDesabilitado ? 'true' : 'false'}">
                     <i class="fas fa-sync-alt ${centralEntradasState.sincronizando ? 'fa-spin' : ''} me-1"></i> Sincronizar
                 </button>
                 <div class="dropdown central-rc40-mais">
@@ -1636,6 +1660,7 @@ function renderPainelServicoCentral() {
     const duracao = ultimo.duracaoMs != null ? `${Math.round(ultimo.duracaoMs / 1000)}s` : '—';
     const qtd = ultimo.notasNovas != null ? ultimo.notasNovas : '—';
     const executando = estado.codigo === 'sincronizando';
+    const cooldown = estado.cooldown || UX.resolverCooldownSefaz656Ux?.(centralEntradasState);
 
     container.innerHTML = `
         <div class="central-entradas-servico central-ux-servico ${estado.classe} central-entradas-anim-in ${executando ? 'central-entradas-servico--ativo' : ''}"
@@ -1649,12 +1674,22 @@ function renderPainelServicoCentral() {
                     <div class="central-ux-servico-descricao small text-muted">${escapeHtmlCentralEntradas(estado.descricao)}</div>
                 </div>
                 ${executando ? '<span class="badge bg-primary ms-2 central-ux-badge-pulse">Em execução</span>' : ''}
+                ${cooldown?.ativo && !executando
+                    ? '<span class="badge bg-warning text-dark ms-2">Cooldownoldown SEFAZ</span>'
+                    : ''}
             </div>
             <div class="central-entradas-servico-metricas">
                 <div title="Data e hora da última sincronização"><span class="label">Última execução</span><span>${escapeHtmlCentralEntradas(ultima ? formatarDataHoraCentral(ultima) : '—')}</span></div>
-                <div title="Próxima execução agendada"><span class="label">Próxima execução</span><span>${escapeHtmlCentralEntradas(proxima ? formatarDataHoraCentral(proxima) : '—')}</span></div>
+                <div title="Próxima execução agendada"><span class="label">Próxima execução</span><span>${escapeHtmlCentralEntradas(
+                    cooldown?.ativo
+                        ? `Liberação SEFAZ ${cooldown.proximaLabel}`
+                        : (proxima ? formatarDataHoraCentral(proxima) : '—')
+                )}</span></div>
                 <div title="Duração da última sincronização"><span class="label">Duração última sync</span><span>${escapeHtmlCentralEntradas(duracao)}</span></div>
                 <div title="Notas recebidas na última sincronização"><span class="label">Notas na última sync</span><span>${escapeHtmlCentralEntradas(qtd)}</span></div>
+                ${cooldown?.ativo ? `
+                <div title="Tempo restante do cooldown SEFAZ"><span class="label">Tempo restante</span><span>${escapeHtmlCentralEntradas(cooldown.restanteLabel)}</span></div>
+                ` : ''}
             </div>
         </div>`;
 }
@@ -3438,7 +3473,10 @@ function renderPainelSaudeSefazUxCentral() {
     }
     const inner = UX.renderPainelSaudeSefazCentral(
         centralEntradasState.sefazOperacional || {},
-        centralEntradasState.servicoStatus || centralEntradasState.statusServico || {}
+        {
+            ...(centralEntradasState.servicoStatus || centralEntradasState.statusServico || {}),
+            sincronizacaoNsu: centralEntradasState.sincronizacaoNsu || null
+        }
     );
     wrap.innerHTML = `<div class="central-rc40-monitor"><details><summary>Monitoramento — SEFAZ</summary><div class="pt-2">${inner}</div></details></div>`;
 }
@@ -3836,17 +3874,44 @@ function atualizarIndicadorSyncBotao() {
     const btn = document.getElementById('centralBtnSincronizar');
     if (!btn) return;
 
+    const UX = centralUx();
+    const cooldown = UX.resolverCooldownSefaz656Ux?.(centralEntradasState) || { ativo: false };
+
     if (centralEntradasState.sincronizando) {
         btn.disabled = true;
+        btn.setAttribute('aria-disabled', 'true');
+        btn.title = 'Sincronizando…';
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Sincronizando...';
-    } else {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fas fa-sync-alt me-1"></i> Sincronizar Agora';
+        return;
     }
+
+    if (cooldown.ativo) {
+        btn.disabled = true;
+        btn.setAttribute('aria-disabled', 'true');
+        btn.title = cooldown.tooltipSync
+            || 'A SEFAZ bloqueia novas consultas durante o período de espera.';
+        btn.innerHTML = '<i class="fas fa-hourglass-half me-1"></i> Sincronizar';
+        return;
+    }
+
+    btn.disabled = false;
+    btn.setAttribute('aria-disabled', 'false');
+    btn.title = 'Sincronizar agora com a SEFAZ';
+    btn.innerHTML = '<i class="fas fa-sync-alt me-1"></i> Sincronizar';
 }
 
 async function sincronizarCentralEntradas() {
     if (centralEntradasState.sincronizando) return;
+
+    const UX = centralUx();
+    const cooldown = UX.resolverCooldownSefaz656Ux?.(centralEntradasState);
+    if (cooldown?.ativo) {
+        showNotification(
+            `🟡 Aguardando liberação da SEFAZ. Próxima tentativa: ${cooldown.proximaLabel} · Tempo restante: ${cooldown.restanteLabel}`,
+            'warning'
+        );
+        return;
+    }
 
     centralEntradasState.sincronizando = true;
     atualizarIndicadorSyncBotao();
@@ -3858,13 +3923,28 @@ async function sincronizarCentralEntradas() {
         centralEntradasState.notasNovasUltimaSync = resultado.notasNovas || 0;
         centralEntradasState.ultimaSincronizacao = resultado.ultimaSincronizacao || new Date().toISOString();
 
+        const cStat = String(resultado.cStat || resultado.codigoErro || '');
+        const msgBruta = String(
+            (resultado.erros || []).join('; ')
+            || resultado.mensagemAmigavel
+            || resultado.mensagem
+            || ''
+        );
+        const is656 = cStat === '656' || /656|Consumo Indevido|CONSUMO_INDEVIDO/i.test(msgBruta);
+
         if (resultado.sucesso) {
             const msg = resultado.notasNovas > 0
                 ? `${resultado.notasNovas} nova${resultado.notasNovas === 1 ? '' : 's'} nota${resultado.notasNovas === 1 ? '' : 's'} encontrada${resultado.notasNovas === 1 ? '' : 's'}.`
                 : 'Sincronização concluída. Nenhuma nota nova.';
             showNotification(msg, 'success');
+        } else if (is656) {
+            // RC3.7.5.3 — não tratar cooldown como "erro" na notificação
+            showNotification(
+                '🟡 Aguardando liberação da SEFAZ (cStat 656). O NSU foi sincronizado; novas consultas serão liberadas após o período de espera.',
+                'warning'
+            );
         } else {
-            const erros = (resultado.erros || []).join('; ') || resultado.mensagem || 'Falha na sincronização';
+            const erros = msgBruta || 'Falha na sincronização';
             showNotification('Sincronização: ' + erros, 'warning');
         }
 

@@ -1,22 +1,56 @@
 /**
  * dfeRetornoParser — Parse puro do retorno SOAP da Distribuição DF-e.
  * RC3.6.E — extrairDocumentosZip passa a reportar descartes (sem mudar o conjunto persistido).
+ * RC3.7.5.2 — não fabricar NSU: tag ausente → null.
  *
  * @module services/fiscal/dfeRetornoParser
  */
 
 const zlib = require('zlib');
+const fs = require('fs');
+const path = require('path');
 
 const NSU_ZERADO = '000000000000000';
 
 /**
- * @param {string} nsu
- * @returns {string}
+ * Normaliza NSU existente para 15 dígitos.
+ * RC3.7.5.2 — null/undefined/vazio → null (nunca fabrica zero).
+ *
+ * @param {string|number|null|undefined} nsu
+ * @returns {string|null}
  */
 function normalizarNsu(nsu) {
-  const digitos = String(nsu || '').replace(/\D/g, '');
-  if (!digitos) return NSU_ZERADO;
+  if (nsu == null) return null;
+  const raw = String(nsu).trim();
+  if (raw === '') return null;
+  const digitos = raw.replace(/\D/g, '');
+  if (!digitos) return null;
   return digitos.padStart(15, '0');
+}
+
+/**
+ * Normaliza com fallback explícito para zero (cursor local / request / docZip).
+ * @param {*} nsu
+ * @returns {string}
+ */
+function normalizarNsuOuZero(nsu) {
+  return normalizarNsu(nsu) || NSU_ZERADO;
+}
+
+/**
+ * Extrai tag NSU do XML com suporte a namespace (nfe:, ns1:, etc.).
+ * @param {string} xml
+ * @param {string} tag — 'ultNSU' | 'maxNSU'
+ * @returns {string|null}
+ */
+function extrairNsuTagDoXml(xml, tag) {
+  const regex = new RegExp(
+    `<(?:[\\w.-]+:)?${tag}(?:\\s[^>]*)?>\\s*(\\d+)\\s*<\\/(?:[\\w.-]+:)?${tag}>`,
+    'i'
+  );
+  const m = String(xml || '').match(regex);
+  if (!m) return null;
+  return normalizarNsu(m[1]);
 }
 
 /**
@@ -25,22 +59,46 @@ function normalizarNsu(nsu) {
  * @returns {boolean}
  */
 function nsuMenorQue(a, b) {
-  return normalizarNsu(a) < normalizarNsu(b);
+  return normalizarNsuOuZero(a) < normalizarNsuOuZero(b);
 }
 
 /**
  * @param {string} xmlRetorno
- * @returns {{ cStat: string, xMotivo: string, ultNSU: string, maxNSU: string }}
+ * @returns {{ cStat: string, xMotivo: string, ultNSU: string|null, maxNSU: string|null }}
  */
 function extrairMetadadosRetorno(xmlRetorno) {
   const texto = String(xmlRetorno || '');
+  const cStatMatch = texto.match(/<(?:[\w.-]+:)?cStat(?:\s[^>]*)?>\s*(\d+)\s*<\/(?:[\w.-]+:)?cStat>/i);
+  const xMotivoMatch = texto.match(/<(?:[\w.-]+:)?xMotivo(?:\s[^>]*)?>\s*(.*?)\s*<\/(?:[\w.-]+:)?xMotivo>/i);
 
   return {
-    cStat: texto.match(/<cStat>(\d+)<\/cStat>/)?.[1] || '',
-    xMotivo: texto.match(/<xMotivo>(.*?)<\/xMotivo>/)?.[1] || '',
-    ultNSU: normalizarNsu(texto.match(/<ultNSU>(\d+)<\/ultNSU>/)?.[1]),
-    maxNSU: normalizarNsu(texto.match(/<maxNSU>(\d+)<\/maxNSU>/)?.[1])
+    cStat: cStatMatch?.[1] || '',
+    xMotivo: xMotivoMatch?.[1] || '',
+    // RC3.7.5.2 — tag inexistente → null (nunca 000…000 fabricado)
+    ultNSU: extrairNsuTagDoXml(texto, 'ultNSU'),
+    maxNSU: extrairNsuTagDoXml(texto, 'maxNSU')
   };
+}
+
+/**
+ * Salva XML bruto de retorno 656 para diagnóstico.
+ * @param {string} xmlRetorno
+ * @param {Object} [opcoes]
+ * @returns {string|null}
+ */
+function salvarXmlRetorno656(xmlRetorno, opcoes = {}) {
+  try {
+    const { getFiscalSubDir } = require('./paths');
+    const pasta = getFiscalSubDir('debug');
+    const cid = String(opcoes.correlationId || Date.now()).replace(/[^\w.-]/g, '_');
+    const nome = `dfe-ret-656-${cid}.xml`;
+    const destino = path.join(pasta, nome);
+    fs.writeFileSync(destino, String(xmlRetorno || ''), 'utf8');
+    return destino;
+  } catch (err) {
+    console.warn('[dfeRetornoParser] Falha ao salvar XML 656:', err.message);
+    return null;
+  }
 }
 
 /**
@@ -89,7 +147,7 @@ function extrairDocumentosZip(xmlRetorno, opcoes = {}) {
     const t0 = Date.now();
     const atributos = match[1] || '';
     const compactado = (match[2] || '').trim();
-    const nsu = normalizarNsu(atributos.match(/NSU="(\d+)"/i)?.[1]);
+    const nsu = normalizarNsuOuZero(atributos.match(/NSU="(\d+)"/i)?.[1]);
     const schema = atributos.match(/schema="([^"]+)"/i)?.[1] || '';
     const tamanhoZip = compactado.length;
 
@@ -176,10 +234,13 @@ function retornoDistSucesso(cStat) {
 module.exports = {
   NSU_ZERADO,
   normalizarNsu,
+  normalizarNsuOuZero,
   nsuMenorQue,
+  extrairNsuTagDoXml,
   extrairMetadadosRetorno,
   extrairDocumentosZip,
   isDocumentoNotaFiscal,
   classificarSchemaAuditoria,
-  retornoDistSucesso
+  retornoDistSucesso,
+  salvarXmlRetorno656
 };

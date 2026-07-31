@@ -78,7 +78,10 @@ class CentralDashboardService {
           maxNsu: ultimoNsu.maxNsu,
           dataSincronizacao: ultimoNsu.dataSincronizacao,
           cnpj: ultimoNsu.cnpj,
-          ambiente: ultimoNsu.ambiente
+          ambiente: ultimoNsu.ambiente,
+          /** RC3.7.5.3 — campos já persistidos, só para UX do cooldown 656 */
+          ultimoCstat: ultimoNsu.ultimoCstat || null,
+          cooldownAte: ultimoNsu.cooldownAte || null
         }
         : null,
       xmlWait: (() => {

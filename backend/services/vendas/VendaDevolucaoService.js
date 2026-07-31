@@ -401,6 +401,7 @@ module.exports = {
   devolverSaldosDistribuidos,
   devolverEstoqueItemVenda,
   devolverEstoqueItensVenda,
+  devolverLotesParcialItem,
   garantirTabelaDevolucoesVenda,
   devolverParcial
 };

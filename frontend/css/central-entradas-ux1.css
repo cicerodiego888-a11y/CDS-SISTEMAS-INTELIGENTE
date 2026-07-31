@@ -90,6 +90,39 @@
     opacity: 0.9;
 }
 
+.central-ux1-sync-info--cooldown {
+    color: #b45309;
+    opacity: 1;
+}
+
+.central-ux1-sync-cooldown-meta {
+    opacity: 0.85;
+    font-weight: 500;
+}
+
+.central-ux1-cooldown-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.85rem;
+    margin-top: 0.45rem;
+    padding: 0.35rem 0.65rem;
+    border-radius: 8px;
+    background: rgba(245, 158, 11, 0.16);
+    color: #92400e;
+    font-size: 0.82rem;
+    max-width: 42rem;
+}
+
+.central-ux1-cooldown-banner__meta {
+    opacity: 0.9;
+}
+
+#centralBtnSincronizar:disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
+}
+
 .central-ux1-header-acoes {
     display: flex;
     flex-wrap: wrap;

@@ -1843,6 +1843,9 @@ function focarCampoCodigo(opcoes) {
     const limpar = opts.limpar !== false;
 
     setTimeout(() => {
+        // Não roubar o foco enquanto um modal estiver aberto (ex.: quantidade)
+        if (document.querySelector('.modal.show')) return;
+
         const input = $('#buscaProdutoPdv');
         if (!input.length) return;
 
@@ -2756,10 +2759,12 @@ function abrirModalModoVendaProduto(produto, callback) {
 
     const modalEl = document.getElementById('modalModoVendaProduto');
     const modal = new bootstrap.Modal(modalEl);
+    let continuando = false;
     modal.show();
 
     const confirmar = () => {
         const modo = $('input[name="modoVendaProduto"]:checked').val() || TIPO_VENDA_PESO;
+        continuando = true;
         modal.hide();
         callback(modo);
     };
@@ -2768,7 +2773,10 @@ function abrirModalModoVendaProduto(produto, callback) {
     modalEl.addEventListener('hidden.bs.modal', function onHidden() {
         modalEl.removeEventListener('hidden.bs.modal', onHidden);
         $('#modalModoVendaProduto').remove();
-        focarCampoCodigo({ limpar: true });
+        // Ao continuar, o próximo modal (quantidade) assume o foco
+        if (!continuando) {
+            focarCampoCodigo({ limpar: true });
+        }
     }, { once: true });
 }
 
@@ -4919,6 +4927,7 @@ function abrirModalQuantidadeProduto(produto, callback, opcoes = {}) {
                             inputmode="${fracionado ? 'decimal' : 'numeric'}"
                             value="${fracionado ? '1,000' : '1'}"
                             placeholder="${vendaPorUnidade ? 'Ex: 5' : (fracionado ? 'Ex: 7,25' : 'Ex: 1')}"
+                            autofocus
                         >
 
                         <small class="text-muted">
@@ -4957,10 +4966,19 @@ function abrirModalQuantidadeProduto(produto, callback, opcoes = {}) {
 
     modal.show();
 
-    modalEl.addEventListener('shown.bs.modal', function () {
+    const focarInputQuantidade = () => {
         const input = document.getElementById('inputQuantidadeProduto');
-        input.focus();
-        input.select();
+        if (!input) return;
+        input.focus({ preventScroll: true });
+        try { input.select(); } catch (_) { /* ignore */ }
+    };
+
+    modalEl.addEventListener('shown.bs.modal', function onShown() {
+        modalEl.removeEventListener('shown.bs.modal', onShown);
+        // Após o focus trap do Bootstrap (que prioriza o btn-close)
+        focarInputQuantidade();
+        setTimeout(focarInputQuantidade, 50);
+        setTimeout(focarInputQuantidade, 120);
         if (vendaPorUnidade) {
             atualizarPreviewVendaUnidadeModal(produto);
         }

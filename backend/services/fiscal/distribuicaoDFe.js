@@ -20,10 +20,12 @@ const CentralNsuService = require('../../motores/central-entradas/services/Centr
 const {
   NSU_ZERADO,
   normalizarNsu,
+  normalizarNsuOuZero,
   nsuMenorQue,
   extrairMetadadosRetorno,
   extrairDocumentosZip,
-  retornoDistSucesso
+  retornoDistSucesso,
+  salvarXmlRetorno656
 } = require('./dfeRetornoParser');
 const { fiscalSoapTelemetry } = require('./core/FiscalSoapTelemetry');
 const {
@@ -69,7 +71,7 @@ function montarXmlDistNsu({ ambiente, codigoUf, cnpj, ultNsu }) {
   <cUFAutor>${codigoUf}</cUFAutor>
   <CNPJ>${cnpj}</CNPJ>
   <distNSU>
-    <ultNSU>${normalizarNsu(ultNsu)}</ultNSU>
+    <ultNSU>${normalizarNsuOuZero(ultNsu)}</ultNSU>
   </distNSU>
 </distDFeInt>`;
 }
@@ -429,8 +431,8 @@ async function sincronizarDistribuicaoDFe(deps = {}) {
   const parentCorrelationId = deps.correlationId || null;
 
   let controleNsu = await nsuService.obterOuCriar(cnpj, ambiente);
-  let ultNsuAtual = normalizarNsu(controleNsu.ultNsu);
-  let maxNsuAtual = normalizarNsu(controleNsu.maxNsu || NSU_ZERADO);
+  let ultNsuAtual = normalizarNsuOuZero(controleNsu.ultNsu);
+  let maxNsuAtual = normalizarNsuOuZero(controleNsu.maxNsu);
 
   let notasNovasTotal = 0;
   let notasDuplicadasTotal = 0;
@@ -500,26 +502,38 @@ async function sincronizarDistribuicaoDFe(deps = {}) {
         );
       }
 
-      // cStat 656: não persiste documentos nem altera NSU — apenas cooldown.
+      // cStat 656: cooldown obrigatório; RC3.7.5.1 pode recuperar cursor se SEFAZ > local.
       if (String(ultimoRetorno.cStat) === '656') {
+        const xmlPath656 = salvarXmlRetorno656(envio.body, { correlationId });
+        if (xmlPath656) {
+          console.log(`[DFE][SYNC] ${correlationId} | XML 656 salvo: ${xmlPath656}`);
+        }
+        const nsuLocalAntes = normalizarNsuOuZero(controleNsu.ultNsu);
         const aplicado = await nsuService.aplicarRetornoDistDfe({
           controle: controleNsu,
           cStat: '656',
           xmlRetorno: envio.body,
-          correlationId
+          ultNsu: ultimoRetorno.ultNSU,
+          maxNsu: ultimoRetorno.maxNSU,
+          correlationId,
+          cnpj,
+          empresa: cnpj
         });
         controleNsu = aplicado.controle;
-        ultNsuAtual = normalizarNsu(aplicado.ultNsu);
-        maxNsuAtual = normalizarNsu(aplicado.maxNsu);
+        ultNsuAtual = normalizarNsuOuZero(aplicado.ultNsu);
+        maxNsuAtual = normalizarNsuOuZero(aplicado.maxNsu);
+        const recuperouNsu = Boolean(aplicado.atualizouNsu);
         await auditoria.registrarNsuAvanco({
           correlation_id: correlationId,
           cnpj,
           ambiente,
           nsu: ultNsuAtual,
-          avancou: false,
-          motivo: 'cStat 656 — Cursor atualizado=FALSE (NSU preservado)',
+          avancou: recuperouNsu,
+          motivo: recuperouNsu
+            ? 'cStat 656 — Cursor NSU sincronizado automaticamente (AUTO_SYNC_NSU)'
+            : 'cStat 656 — Cursor atualizado=FALSE (NSU preservado)',
           cStat: '656',
-          ultNsuAnterior: controleNsu.ultNsu,
+          ultNsuAnterior: aplicado.recuperacaoNsu?.nsuLocal || nsuLocalAntes,
           ultNsuNovo: ultNsuAtual,
           maxNsu: maxNsuAtual
         });
@@ -540,7 +554,7 @@ async function sincronizarDistribuicaoDFe(deps = {}) {
           ambiente,
           recebidos: 0,
           processados: 0,
-          atualizados: 0,
+          atualizados: recuperouNsu ? 1 : 0,
           duplicados: 0,
           eventos: 0,
           xml: 0,
@@ -550,7 +564,7 @@ async function sincronizarDistribuicaoDFe(deps = {}) {
           ultNsu: ultNsuAtual,
           maxNsu: maxNsuAtual,
           cStat: '656',
-          motivo: 'CONSUMO_INDEVIDO'
+          motivo: recuperouNsu ? 'CONSUMO_INDEVIDO_NSU_RECUPERADO' : 'CONSUMO_INDEVIDO'
         });
         return {
           sucesso: false,
@@ -563,9 +577,13 @@ async function sincronizarDistribuicaoDFe(deps = {}) {
           iteracoes,
           cStat: '656',
           correlationId,
+          nsuRecuperado: recuperouNsu,
           proximaConsultaEm: aplicado.proximaConsultaEm,
-          mensagem: ultimoRetorno.xMotivo
-            || 'Consumo indevido (cStat 656) — NSU preservado; nova consulta após 1 hora.',
+          mensagem: recuperouNsu
+            ? (ultimoRetorno.xMotivo
+              || 'Consumo indevido (cStat 656) — cursor NSU sincronizado automaticamente; nova consulta após cooldown.')
+            : (ultimoRetorno.xMotivo
+              || 'Consumo indevido (cStat 656) — NSU preservado; nova consulta após 1 hora.'),
           ultimaSincronizacao: controleNsu.dataSincronizacao || controleNsu.updatedAt
         };
       }
@@ -607,8 +625,8 @@ async function sincronizarDistribuicaoDFe(deps = {}) {
         correlationId
       });
       controleNsu = aplicado.controle;
-      ultNsuAtual = normalizarNsu(aplicado.ultNsu);
-      maxNsuAtual = normalizarNsu(aplicado.maxNsu);
+      ultNsuAtual = normalizarNsuOuZero(aplicado.ultNsu);
+      maxNsuAtual = normalizarNsuOuZero(aplicado.maxNsu);
 
       await auditoria.registrarNsuAvanco({
         correlation_id: correlationId,
