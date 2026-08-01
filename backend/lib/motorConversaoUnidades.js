@@ -32,7 +32,7 @@ function resolverQuantidadesCompraItem(item = {}) {
     return { quantidade_fiscal, quantidade_nao_fiscal, quantidade };
   }
 
-  const quantidade = Number(item.quantidade || 0);
+  const quantidade = obterQuantidadeConvertida(item);
   if (Number(item.item_fiscal) === 0) {
     return {
       quantidade_fiscal: 0,
@@ -48,13 +48,51 @@ function resolverQuantidadesCompraItem(item = {}) {
   };
 }
 
-function obterTotalConvertidoItemCompra(item = {}) {
-  const qtdEmbalagens = Number(item.quantidade_embalagens || 0);
-  const qtdPorEmbalagem = Number(item.quantidade_por_embalagem || 0);
-  if (qtdEmbalagens > 0 && qtdPorEmbalagem > 0) {
-    return qtdEmbalagens * qtdPorEmbalagem;
+/**
+ * RC4.31.19 — Quantidade comercial (ex.: 10 Varas). Nunca base de estoque/fiscal.
+ */
+function obterQuantidadeComercial(item = {}) {
+  const explicita = Number(item.quantidade_comercial);
+  if (Number.isFinite(explicita) && explicita > 0) return explicita;
+
+  const emb = Number(item.quantidade_embalagens || 0);
+  if (emb > 0) return emb;
+
+  const convertida = Number(item.quantidade_convertida || 0);
+  const fator = Number(item.quantidade_por_embalagem || 0);
+  if (convertida > 0 && fator <= 0) return convertida;
+
+  return Number(item.quantidade || 0);
+}
+
+/**
+ * RC4.31.19 — Quantidade convertida (ex.: 60 MT). Única base para estoque, fiscal e financeiro.
+ */
+function obterQuantidadeConvertida(item = {}) {
+  const convertidaExplicita = Number(item.quantidade_convertida || 0);
+  if (convertidaExplicita > 0) return convertidaExplicita;
+
+  const qtdEmb = Number(item.quantidade_embalagens || 0);
+  const qtdPorEmb = Number(item.quantidade_por_embalagem || 0);
+  const comercial = obterQuantidadeComercial(item);
+
+  if (qtdPorEmb > 0) {
+    const baseEmb = qtdEmb > 0 ? qtdEmb : comercial;
+    if (baseEmb > 0) return baseEmb * qtdPorEmb;
   }
-  return Number(item.peso_total_compra || 0);
+
+  const peso = Number(item.peso_total_compra || 0);
+  if (peso > 0) {
+    if (qtdPorEmb <= 0 || Math.abs(peso - comercial) > 0.001) return peso;
+    if (comercial > 0 && qtdPorEmb > 0) return comercial * qtdPorEmb;
+  }
+
+  return comercial > 0 ? comercial : Number(item.quantidade || 0);
+}
+
+/** @deprecated RC4.31.19 — use obterQuantidadeConvertida */
+function obterTotalConvertidoItemCompra(item = {}) {
+  return obterQuantidadeConvertida(item);
 }
 
 function simularConversaoEmbalagem({ qtdEmbalagens, qtdPorEmbalagem, valorTotal }) {
@@ -66,7 +104,7 @@ function simularConversaoEmbalagem({ qtdEmbalagens, qtdPorEmbalagem, valorTotal 
 
 function resolverCustoUnitarioCadastro(item = {}) {
   const usaConversao = itemCompraUsaConversaoUnidades(item);
-  const quantidade = Number(item.quantidade || 0);
+  const quantidade = obterQuantidadeConvertida(item);
 
   if (usaConversao) {
     const custoRateado = Number(item.custo_unitario_final || 0);
@@ -145,11 +183,35 @@ function resolverPrecosCadastroAposCompra(item = {}) {
   };
 }
 
+function validarConsistenciaQuantidadesItemCompra(item = {}) {
+  const convertida = obterQuantidadeConvertida(item);
+  const fiscal = Number(item.quantidade_fiscal || 0);
+  const naoFiscal = Number(item.quantidade_nao_fiscal || 0);
+  const soma = fiscal + naoFiscal;
+  const nome = String(item.produto_nome || item.produto_id || 'Produto').trim();
+  const usaConversao = itemCompraUsaConversaoUnidades(item)
+    || Number(item.quantidade_por_embalagem || 0) > 0
+    || Math.abs(obterQuantidadeComercial(item) - convertida) > 0.001;
+
+  if (!usaConversao || convertida <= 0) return null;
+  if (soma <= 0) {
+    return `${nome}: informe quantidades fiscais sobre ${convertida} (quantidade convertida).`;
+  }
+  if (Math.abs(soma - convertida) > 0.001) {
+    return `${nome}: fiscal (${fiscal}) + não fiscal (${naoFiscal}) deve somar ${convertida} (convertida).`;
+  }
+  return null;
+}
+
 function validarDistribuicaoConversaoUnidadesItem(item = {}) {
-  if (!itemCompraUsaConversaoUnidades(item)) return null;
+  const erroConsistencia = validarConsistenciaQuantidadesItemCompra(item);
+  if (erroConsistencia) return erroConsistencia;
+
+  if (!itemCompraUsaConversaoUnidades(item)
+    && Number(item.quantidade_por_embalagem || 0) <= 0) return null;
 
   const qtds = resolverQuantidadesCompraItem(item);
-  const totalConvertido = obterTotalConvertidoItemCompra(item);
+  const totalConvertido = obterQuantidadeConvertida(item);
   const nome = String(item.produto_nome || item.produto_id || 'Produto').trim();
 
   if (totalConvertido <= 0) {
@@ -169,7 +231,8 @@ function validarDistribuicaoConversaoUnidadesItem(item = {}) {
 }
 
 function resolverQuantidadesEstoqueCompraItem(item = {}) {
-  const totalConvertido = obterTotalConvertidoItemCompra(item);
+  const totalConvertido = obterQuantidadeConvertida(item);
+  const quantidadeComercial = obterQuantidadeComercial(item);
   const uc = String(item.unidade_comercial || item.compra_em || '').toUpperCase();
   const usaEmbalagemComercial = !itemCompraUsaConversaoUnidades(item)
     && totalConvertido > 0
@@ -180,10 +243,11 @@ function resolverQuantidadesEstoqueCompraItem(item = {}) {
   if (usaEmbalagemComercial) {
     const qtds = resolverQuantidadesCompraItem(item);
     const soma = Number(qtds.quantidade_fiscal || 0) + Number(qtds.quantidade_nao_fiscal || 0);
-    const quantidade = soma > 0 && Math.abs(soma - Number(item.quantidade_embalagens || 0)) > 0.001
+    const quantidade = soma > 0 && Math.abs(soma - quantidadeComercial) > 0.001
       ? soma
       : totalConvertido;
     return {
+      quantidade_comercial: quantidadeComercial,
       quantidade_fiscal: Number(qtds.quantidade_fiscal || quantidade),
       quantidade_nao_fiscal: Number(qtds.quantidade_nao_fiscal || 0),
       quantidade,
@@ -192,27 +256,27 @@ function resolverQuantidadesEstoqueCompraItem(item = {}) {
   }
 
   if (!itemCompraUsaConversaoUnidades(item)) {
+    const qtds = resolverQuantidadesCompraItem(item);
+    const convertida = totalConvertido > 0 ? totalConvertido : Number(qtds.quantidade || 0);
     return {
-      ...resolverQuantidadesCompraItem(item),
-      quantidade_convertida: Number(resolverQuantidadesCompraItem(item).quantidade || 0)
+      ...qtds,
+      quantidade_comercial: quantidadeComercial,
+      quantidade: convertida,
+      quantidade_convertida: convertida
     };
   }
 
   const qtds = resolverQuantidadesCompraItem(item);
-  const qtdEmbalagens = Number(item.quantidade_embalagens || 0);
   const quantidade_fiscal = Number(qtds.quantidade_fiscal || 0);
   const quantidade_nao_fiscal = Number(qtds.quantidade_nao_fiscal || 0);
   const somaInformada = quantidade_fiscal + quantidade_nao_fiscal;
 
   let quantidade = somaInformada > 0 ? somaInformada : totalConvertido;
   if (quantidade <= 0) {
-    quantidade = Number(item.peso_total_compra || item.quantidade || 0);
-  }
-
-  if (qtdEmbalagens > 0 && Math.abs(quantidade - qtdEmbalagens) < 0.001 && totalConvertido > qtdEmbalagens) {
     quantidade = totalConvertido;
   }
-  if (totalConvertido > 0 && qtdEmbalagens > 0 && Math.abs(quantidade - qtdEmbalagens) < 0.001) {
+
+  if (somaInformada > 0 && Math.abs(somaInformada - quantidadeComercial) < 0.001 && totalConvertido > quantidadeComercial) {
     quantidade = totalConvertido;
   }
 
@@ -228,6 +292,7 @@ function resolverQuantidadesEstoqueCompraItem(item = {}) {
   }
 
   return {
+    quantidade_comercial: quantidadeComercial,
     quantidade_fiscal,
     quantidade_nao_fiscal,
     quantidade: somaInformada > 0 ? somaInformada : quantidade_convertida,
@@ -309,8 +374,11 @@ module.exports = {
   itemCompraUsaConversaoUnidades,
   itemCompraEhFracionado,
   resolverQuantidadesCompraItem,
+  obterQuantidadeComercial,
+  obterQuantidadeConvertida,
   obterTotalConvertidoItemCompra,
   obterTotalConvertidoItemCompraBackend: obterTotalConvertidoItemCompra,
+  validarConsistenciaQuantidadesItemCompra,
   simularConversaoEmbalagem,
   resolverCustoUnitarioCadastro,
   resolverCustoUnitarioProdutoCadastro,

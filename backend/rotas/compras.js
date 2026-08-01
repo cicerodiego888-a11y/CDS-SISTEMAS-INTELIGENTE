@@ -17,11 +17,15 @@ const {
   resolverCustoUnitarioCadastro,
   resolverPrecosCadastroAposCompra,
   obterTotalConvertidoItemCompra,
+  obterQuantidadeComercial,
+  obterQuantidadeConvertida,
+  validarConsistenciaQuantidadesItemCompra,
   validarDistribuicaoConversaoUnidadesItem,
   resolverQuantidadesEstoqueCompraItem,
   calcularSubtotalFinanceiroItemCompra,
   resolverQuantidadesCompraItem
 } = require('../lib/motorConversaoUnidades');
+const { obterMuc, resultadoParaJson } = require('../motores/muc');
 const {
   emitirNFeDevolucaoCompra,
   prepararNfeDevolucaoCompra,
@@ -47,6 +51,11 @@ const {
 const {
   classificarFluxoCompra
 } = require('../services/compras/MotorPoliticaEntradaCompra');
+const {
+  enriquecerItemFiscalCompra,
+  resolverTratamentoFiscalItem
+} = require('../services/compras/TratamentoFiscalItemCompra');
+const configService = require('../services/configuracaoService');
 const { classificarEntrada } = require('../services/compras/ClassificadorEntradaCompra');
 const {
   montarResumoFiscalEntrada,
@@ -224,7 +233,8 @@ function criarFinanceiroCompra(compra, callback) {
     observacao,
     numero_nf,
     dias_entre_parcelas,
-    parcelas_detalhe
+    parcelas_detalhe,
+    parcelas_importadas_xml
   } = compra;
 
   const qtdParcelas = Math.max(1, Number(parcelas) || 1);
@@ -233,6 +243,9 @@ function criarFinanceiroCompra(compra, callback) {
   const vencimentoBase = toDate(data_vencimento, data_compra);
   const documentoNf = numero_nf ? String(numero_nf) : null;
   const gradeCliente = normalizarParcelasDetalhe(parcelas_detalhe);
+  const parcelasImportadasXml = parcelas_importadas_xml === true
+    || parcelas_importadas_xml === 1
+    || String(parcelas_importadas_xml) === '1';
 
   db.run('DELETE FROM financeiro WHERE compra_id = ?', [id], (deleteErr) => {
     if (deleteErr) return callback(deleteErr);
@@ -255,7 +268,7 @@ function criarFinanceiroCompra(compra, callback) {
         'compra',
         payload.status,
         'compra',
-        documentoNf,
+        payload.documento || documentoNf,
         payload.vencimento,
         payload.numero_parcela,
         payload.total_parcelas,
@@ -286,6 +299,7 @@ function criarFinanceiroCompra(compra, callback) {
           descricao: rotulo,
           valor: moedaParcela(p.valor),
           vencimento: toDate(p.vencimento, vencimentoBase),
+          documento: p.documento || documentoNf,
           numero_parcela: p.numero,
           total_parcelas: grade.length,
           status
@@ -297,11 +311,15 @@ function criarFinanceiroCompra(compra, callback) {
       });
     };
 
-    // RC8.5.0 — grade explícita do cliente (vencimentos/valores editáveis)
-    if (gradeCliente.length > 0 && condicao_pagamento !== 'avista') {
+    // RC4.31.14 / RC8.5.0 — grade explícita (XML ou cliente) tem prioridade absoluta
+    if (gradeCliente.length > 0) {
       return inserirGrade(gradeCliente, (p) => (
         p.tipo === 'entrada' || condicao_pagamento === 'avista' ? 'pago' : 'pendente'
       ));
+    }
+
+    if (parcelasImportadasXml) {
+      return callback(new Error('Grade de parcelas importada do XML ausente ou inválida.'));
     }
 
     if (condicao_pagamento === 'parcelado' || condicao_pagamento === 'prazo') {
@@ -500,34 +518,101 @@ function processarItensCompra(compraId, itens, fornecedor, opcoes, done) {
     }
 
     const item = itens[index++];
-    const qtdsEstoque = resolverQuantidadesEstoqueCompraItem(item);
-    const itemProcessado = {
-      ...item,
-      quantidade_fiscal: qtdsEstoque.quantidade_fiscal,
-      quantidade_nao_fiscal: qtdsEstoque.quantidade_nao_fiscal,
-      quantidade: qtdsEstoque.quantidade,
-      peso_total_compra: qtdsEstoque.quantidade_convertida
-    };
+
+    if (!Number(item.quantidade_embalagens) && Number(item.quantidade_comercial) > 0) {
+      item.quantidade_embalagens = Number(item.quantidade_comercial);
+    }
+    if (!Number(item.quantidade_convertida)) {
+      item.quantidade_convertida = obterQuantidadeConvertida(item);
+    }
+    item.peso_total_compra = obterQuantidadeConvertida(item);
 
     const itemComContexto = {
-      ...itemProcessado,
-      fornecedor: itemProcessado.fornecedor || fornecedor || null,
-      fornecedor_cnpj: itemProcessado.fornecedor_cnpj || fornecedorCnpj || null
+      ...item,
+      fornecedor: item.fornecedor || fornecedor || null,
+      fornecedor_cnpj: item.fornecedor_cnpj || fornecedorCnpj || null
     };
 
     ensureProductForItem(itemComContexto, (prodErr, produtoId) => {
       if (prodErr) return done(prodErr);
 
-      db.get('SELECT preco_compra, preco_venda, controlar_validade FROM produtos WHERE id = ?', [produtoId], (getErr, produto) => {
+      db.get('SELECT * FROM produtos WHERE id = ?', [produtoId], (getProdErr, produtoRow) => {
+        if (getProdErr) return done(getProdErr);
+
+        const itemComProduto = { ...itemComContexto, produto_id: produtoId };
+        const muc = obterMuc(db);
+
+        muc.processarItemCompra(
+          itemComProduto,
+          produtoRow,
+          {
+            fornecedorCnpj: fornecedorCnpj,
+            origem: item.origem_conversao || opcoes.origem || 'MANUAL',
+            registrarAprendizado: true
+          },
+          (mucErr, resultadoMuc) => {
+            if (mucErr) return done(mucErr);
+
+            const qtdsEstoque = {
+              quantidade_comercial: obterQuantidadeComercial(itemComProduto),
+              quantidade: resultadoMuc.quantidadeEstoque,
+              quantidade_fiscal: resultadoMuc.quantidadeFiscal,
+              quantidade_nao_fiscal: resultadoMuc.quantidadeNaoFiscal,
+              quantidade_convertida: resultadoMuc.quantidadeEstoque
+            };
+            const itemProcessado = {
+              ...itemComProduto,
+              quantidade_comercial: qtdsEstoque.quantidade_comercial,
+              quantidade_fiscal: qtdsEstoque.quantidade_fiscal,
+              quantidade_nao_fiscal: qtdsEstoque.quantidade_nao_fiscal,
+              quantidade: qtdsEstoque.quantidade,
+              quantidade_convertida: qtdsEstoque.quantidade_convertida,
+              peso_total_compra: qtdsEstoque.quantidade_convertida,
+              quantidade_embalagens: Number(itemComProduto.quantidade_embalagens || itemComProduto.quantidade_comercial || 0),
+              _muc_resultado: resultadoMuc
+            };
+
+            continuarItem(itemProcessado, qtdsEstoque, produtoId);
+          }
+        );
+      });
+    });
+  }
+
+  function continuarItem(itemProcessado, qtdsEstoque, produtoId) {
+    const fornecedorCnpjLocal = opcoes?.fornecedor_cnpj || null;
+    const resultadoMuc = itemProcessado._muc_resultado || null;
+
+    const itemComContexto = {
+      ...itemProcessado,
+      fornecedor: itemProcessado.fornecedor || fornecedor || null,
+      fornecedor_cnpj: itemProcessado.fornecedor_cnpj || fornecedorCnpjLocal || null
+    };
+
+    db.get('SELECT preco_compra, preco_venda, controlar_validade FROM produtos WHERE id = ?', [produtoId], (getErr, produto) => {
         if (getErr) return done(getErr);
 
         const antigo = { preco_compra: produto?.preco_compra, preco_venda: produto?.preco_venda };
         const controlarValidade = produto?.controlar_validade === 1;
         const qtdTotal = qtdsEstoque.quantidade;
-        const qtdFiscal = qtdsEstoque.quantidade_fiscal;
-        const qtdNaoFiscal = qtdsEstoque.quantidade_nao_fiscal;
+        let qtdFiscal = qtdsEstoque.quantidade_fiscal;
+        let qtdNaoFiscal = qtdsEstoque.quantidade_nao_fiscal;
         const fracionado = itemCompraEhFracionado(itemProcessado);
+        const padraoFiscal = configService.getPadraoFiscal();
+        const itemFiscal = enriquecerItemFiscalCompra(itemProcessado, {
+          tipoEntradaCompra: opcoes?.tipo_entrada,
+          configBonificacao: padraoFiscal
+        });
+        const tratamento = resolverTratamentoFiscalItem(itemFiscal, padraoFiscal);
+        if (!tratamento.gerarEstoque) {
+          qtdFiscal = 0;
+          qtdNaoFiscal = 0;
+        }
         const precosCadastro = resolverPrecosCadastroAposCompra(itemProcessado);
+        if (!tratamento.atualizarCusto) {
+          precosCadastro.precoCompra = Number(produto?.preco_compra || precosCadastro.precoCompra || 0);
+          precosCadastro.atualizarVenda = false;
+        }
         const precoUnitarioGravar = fracionado
           ? precosCadastro.precoCompra
           : moeda(itemProcessado.preco_unitario || precosCadastro.precoCompra || 0);
@@ -535,7 +620,13 @@ function processarItensCompra(compraId, itens, fornecedor, opcoes, done) {
         const precoVendaGravar = precosCadastro.atualizarVenda
           ? (precosCadastro.precoVenda ?? Number(itemProcessado.preco_venda_sugerido || 0))
           : Number(itemProcessado.preco_venda_sugerido || 0);
-        const subtotalGravar = calcularSubtotalFinanceiroItemCompra(itemProcessado);
+        const subtotalGravar = resultadoMuc
+          ? resultadoMuc.subtotal
+          : calcularSubtotalFinanceiroItemCompra(itemProcessado);
+        const apresentacaoId = resultadoMuc?.apresentacaoId
+          || itemProcessado.produto_apresentacao_id
+          || itemProcessado.embalagem_id
+          || null;
 
         db.run(`
           INSERT INTO compras_itens (
@@ -544,8 +635,11 @@ function processarItensCompra(compraId, itens, fornecedor, opcoes, done) {
             frete_rateado, desconto_rateado, outras_despesas_rateado, custo_unitario_final,
             vendido_por_peso, peso_total_compra, custo_por_kg, atualizar_preco_venda, item_fiscal,
             quantidade_fiscal, quantidade_nao_fiscal,
-            compra_em, quantidade_embalagens, quantidade_por_embalagem, valor_total_embalagem
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            compra_em, quantidade_embalagens, quantidade_por_embalagem, valor_total_embalagem,
+            embalagem_id, produto_apresentacao_id, resultado_conversao_json,
+            fator_conversao, tipo_conversao, origem_conversao, confianca_conversao, tipo_origem_compra,
+            cfop, tipo_fiscal_item, bonificacao
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [
           compraId,
           produtoId,
@@ -572,7 +666,18 @@ function processarItensCompra(compraId, itens, fornecedor, opcoes, done) {
           itemProcessado.compra_em || null,
           Number(itemProcessado.quantidade_embalagens || 0),
           Number(itemProcessado.quantidade_por_embalagem || 0),
-          Number(itemProcessado.valor_total_embalagem || itemProcessado.subtotal || 0)
+          Number(itemProcessado.valor_total_embalagem || itemProcessado.subtotal || 0),
+          apresentacaoId,
+          apresentacaoId,
+          resultadoMuc ? resultadoParaJson(resultadoMuc) : null,
+          resultadoMuc?.fatorConversao || Number(itemProcessado.quantidade_por_embalagem || 0),
+          resultadoMuc?.tipoConversao || null,
+          resultadoMuc?.origem || itemProcessado.origem_conversao || 'COMPRA',
+          resultadoMuc?.confianca || 0,
+          itemProcessado.tipo_origem_compra || resultadoMuc?.tipoOrigemCompra || null,
+          itemFiscal.cfop || null,
+          itemFiscal.tipo_fiscal_item || null,
+          Number(itemFiscal.bonificacao || 0)
         ], (insertErr) => {
           if (insertErr) return done(insertErr);
 
@@ -662,7 +767,6 @@ function processarItensCompra(compraId, itens, fornecedor, opcoes, done) {
               next();
             }
           }
-      });
     });
   }
 
@@ -1018,6 +1122,22 @@ router.post('/classificar-entrada', async (req, res) => {
   }
 });
 
+/** RC4.31.12 — Simulação MUC para compra manual (sem persistência). */
+router.post('/simular-conversao-muc', (req, res) => {
+  try {
+    const body = req.body || {};
+    const muc = obterMuc(db);
+    const resultado = muc.simular({
+      quantidadeCompra: Number(body.quantidadeCompra ?? body.quantidade_embalagens ?? 0),
+      quantidadePorApresentacao: Number(body.quantidadePorApresentacao ?? body.quantidade_por_embalagem ?? 0),
+      valorTotal: Number(body.valorTotal ?? body.valor_total_embalagem ?? 0)
+    });
+    return res.json({ success: true, resultado: { ...resultado } });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message || String(err) });
+  }
+});
+
 router.post('/resumo-fiscal-entrada', (req, res) => {
   try {
     const body = req.body || {};
@@ -1137,6 +1257,7 @@ router.post('/', (req, res) => {
     observacao,
     dias_entre_parcelas,
     parcelas_detalhe,
+    parcelas_importadas_xml,
     nota_fiscal_avulsa,
     tipo_entrada,
     tipo_entrada_sugerido,
@@ -1233,8 +1354,14 @@ router.post('/', (req, res) => {
     diferencaTotal = 0;
     itensComRateio = [];
   } else {
+    const padraoFiscalBonif = configService.getPadraoFiscal();
+    const itensFiscais = (itens || []).map((item) => enriquecerItemFiscalCompra(item, {
+      tipoEntradaCompra: tipoEntrada,
+      configBonificacao: padraoFiscalBonif
+    }));
+
     totalItensCalculado = moeda(
-      itens.reduce((sum, item) => sum + moeda(item.subtotal), 0)
+      itensFiscais.reduce((sum, item) => sum + moeda(item.subtotal), 0)
     );
 
     // RC 5.4.1 — componentes incluem IPI e seguro; total oficial = XML (valor_total_nota)
@@ -1250,7 +1377,7 @@ router.post('/', (req, res) => {
     const totalXml = moeda(valor_total_nota || totalNum);
     diferencaTotal = moeda(totalXml - totalCalculadoComAjustes);
 
-    itensComRateio = calcularRateioItens(itens, {
+    itensComRateio = calcularRateioItens(itensFiscais, {
       valor_frete,
       valor_desconto,
       valor_outras_despesas
@@ -1262,6 +1389,9 @@ router.post('/', (req, res) => {
 
   const condicao = condicao_pagamento || 'avista';
   const gradeParcelasReq = normalizarParcelasDetalhe(parcelas_detalhe);
+  const parcelasImportadasXmlReq = parcelas_importadas_xml === true
+    || parcelas_importadas_xml === 1
+    || String(parcelas_importadas_xml) === '1';
   const qtdParcelas = gradeParcelasReq.length > 0
     ? gradeParcelasReq.length
     : Math.max(1, Number(parcelas) || 1);
@@ -1291,7 +1421,7 @@ router.post('/', (req, res) => {
           csosn_cst, csosn_cst_xml, cst_pis, cst_pis_xml,
           cst_cofins, cst_cofins_xml, cst_ipi, cst_ipi_xml,
           escrituracao_alterada, escrituracao_motivo
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'concluida', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'concluida', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         data_compra,
         data_emissao || null,
@@ -1366,6 +1496,7 @@ router.post('/', (req, res) => {
             valor_entrada: Number(valor_entrada) || 0,
             dias_entre_parcelas: diasEntre,
             parcelas_detalhe: gradeParcelasReq,
+            parcelas_importadas_xml: parcelasImportadasXmlReq,
             numero_nf,
             observacao
           }, (finErr) => {
@@ -1422,7 +1553,10 @@ router.post('/', (req, res) => {
         } else {
           // Compra Normal: process items and create financial records
           console.log('Processando itens da compra:', compraId, itensComRateio);
-          processarItensCompra(compraId, itensComRateio, fornecedor, { fornecedor_cnpj }, (itensErr) => {
+          processarItensCompra(compraId, itensComRateio, fornecedor, {
+            fornecedor_cnpj,
+            tipo_entrada: tipoEntrada
+          }, (itensErr) => {
             if (itensErr) {
               console.error('Erro ao processar itens da compra:', itensErr);
               db.run('ROLLBACK');
@@ -1441,6 +1575,7 @@ router.post('/', (req, res) => {
               valor_entrada: Number(valor_entrada) || 0,
               dias_entre_parcelas: diasEntre,
               parcelas_detalhe: gradeParcelasReq,
+              parcelas_importadas_xml: parcelasImportadasXmlReq,
               numero_nf,
               observacao
             }, (finErr) => {

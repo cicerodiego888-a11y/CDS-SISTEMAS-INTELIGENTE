@@ -140,8 +140,9 @@ function normalizarParcelasDetalhe(lista) {
   if (!Array.isArray(lista)) return [];
   return lista.map((p, idx) => ({
     numero: numInt(p.numero, idx + 1),
-    vencimento: String(p.vencimento || p.data_vencimento || '').slice(0, 10),
-    valor: moeda(p.valor),
+    documento: p.documento != null ? String(p.documento) : (p.nDup != null ? String(p.nDup) : null),
+    vencimento: String(p.vencimento || p.data_vencimento || p.dVenc || '').slice(0, 10),
+    valor: moeda(p.valor ?? p.vDup),
     tipo: p.tipo || 'parcela'
   })).filter((p) => p.vencimento && p.valor >= 0);
 }

@@ -1,0 +1,192 @@
+{
+  "schema": "cds-release-certification/v1",
+  "sprint": "RC4.32.0",
+  "status": "APROVADA",
+  "geradoEm": "2026-08-01T18:51:32.219Z",
+  "ambiente": {
+    "versao": "1.0.3",
+    "commit": "51caa1f",
+    "build": "2026-08-01T17:56:22.279Z",
+    "hashAppAsar": "79223abf8775e590645c980a97ea3d8ba8bee2b58fc1e3b2381b85c8948a1744",
+    "origem": "fonte"
+  },
+  "modulos": {
+    "inicializacao": {
+      "ok": true,
+      "titulo": "Inicialização do ERP",
+      "detalhe": "DB ok | pacote: fonte | asar: N/A…"
+    },
+    "login": {
+      "ok": true,
+      "titulo": "Login",
+      "detalhe": "user=rc4320_1785610291637 perfil=SUPER_ADMIN"
+    },
+    "produtos": {
+      "ok": true,
+      "titulo": "Cadastro de Produtos",
+      "detalhe": "CRUD ok | embalagem CX×12 | codigo=RC4320-1785610290947-P"
+    },
+    "compras": {
+      "ok": true,
+      "titulo": "Compras",
+      "detalhe": "NF-e …00000064 | status=EM_REVISAO"
+    },
+    "miip": {
+      "ok": true,
+      "titulo": "MIIP",
+      "detalhe": "MUC 10×12 → 120 UN (MULTIPLICADOR)"
+    },
+    "central": {
+      "ok": true,
+      "titulo": "Central Inteligente",
+      "detalhe": "documento 000064 processado"
+    },
+    "financeiro": {
+      "ok": true,
+      "titulo": "Financeiro",
+      "detalhe": "parser financeiro OK | parcela R$500 | registros financeiro=49"
+    },
+    "estoque": {
+      "ok": true,
+      "titulo": "Estoque",
+      "detalhe": "fiscal=6+3 | total=15 UN"
+    },
+    "nfce": {
+      "ok": true,
+      "titulo": "NFC-e",
+      "detalhe": "homologação dest.xNome + módulo emissor presente"
+    },
+    "nfe": {
+      "ok": true,
+      "titulo": "NF-e",
+      "detalhe": "autorização cStat=100 | protocolo=123"
+    },
+    "relatorios": {
+      "ok": true,
+      "titulo": "Relatórios",
+      "detalhe": "compras=1 fin=49 prod=1268"
+    },
+    "performance": {
+      "ok": true,
+      "titulo": "Performance",
+      "detalhe": "1.3s | mem 21.1MB | sql=16"
+    }
+  },
+  "estatisticas": {
+    "tempoTotalMs": 1275,
+    "tempoTotalSeg": 1.3,
+    "memoriaMaxMb": 21.1,
+    "memoriaAtualMb": 21.2,
+    "cpuUserMs": 688,
+    "cpuSystemMs": 219,
+    "quantidadeEtapas": 12,
+    "quantidadeExcecoes": 0,
+    "quantidadeConsultasSql": 16,
+    "plataforma": "win32 10.0.26100",
+    "node": "v20.20.2"
+  },
+  "metricas": {
+    "etapas": [
+      {
+        "nome": "inicializacao",
+        "resultado": "OK",
+        "tempoMs": 527,
+        "memoriaMb": 10.4,
+        "detalhe": "DB ok | pacote: fonte | asar: N/A…"
+      },
+      {
+        "nome": "login",
+        "resultado": "OK",
+        "tempoMs": 358,
+        "memoriaMb": 11.2,
+        "detalhe": "user=rc4320_1785610291637 perfil=SUPER_ADMIN"
+      },
+      {
+        "nome": "produtos",
+        "resultado": "OK",
+        "tempoMs": 46,
+        "memoriaMb": 12.2,
+        "detalhe": "CRUD ok | embalagem CX×12 | codigo=RC4320-1785610290947-P"
+      },
+      {
+        "nome": "compras",
+        "resultado": "OK",
+        "tempoMs": 246,
+        "memoriaMb": 19,
+        "detalhe": "NF-e …00000064 | status=EM_REVISAO"
+      },
+      {
+        "nome": "miip",
+        "resultado": "OK",
+        "tempoMs": 23,
+        "memoriaMb": 20.3,
+        "detalhe": "MUC 10×12 → 120 UN (MULTIPLICADOR)"
+      },
+      {
+        "nome": "central",
+        "resultado": "OK",
+        "tempoMs": 0,
+        "memoriaMb": 20.3,
+        "detalhe": "documento 000064 processado"
+      },
+      {
+        "nome": "financeiro",
+        "resultado": "OK",
+        "tempoMs": 1,
+        "memoriaMb": 20.3,
+        "detalhe": "parser financeiro OK | parcela R$500 | registros financeiro=49"
+      },
+      {
+        "nome": "estoque",
+        "resultado": "OK",
+        "tempoMs": 20,
+        "memoriaMb": 20.4,
+        "detalhe": "fiscal=6+3 | total=15 UN"
+      },
+      {
+        "nome": "nfce",
+        "resultado": "OK",
+        "tempoMs": 2,
+        "memoriaMb": 20.5,
+        "detalhe": "homologação dest.xNome + módulo emissor presente"
+      },
+      {
+        "nome": "nfe",
+        "resultado": "OK",
+        "tempoMs": 7,
+        "memoriaMb": 20.6,
+        "detalhe": "autorização cStat=100 | protocolo=123"
+      },
+      {
+        "nome": "relatorios",
+        "resultado": "OK",
+        "tempoMs": 3,
+        "memoriaMb": 21.1,
+        "detalhe": "compras=1 fin=49 prod=1268"
+      },
+      {
+        "nome": "performance",
+        "resultado": "OK",
+        "tempoMs": 0,
+        "memoriaMb": 21.1,
+        "detalhe": "1.3s | mem 21.1MB | sql=16"
+      }
+    ],
+    "excecoes": [],
+    "resumo": {
+      "tempoTotalMs": 1275,
+      "tempoTotalSeg": 1.3,
+      "memoriaMaxMb": 21.1,
+      "memoriaAtualMb": 21.2,
+      "cpuUserMs": 688,
+      "cpuSystemMs": 219,
+      "quantidadeEtapas": 12,
+      "quantidadeExcecoes": 0,
+      "quantidadeConsultasSql": 16,
+      "plataforma": "win32 10.0.26100",
+      "node": "v20.20.2"
+    }
+  },
+  "excecoes": [],
+  "coberturaFuncional": 100
+}

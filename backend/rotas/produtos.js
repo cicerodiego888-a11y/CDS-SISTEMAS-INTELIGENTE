@@ -29,6 +29,7 @@ const {
   handleMulterProdutoImagemError
 } = require('../services/produtoImagemUpload');
 const { obterProdutoImagemService } = require('../services/ProdutoImagemService');
+const { obterProdutoEmbalagemService } = require('../services/produto-embalagem/ProdutoEmbalagemService');
 
 let _pdvIdentificacaoService = null;
 
@@ -218,6 +219,7 @@ const CAMPOS_PRODUTO_IGNORADOS = new Set([
   'data_fabricacao_inicial',
   'data_validade_inicial',
   'atacado_faixas',
+  'embalagens',
   'categoria',
   'subcategoria',
   'categoria_nome',
@@ -410,6 +412,19 @@ function inserirFaixasAtacadoProduto(produtoId, faixas, callback) {
   inserirProxima();
 }
 
+function salvarEmbalagensProduto(produtoId, embalagens, unidadeProduto, usuario, callback) {
+  if (!Array.isArray(embalagens)) {
+    return callback(null, []);
+  }
+  obterProdutoEmbalagemService(db).sincronizarEmbalagensProduto(
+    produtoId,
+    embalagens,
+    unidadeProduto,
+    usuario,
+    callback
+  );
+}
+
 function buscarProdutoCompleto(produtoId, callback) {
   db.get(`
     SELECT 
@@ -442,13 +457,20 @@ function buscarProdutoCompleto(produtoId, callback) {
           return callback(faixaErr);
         }
 
-        callback(null, normalizarProdutoResposta({
-          ...row,
-          categoria: row.categoria_nome || '',
-          subcategoria: row.subcategoria_nome || '',
-          marca: row.marca_nome || '',
-          atacado_faixas: faixas || []
-        }, false));
+        obterProdutoEmbalagemService(db).listarPorProduto(produtoId, (embErr, embalagens) => {
+          if (embErr) {
+            return callback(embErr);
+          }
+
+          callback(null, normalizarProdutoResposta({
+            ...row,
+            categoria: row.categoria_nome || '',
+            subcategoria: row.subcategoria_nome || '',
+            marca: row.marca_nome || '',
+            atacado_faixas: faixas || [],
+            embalagens: embalagens || []
+          }, false));
+        });
       }
     );
   });
@@ -1971,24 +1993,31 @@ router.get('/:id', (req, res) => {
           return res.status(500).json({ error: faixaErr.message });
         }
 
-        produtoTemMovimentacoes(db, req.params.id, (movErr, temMovimentacoes) => {
-          if (movErr) {
-            return res.status(500).json({ error: movErr.message });
+        obterProdutoEmbalagemService(db).listarPorProduto(req.params.id, (embErr, embalagens) => {
+          if (embErr) {
+            return res.status(500).json({ error: embErr.message });
           }
 
-          const produtoBase = normalizarProdutoResposta({
-            ...row,
-            categoria: row.categoria_nome || '',
-            subcategoria: row.subcategoria_nome || '',
-            atacado_faixas: faixas || [],
-            tem_movimentacoes: temMovimentacoes
-          }, modoFiscal);
-
-          enriquecerProdutoComValidade(req.params.id, produtoBase, (validadeErr, produto) => {
-            if (validadeErr) {
-              return res.status(500).json({ error: validadeErr.message });
+          produtoTemMovimentacoes(db, req.params.id, (movErr, temMovimentacoes) => {
+            if (movErr) {
+              return res.status(500).json({ error: movErr.message });
             }
-            res.json(produto);
+
+            const produtoBase = normalizarProdutoResposta({
+              ...row,
+              categoria: row.categoria_nome || '',
+              subcategoria: row.subcategoria_nome || '',
+              atacado_faixas: faixas || [],
+              embalagens: embalagens || [],
+              tem_movimentacoes: temMovimentacoes
+            }, modoFiscal);
+
+            enriquecerProdutoComValidade(req.params.id, produtoBase, (validadeErr, produto) => {
+              if (validadeErr) {
+                return res.status(500).json({ error: validadeErr.message });
+              }
+              res.json(produto);
+            });
           });
         });
       }
@@ -2009,6 +2038,7 @@ router.post('/', (req, res) => {
     peso_total_compra, valor_total_compra, custo_por_kg,
     venda_atacado,
     atacado_faixas,
+    embalagens,
     saldo_fiscal_inicial,
     saldo_nao_fiscal_inicial,
     item_fiscal,
@@ -2217,36 +2247,50 @@ router.post('/', (req, res) => {
             return res.status(500).json({ error: 'Produto criado, mas houve erro ao salvar faixas de atacado.' });
           }
 
-          buscarProdutoCompleto(produtoId, (err2, row) => {
-            if (err2 || !row) {
-              return res.status(500).json({ error: err2?.message || 'Erro ao buscar produto criado' });
+          salvarEmbalagensProduto(
+            produtoId,
+            embalagens,
+            unidade,
+            req.user,
+            (embErr) => {
+              if (embErr) {
+                console.error('Erro ao salvar apresentações do produto:', embErr.message);
+                return res.status(500).json({ error: `Produto criado, mas houve erro ao salvar apresentações: ${embErr.message}` });
+              }
+
+              buscarProdutoCompleto(produtoId, (err2, row) => {
+                if (err2 || !row) {
+                  return res.status(500).json({ error: err2?.message || 'Erro ao buscar produto criado' });
+                }
+
+                res.json({
+                  ...row,
+                  message: 'Produto criado com sucesso'
+                });
+
+                gravarAuditoria({
+                  usuario_id: req.user?.id || null,
+                  usuario_nome: req.user?.username || req.user?.nome || null,
+                  modulo: 'produtos',
+                  acao: 'criar_produto',
+                  referencia_tipo: 'produto',
+                  referencia_id: produtoId,
+                  detalhes: {
+                    nome,
+                    codigo: codigoFinal,
+                    codigo_gerado_automaticamente: Boolean(resolvido.gerado),
+                    categoria_id,
+                    estoque_atual,
+                    preco_venda,
+                    controlar_validade,
+                    faixas_atacado: (atacado_faixas || []).length,
+                    apresentacoes: Array.isArray(embalagens) ? embalagens.length : 0
+                  },
+                  ip_requisicao: req.ip || null
+                }).catch((auditErr) => console.error('Erro ao gravar auditoria de criação de produto:', auditErr));
+              });
             }
-
-            res.json({
-              ...row,
-              message: 'Produto criado com sucesso'
-            });
-
-            gravarAuditoria({
-              usuario_id: req.user?.id || null,
-              usuario_nome: req.user?.username || req.user?.nome || null,
-              modulo: 'produtos',
-              acao: 'criar_produto',
-              referencia_tipo: 'produto',
-              referencia_id: produtoId,
-              detalhes: {
-                nome,
-                codigo: codigoFinal,
-                codigo_gerado_automaticamente: Boolean(resolvido.gerado),
-                categoria_id,
-                estoque_atual,
-                preco_venda,
-                controlar_validade,
-                faixas_atacado: (atacado_faixas || []).length
-              },
-              ip_requisicao: req.ip || null
-            }).catch((auditErr) => console.error('Erro ao gravar auditoria de criação de produto:', auditErr));
-          });
+          );
         });
       }
     });
@@ -2295,11 +2339,117 @@ router.put('/validade/configuracoes', (req, res) => {
 // Ajustar estoque — legado PUT (use POST preferencialmente)
 router.put('/:id/ajustar-estoque', exigirPerfilAjusteEstoque(), executarAjusteEstoque);
 
+// Apresentações comerciais (ProdutoEmbalagem)
+router.get('/:id/embalagens', (req, res) => {
+  const { id } = req.params;
+  db.get('SELECT id FROM produtos WHERE id = ?', [id], (err, produto) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!produto) return res.status(404).json({ error: 'Produto não encontrado' });
+    obterProdutoEmbalagemService(db).listarPorProduto(id, (listErr, rows) => {
+      if (listErr) return res.status(500).json({ error: listErr.message });
+      res.json(rows || []);
+    });
+  });
+});
+
+router.get('/:produtoId/embalagens/:embId/historico', (req, res) => {
+  const { produtoId, embId } = req.params;
+  db.get(
+    'SELECT id FROM produto_embalagens WHERE id = ? AND produto_id = ?',
+    [embId, produtoId],
+    (err, row) => {
+      if (err) return res.status(500).json({ error: err.message });
+      if (!row) return res.status(404).json({ error: 'Apresentação não encontrada' });
+      obterProdutoEmbalagemService(db).listarHistorico(embId, (histErr, historico) => {
+        if (histErr) return res.status(500).json({ error: histErr.message });
+        res.json(historico || []);
+      });
+    }
+  );
+});
+
+/** RC4.31.12.9 — aprendizagem de UC durante compra (persistência + auditoria). */
+router.post('/:id/embalagens/aprendizagem-compra', (req, res) => {
+  const { id } = req.params;
+  const {
+    descricao,
+    quantidade,
+    unidade,
+    compra,
+    venda,
+    tipo
+  } = req.body || {};
+
+  db.get('SELECT id, unidade, compra_por_embalagem FROM produtos WHERE id = ?', [id], (err, produto) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!produto) return res.status(404).json({ error: 'Produto não encontrado' });
+
+    const svc = obterProdutoEmbalagemService(db);
+    svc.adicionarApresentacaoAprendizagemCompra(
+      id,
+      {
+        descricao,
+        quantidade,
+        unidade: unidade || produto.unidade,
+        compra: compra === undefined || compra === null ? 1 : (Number(compra) === 1 ? 1 : 0),
+        venda: Number(venda) === 1 ? 1 : 0,
+        tipo: tipo || 'ROLO'
+      },
+      produto.unidade,
+      req.user,
+      (addErr, embalagem) => {
+        if (addErr) {
+          return res.status(400).json({ error: addErr.message });
+        }
+
+        gravarAuditoria({
+          usuario_id: req.user?.id || null,
+          usuario_nome: req.user?.username || req.user?.nome || null,
+          modulo: 'compras',
+          acao: 'aprendizagem_unidade_comercial',
+          referencia_tipo: 'produto',
+          referencia_id: id,
+          detalhes: {
+            produto_id: Number(id),
+            embalagem_id: embalagem?.id || null,
+            descricao: embalagem?.descricao || descricao,
+            quantidade: embalagem?.quantidade || quantidade,
+            unidade: embalagem?.unidade || unidade || produto.unidade,
+            compra: embalagem?.compra,
+            venda: embalagem?.venda,
+            origem: 'COMPRA_APRENDIZAGEM'
+          },
+          ip_requisicao: req.ip || null
+        }).catch((auditErr) => {
+          console.error('[AUDIT] aprendizagem UC compra:', auditErr.message);
+        });
+
+        db.run(
+          `UPDATE produtos SET compra_por_embalagem = 1, updated_at = datetime('now', 'localtime') WHERE id = ?`,
+          [id],
+          () => {
+            buscarProdutoCompleto(id, (loadErr, completo) => {
+              if (loadErr) {
+                return res.status(500).json({ error: loadErr.message });
+              }
+              res.status(201).json({
+                embalagem,
+                produto: completo
+              });
+            });
+          }
+        );
+      }
+    );
+  });
+});
+
 // Atualizar produto
 router.put('/:id', (req, res) => {
   const { id } = req.params;
   const {
     atacado_faixas,
+    embalagens,
     saldo_fiscal_inicial,
     saldo_nao_fiscal_inicial,
     data_validade_inicial,
@@ -2443,7 +2593,8 @@ router.put('/:id', (req, res) => {
     });
 
     const temSaldosIniciais = saldo_fiscal_inicial !== undefined || saldo_nao_fiscal_inicial !== undefined;
-    if (fields.length === 0 && !Array.isArray(atacado_faixas) && !temSaldosIniciais && !pluInformado) {
+    const temEmbalagens = Array.isArray(embalagens);
+    if (fields.length === 0 && !Array.isArray(atacado_faixas) && !temSaldosIniciais && !pluInformado && !temEmbalagens) {
       return res.status(400).json({ error: 'Nenhum campo válido para atualizar.' });
     }
 
@@ -2537,37 +2688,49 @@ router.put('/:id', (req, res) => {
       });
     };
 
-    const concluirAtualizacao = (callback) => {
+    const concluirAtualizacao = (done) => {
       salvarFaixasTemporarias((faixaErr) => {
-        if (faixaErr) return callback(faixaErr);
-        aplicarSaldosIniciaisSePermitido((saldosErr) => {
-          if (saldosErr) return callback(saldosErr);
+        if (faixaErr) return done(faixaErr);
 
-          const deveSincronizarValidade =
-            controlarValidadeInformado !== undefined ||
-            dataValidadeInformada ||
-            diasAlertaInformado !== undefined;
+        const unidadeAtual = bodyUpdates.unidade !== undefined ? bodyUpdates.unidade : old.unidade;
+        salvarEmbalagensProduto(
+          id,
+          temEmbalagens ? embalagens : undefined,
+          unidadeAtual,
+          req.user,
+          (embErr) => {
+            if (embErr) return done(embErr);
 
-          if (!deveSincronizarValidade) {
-            return callback(null);
+            aplicarSaldosIniciaisSePermitido((saldosErr) => {
+              if (saldosErr) return done(saldosErr);
+
+              const deveSincronizarValidade =
+                controlarValidadeInformado !== undefined ||
+                dataValidadeInformada ||
+                diasAlertaInformado !== undefined;
+
+              if (!deveSincronizarValidade) {
+                return done(null);
+              }
+
+              db.get('SELECT * FROM produtos WHERE id = ?', [id], (getErr, atual) => {
+                if (getErr) return done(getErr);
+                if (!atual) return done(new Error('Produto não encontrado após atualização.'));
+
+                sincronizarValidadeELoteProduto(id, {
+                  controlarValidade: controlarValidadeInformado !== undefined
+                    ? (controlarValidadeInformado ? 1 : 0)
+                    : atual.controlar_validade,
+                  dataValidade: dataValidadeInformada,
+                  diasAlerta: diasAlertaInformado !== undefined
+                    ? diasAlertaInformado
+                    : atual.dias_alerta_validade,
+                  estoqueTotal: obterEstoqueTotalProduto(atual)
+                }, done);
+              });
+            });
           }
-
-          db.get('SELECT * FROM produtos WHERE id = ?', [id], (getErr, atual) => {
-            if (getErr) return callback(getErr);
-            if (!atual) return callback(new Error('Produto não encontrado após atualização.'));
-
-            sincronizarValidadeELoteProduto(id, {
-              controlarValidade: controlarValidadeInformado !== undefined
-                ? (controlarValidadeInformado ? 1 : 0)
-                : atual.controlar_validade,
-              dataValidade: dataValidadeInformada,
-              diasAlerta: diasAlertaInformado !== undefined
-                ? diasAlertaInformado
-                : atual.dias_alerta_validade,
-              estoqueTotal: obterEstoqueTotalProduto(atual)
-            }, callback);
-          });
-        });
+        );
       });
     };
 

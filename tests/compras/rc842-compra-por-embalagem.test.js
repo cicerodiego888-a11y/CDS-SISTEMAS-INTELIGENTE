@@ -108,17 +108,19 @@ test('schema produtos tem compra_por_embalagem e valor_compra_embalagem', () => 
   assert.match(src, /valor_compra_embalagem/);
 });
 
-test('UI cadastro tem checkbox compra_por_embalagem', () => {
+test('UI cadastro usa apresentações comerciais (substitui checkbox fixo)', () => {
   const src = ler('frontend/erp/js/produtos.js');
-  assert.match(src, /id="compra_por_embalagem"/);
-  assert.match(src, /painel_compra_por_embalagem/);
-  assert.match(src, /valor_compra_embalagem/);
-  assert.match(src, /Produto comprado por embalagem/);
+  assert.match(src, /ProdutoEmbalagensUI|painel_apresentacoes/);
+  assert.doesNotMatch(src, /id="compra_por_embalagem"/);
+  const mod = ler('frontend/erp/js/produto-embalagens.js');
+  assert.match(mod, /tabelaApresentacoes/);
+  assert.match(mod, /coletarApresentacoesDoFormulario/);
 });
 
-test('saveProduto persiste compra_por_embalagem', () => {
+test('saveProduto persiste embalagens via API', () => {
   const src = ler('frontend/erp/js/produtos.js');
-  assert.match(src, /compra_por_embalagem:\s*\$\('#compra_por_embalagem'\)\.is\(':checked'\)\s*\?\s*1\s*:\s*0/);
+  assert.match(src, /data\.embalagens/);
+  assert.match(src, /coletarApresentacoesDoFormulario/);
 });
 
 test('API lista COALESCE compra_por_embalagem', () => {

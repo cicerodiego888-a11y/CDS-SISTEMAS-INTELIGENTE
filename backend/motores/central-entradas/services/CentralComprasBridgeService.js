@@ -11,6 +11,7 @@ const { validarTransicao } = require('../core/MaquinaEstadosDocumento');
 const { paraDocumentoDetalheDTO } = require('../utils/centralEntradasMapper');
 const CentralDocumentosRepository = require('../repositories/CentralDocumentosRepository');
 const DocumentoTransitionService = require('./DocumentoTransitionService');
+const { financeiroPayloadCompleto } = require('./centralComprasFinanceiroBridge');
 
 class CentralComprasBridgeService {
   /**
@@ -60,14 +61,18 @@ class CentralComprasBridgeService {
    */
   async _enriquecerFinanceiroDoXml(payload, xml) {
     if (!xml || typeof xml !== 'string') return payload;
-    const jaTemFinanceiro = (Array.isArray(payload.parcelas_detalhe) && payload.parcelas_detalhe.length > 0)
-      || Boolean(payload.forma_pagamento)
-      || Number(payload.valor_ipi) > 0;
-    if (jaTemFinanceiro) return payload;
+
+    if (financeiroPayloadCompleto(payload)) return payload;
 
     try {
       const NFeParserService = require('../../../shared/nfe/NFeParserService');
       const json = await NFeParserService.parse(xml);
+      const parcelasXml = Array.isArray(json.parcelas_detalhe) ? json.parcelas_detalhe : [];
+      const duplicatasXml = Array.isArray(json.duplicatas) ? json.duplicatas : [];
+      const gradeAtual = Array.isArray(payload.parcelas_detalhe) ? payload.parcelas_detalhe : [];
+      const gradeComVencimento = gradeAtual.length > 0
+        && gradeAtual.every((p) => String(p?.vencimento || p?.dVenc || '').trim().length >= 10);
+
       return {
         ...payload,
         valor_ipi: payload.valor_ipi ?? json.valor_ipi ?? 0,
@@ -79,14 +84,17 @@ class CentralComprasBridgeService {
           : (json.pagamentos || []),
         duplicatas: (payload.duplicatas && payload.duplicatas.length)
           ? payload.duplicatas
-          : (json.duplicatas || []),
-        parcelas_detalhe: (payload.parcelas_detalhe && payload.parcelas_detalhe.length)
-          ? payload.parcelas_detalhe
-          : (json.parcelas_detalhe || []),
-        parcelas: (payload.parcelas_detalhe && payload.parcelas_detalhe.length)
-          ? payload.parcelas
-          : (json.parcelas || payload.parcelas || 1),
-        data_vencimento: payload.data_vencimento || json.data_vencimento || null,
+          : duplicatasXml,
+        parcelas_detalhe: gradeComVencimento
+          ? gradeAtual
+          : (parcelasXml.length ? parcelasXml : gradeAtual),
+        parcelas: parcelasXml.length
+          ? parcelasXml.length
+          : (payload.parcelas || json.parcelas || 1),
+        data_vencimento: payload.data_vencimento
+          || json.data_vencimento
+          || parcelasXml[0]?.vencimento
+          || null,
         valor_total_nota: payload.valor_total_nota || json.valor_total_nota
       };
     } catch {

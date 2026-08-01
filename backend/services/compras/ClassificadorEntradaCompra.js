@@ -15,10 +15,11 @@ const {
 } = require('./PoliticaEntradaCompra');
 const { extrairSinaisFiscaisDoXml } = require('./extrairSinaisFiscaisXml');
 
-/** Sufixos CFOP típicos de entrada (últimos 3 dígitos). */
+/** Sufixos CFOP típicos de bonificação (últimos 3 dígitos). */
+const CFOP_BONIFICACAO = new Set(['910', '949']);
+/** Sufixos CFOP típicos de uso/consumo (últimos 3 dígitos). */
 const CFOP_USO_CONSUMO = new Set([
-  '551', '552', '553', '556', '557', // ativo / uso e consumo / transferência
-  '910', '949' // bonificação / outras entradas (heurística de despesa)
+  '551', '552', '553', '556', '557'
 ]);
 const CFOP_INDUSTRIALIZACAO = new Set([
   '101', '111', '113', '116', '117', '118', '124', '125'
@@ -38,9 +39,23 @@ function dbAll(sql, params = []) {
 }
 
 function classificarPorCfop(cfop) {
+  const item = classificarPorCfopItem(cfop);
+  return item ? { tipo: item.tipo, confianca: item.confianca, motivo: item.motivo } : null;
+}
+
+/** Classificação fiscal por CFOP do item (RC4.31.11). */
+function classificarPorCfopItem(cfop) {
   const digitos = digitsOnly(cfop);
   if (digitos.length !== 4) return null;
   const sufixo = digitos.slice(1);
+
+  if (CFOP_BONIFICACAO.has(sufixo)) {
+    return {
+      tipo: TIPO_ENTRADA.BONIFICACAO,
+      confianca: 94,
+      motivo: `CFOP ${digitos} típico de bonificação/brinde.`
+    };
+  }
   if (CFOP_USO_CONSUMO.has(sufixo)) {
     return {
       tipo: TIPO_ENTRADA.USO_CONSUMO,
@@ -62,7 +77,6 @@ function classificarPorCfop(cfop) {
       motivo: `CFOP ${digitos} típico de compra para revenda.`
     };
   }
-  // 1xxx/2xxx genérico: entrada de mercadoria → revenda como baseline
   if (digitos[0] === '1' || digitos[0] === '2') {
     return {
       tipo: TIPO_ENTRADA.REVENDA,
@@ -275,8 +289,10 @@ async function classificarEntrada(input = {}) {
 module.exports = {
   classificarEntrada,
   classificarPorCfop,
+  classificarPorCfopItem,
   classificarPorNatureza,
   classificarPorFinalidade,
   historicoFornecedor,
-  mesclarSinais
+  mesclarSinais,
+  CFOP_BONIFICACAO
 };

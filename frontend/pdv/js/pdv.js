@@ -27,6 +27,56 @@ window.obterCarrinhoPdv = function obterCarrinhoPdv() {
 };
 sincronizarCarrinhoGlobalPdv();
 
+function motorPrecoAtacadoDisponivel() {
+    return typeof MotorPrecoAtacado !== 'undefined';
+}
+
+function obterPrecoBaseItemPdv(item, produto) {
+    const vendaUnidade = item && itemVendaPorUnidade(item);
+    if (vendaUnidade) {
+        return Number(item?.preco_base || produto?.preco_unidade || item?.preco_unitario || 0);
+    }
+    return Number(item?.preco_base || produto?.preco_venda || item?.preco_unitario || 0);
+}
+
+function aplicarCalculoMotorItemPdv(item, opcoes = {}) {
+    if (!motorPrecoAtacadoDisponivel()) {
+        throw new Error('MotorPrecoAtacado indisponível');
+    }
+    const produto = produtosDisponiveis.find((p) => Number(p.id) === Number(item.id));
+    const precoBase = Number(opcoes.precoOriginal ?? obterPrecoBaseItemPdv(item, produto));
+    const qtd = Number(opcoes.quantidade ?? item.quantidade ?? 0);
+    let calc;
+
+    if (opcoes.precoUnitarioInformado != null && Number.isFinite(Number(opcoes.precoUnitarioInformado))) {
+        calc = MotorPrecoAtacado.calcularLinhaPrecoUnitarioInformado({
+            precoOriginal: precoBase,
+            quantidade: qtd,
+            precoUnitarioInformado: Number(opcoes.precoUnitarioInformado)
+        });
+    } else {
+        calc = MotorPrecoAtacado.calcularLinhaDescontoPercentual({
+            precoOriginal: precoBase,
+            quantidade: qtd,
+            percentualDesconto: Number(opcoes.percentualDesconto ?? item.desconto_percentual ?? 0)
+        });
+    }
+
+    item.preco_base = precoBase;
+    item.preco_unitario = calc.precoUnitarioInterno;
+    item.desconto_percentual = calc.percentualDesconto;
+    item.subtotal = calc.totalInterno;
+    item.subtotal_exibicao = calc.total;
+    return calc;
+}
+
+function precoUnitarioExibicaoItemPdv(item) {
+    if (motorPrecoAtacadoDisponivel()) {
+        return MotorPrecoAtacado.formatarPrecoExibicao(item.preco_unitario).toFixed(2);
+    }
+    return Number(item.preco_unitario || 0).toFixed(2);
+}
+
 function sincronizarTerminalGlobalsPdv() {
     window.terminalId = terminalId;
     window.terminalHostname = terminalHostname;
@@ -2306,7 +2356,7 @@ function renderCarrinhoItens() {
                 <td class="col-unit">
                     <input type="number"
                            class="form-control form-control-sm valor-item text-end"
-                           value="${Number(item.preco_unitario).toFixed(2)}"
+                           value="${precoUnitarioExibicaoItemPdv(item)}"
                            min="0.01"
                            step="0.01"
                            data-index="${index}">
@@ -2319,7 +2369,7 @@ function renderCarrinhoItens() {
                            step="0.01"
                            data-index="${index}">
                 </td>
-                <td class="${classeTotal}"><span class="pdv-total-valor">${formatCurrency(item.subtotal)}</span></td>
+                <td class="${classeTotal}"><span class="pdv-total-valor">${formatCurrency(item.subtotal_exibicao ?? item.subtotal)}</span></td>
                 <td class="col-acao text-center">
                     <button type="button" class="btn btn-sm btn-outline-danger item-remover" data-index="${index}" title="Remover">
                         <i class="fas fa-trash"></i>
@@ -2600,9 +2650,10 @@ function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExt
             let faixas = [];
             $.ajax({ url: `${API_URL}/produtos/${produtoId}/atacado`, method: 'GET', async: false, headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') }, success: function(res) { faixas = res || []; } });
 
-            if (!Array.isArray(faixas) || faixas.length === 0) return { preco: precoBase, descontoAtacado: 0 };
+            if (!Array.isArray(faixas) || faixas.length === 0) {
+                return { preco: precoBase, descontoAtacado: 0, isAtacado: false };
+            }
 
-            // escolher maior faixa com quantidade_minima <= quantidadeTotal
             let escolhida = null;
             faixas.forEach(f => {
                 const qmin = Number(f.quantidade_minima || 0);
@@ -2611,15 +2662,33 @@ function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExt
                 }
             });
 
-            if (!escolhida) return { preco: precoBase, descontoAtacado: 0 };
+            if (!escolhida) return { preco: precoBase, descontoAtacado: 0, isAtacado: false };
 
             const precoAtacado = Number(escolhida.preco_atacado || 0);
-            if (precoAtacado <= 0) return { preco: precoBase, descontoAtacado: 0 };
+            if (precoAtacado <= 0) return { preco: precoBase, descontoAtacado: 0, isAtacado: false };
 
-            const descontoAtacadoTotal = Math.max(0, (Number(produto.preco_venda || precoBase) - precoAtacado) * quantidadeTotal);
-            // Aplicar atacado somente se for menor que o preço já calculado (promoções permanecem se forem menores)
-            const precoAplicado = Math.min(precoBase, precoAtacado);
-            return { preco: precoAplicado, descontoAtacado: Number(descontoAtacadoTotal.toFixed(2)), isAtacado: true };
+            if (!motorPrecoAtacadoDisponivel()) {
+                return { preco: precoBase, descontoAtacado: 0, isAtacado: false };
+            }
+
+            const calc = MotorPrecoAtacado.calcularLinhaAtacadoFaixa({
+                precoVenda: Number(produto.preco_venda || precoBase),
+                precoAtacado,
+                quantidade: quantidadeTotal
+            });
+            const precoAplicado = Math.min(Number(precoBase), calc.precoUnitarioInterno);
+            const linha = MotorPrecoAtacado.calcularLinhaPrecoUnitarioInformado({
+                precoOriginal: Number(produto.preco_venda || precoBase),
+                quantidade: quantidadeTotal,
+                precoUnitarioInformado: precoAplicado
+            });
+
+            return {
+                preco: precoAplicado,
+                descontoAtacado: calc.descontoAtacado,
+                isAtacado: precoAplicado < Number(precoBase),
+                subtotal: linha.total
+            };
         } catch (err) {
             return { preco: precoBase, descontoAtacado: 0, isAtacado: false };
         }
@@ -2657,18 +2726,24 @@ function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExt
         const precoBase = tipoVendaEhUnidade(tipoVenda)
             ? Number(produto.preco_unidade || precoFinal)
             : Number(produto.preco_venda || precoFinal);
-        const descontoPercentual = precoBase > 0 ? Number(((1 - precoFinal / precoBase) * 100).toFixed(2)) : 0;
+        if (motorPrecoAtacadoDisponivel()) {
+            aplicarCalculoMotorItemPdv(itemExistente, {
+                precoOriginal: precoBase,
+                quantidade: novaQuantidade,
+                precoUnitarioInformado: precoFinal
+            });
+        } else {
+            itemExistente.preco_unitario = precoFinal;
+            itemExistente.desconto_percentual = precoBase > 0 ? Number(((1 - precoFinal / precoBase) * 100).toFixed(2)) : 0;
+            itemExistente.subtotal = Number((novaQuantidade * precoFinal).toFixed(2));
+        }
 
         itemExistente.quantidade = novaQuantidade;
-        itemExistente.preco_unitario = precoFinal;
-        itemExistente.desconto_percentual = descontoPercentual;
         itemExistente.promocao_id = promocao?.id || null;
         itemExistente.desconto_atacado = descontoAtacadoItem;
         itemExistente.tipo_venda = tipoVenda;
         if (subtotalEtiquetaFixo != null && Number.isFinite(subtotalEtiquetaFixo)) {
             itemExistente.subtotal = Number((Number(itemExistente.subtotal || 0) + subtotalEtiquetaFixo).toFixed(2));
-        } else {
-            itemExistente.subtotal = Number((itemExistente.quantidade * precoFinal).toFixed(2));
         }
     } else {
         // avaliar atacado para quantidade inicial (nunca em etiqueta de balança)
@@ -2681,29 +2756,39 @@ function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExt
             const precoBase = tipoVendaEhUnidade(tipoVenda)
                 ? Number(produto.preco_unidade || precoFinal)
                 : Number(produto.preco_venda || precoFinal);
-            const descontoPercentual = precoBase > 0 ? Number(((1 - precoFinal / precoBase) * 100).toFixed(2)) : 0;
 
             const qtdCarrinho = tipoVendaEhUnidade(tipoVenda)
                 ? quantidade
                 : (etiquetaBalanca ? normalizarQuantidadeEtiquetaPdv(quantidade) : Number(quantidade.toFixed(2)));
-            const subtotalCarrinho = (subtotalEtiquetaFixo != null && Number.isFinite(subtotalEtiquetaFixo))
-                ? Number(subtotalEtiquetaFixo.toFixed(2))
-                : Number((quantidade * precoFinal).toFixed(2));
 
-            carrinho.push({
-            id: produto.id,
-            nome: produto.nome,
-            quantidade: qtdCarrinho,
-            preco_unitario: precoFinal,
-            preco_base: precoBase,
-            desconto_percentual: descontoPercentual,
-            promocao_id: promocao?.id || null,
-            desconto_atacado: descontoAtacadoItem,
+            const novoItem = {
+                id: produto.id,
+                nome: produto.nome,
+                quantidade: qtdCarrinho,
+                preco_unitario: precoFinal,
+                preco_base: precoBase,
+                desconto_percentual: 0,
+                promocao_id: promocao?.id || null,
+                desconto_atacado: descontoAtacadoItem,
                 tipo_preco: (Number(produto.venda_atacado || 0) === 1 && descontoAtacadoItem > 0) ? 'atacado' : 'varejo',
-            subtotal: subtotalCarrinho,
-            item_fiscal: Number(produto.item_fiscal || 0),
-            tipo_venda: tipoVenda
-        });
+                subtotal: 0,
+                item_fiscal: Number(produto.item_fiscal || 0),
+                tipo_venda: tipoVenda
+            };
+
+            if (subtotalEtiquetaFixo != null && Number.isFinite(subtotalEtiquetaFixo)) {
+                novoItem.subtotal = Number(subtotalEtiquetaFixo.toFixed(2));
+            } else if (motorPrecoAtacadoDisponivel()) {
+                aplicarCalculoMotorItemPdv(novoItem, {
+                    precoOriginal: precoBase,
+                    quantidade: qtdCarrinho,
+                    precoUnitarioInformado: precoFinal
+                });
+            } else {
+                novoItem.subtotal = Number((qtdCarrinho * precoFinal).toFixed(2));
+            }
+
+            carrinho.push(novoItem);
     }
 
     const idxDestaque = carrinho.findIndex((item) =>
@@ -3160,38 +3245,26 @@ function atualizarQuantidade(index, quantidade) {
     let precoAplicado = Number(item.preco_unitario || 0);
     let descontoAtacadoItem = Number(item.desconto_atacado || 0);
     if (!vendaUnidade && Number(produto.venda_atacado || 0) === 1) {
-        try {
-            let faixas = [];
-            $.ajax({ url: `${API_URL}/produtos/${produto.id}/atacado`, method: 'GET', async: false, headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') }, success: function(res) { faixas = res || []; } });
-            if (Array.isArray(faixas) && faixas.length > 0) {
-                let escolhida = null;
-                faixas.forEach(f => {
-                    const qmin = Number(f.quantidade_minima || 0);
-                    if (novaQuantidade >= qmin) {
-                        if (!escolhida || qmin > Number(escolhida.quantidade_minima || 0)) escolhida = f;
-                    }
-                });
-                if (escolhida) {
-                    const precoAtacado = Number(escolhida.preco_atacado || 0);
-                    const precoBase = Number(produto.preco_venda || precoAplicado);
-                    const novoPreco = Math.min(precoAplicado, precoAtacado, precoBase);
-                    precoAplicado = novoPreco;
-                    descontoAtacadoItem = Math.max(0, (Number(produto.preco_venda || precoBase) - novoPreco) * novaQuantidade);
-                }
-            }
-        } catch (err) {
-            // ignore
-        }
+        const atac = obterPrecoAtacado(produto.id, novaQuantidade, precoAplicado);
+        precoAplicado = atac.preco;
+        descontoAtacadoItem = atac.descontoAtacado;
     }
 
     item.quantidade = novaQuantidade;
-    item.preco_unitario = precoAplicado;
     item.desconto_atacado = Number((descontoAtacadoItem || 0).toFixed(2));
-    const precoBase = vendaUnidade
-        ? Number(produto.preco_unidade || item.preco_base || item.preco_unitario || 0)
-        : Number(item.preco_base || produto?.preco_venda || item.preco_unitario || 0);
-    item.desconto_percentual = precoBase > 0 ? Number(((1 - precoAplicado / precoBase) * 100).toFixed(2)) : 0;
-    item.subtotal = Number((item.preco_unitario * novaQuantidade).toFixed(2));
+    const precoBase = obterPrecoBaseItemPdv(item, produto);
+
+    if (motorPrecoAtacadoDisponivel()) {
+        aplicarCalculoMotorItemPdv(item, {
+            precoOriginal: precoBase,
+            quantidade: novaQuantidade,
+            precoUnitarioInformado: precoAplicado
+        });
+    } else {
+        item.preco_unitario = precoAplicado;
+        item.desconto_percentual = precoBase > 0 ? Number(((1 - precoAplicado / precoBase) * 100).toFixed(2)) : 0;
+        item.subtotal = Number((item.preco_unitario * novaQuantidade).toFixed(2));
+    }
     animarTotalLinhaCarrinho(index);
     atualizarCarrinho();
     focarCampoCodigo({ limpar: true });
@@ -3202,14 +3275,23 @@ function atualizarPercentual(index, percentual) {
     if (!item) return;
 
     const produto = produtosDisponiveis.find(p => Number(p.id) === Number(item.id));
-    const precoBase = Number(item.preco_base || produto?.preco_venda || item.preco_unitario || 0);
+    const precoBase = obterPrecoBaseItemPdv(item, produto);
     if (precoBase <= 0) return;
 
-    const precoAplicado = Number((precoBase * (1 - Number(percentual || 0) / 100)).toFixed(2));
-    item.desconto_percentual = Number(percentual.toFixed(2));
-    item.preco_unitario = precoAplicado > 0 ? precoAplicado : 0.01;
-    item.preco_base = precoBase;
-    item.subtotal = Number((item.preco_unitario * Number(item.quantidade || 0)).toFixed(2));
+    if (motorPrecoAtacadoDisponivel()) {
+        aplicarCalculoMotorItemPdv(item, {
+            precoOriginal: precoBase,
+            quantidade: item.quantidade,
+            percentualDesconto: Number(percentual || 0)
+        });
+    } else {
+        const precoAplicado = Number((precoBase * (1 - Number(percentual || 0) / 100)).toFixed(2));
+        item.desconto_percentual = Number(percentual.toFixed(2));
+        item.preco_unitario = precoAplicado > 0 ? precoAplicado : 0.01;
+        item.preco_base = precoBase;
+        item.subtotal = Number((item.preco_unitario * Number(item.quantidade || 0)).toFixed(2));
+    }
+
     animarTotalLinhaCarrinho(index);
     atualizarCarrinho();
     focarCampoCodigo({ limpar: true });
@@ -3220,17 +3302,26 @@ function atualizarPrecoUnitario(index, valor) {
     if (!item) return;
 
     const produto = produtosDisponiveis.find(p => Number(p.id) === Number(item.id));
-    const precoBase = Number(item.preco_base || produto?.preco_venda || item.preco_unitario || 0);
+    const precoBase = obterPrecoBaseItemPdv(item, produto);
     if (precoBase <= 0) return;
 
     const precoUnitario = Number(valor || 0);
     if (precoUnitario <= 0) return;
 
-    const percentual = Number(((1 - precoUnitario / precoBase) * 100).toFixed(2));
-    item.desconto_percentual = percentual;
-    item.preco_unitario = precoUnitario;
-    item.preco_base = precoBase;
-    item.subtotal = Number((precoUnitario * Number(item.quantidade || 0)).toFixed(2));
+    if (motorPrecoAtacadoDisponivel()) {
+        aplicarCalculoMotorItemPdv(item, {
+            precoOriginal: precoBase,
+            quantidade: item.quantidade,
+            precoUnitarioInformado: precoUnitario
+        });
+    } else {
+        const percentual = Number(((1 - precoUnitario / precoBase) * 100).toFixed(2));
+        item.desconto_percentual = percentual;
+        item.preco_unitario = precoUnitario;
+        item.preco_base = precoBase;
+        item.subtotal = Number((precoUnitario * Number(item.quantidade || 0)).toFixed(2));
+    }
+
     animarTotalLinhaCarrinho(index);
     atualizarCarrinho();
     focarCampoCodigo({ limpar: true });
@@ -3339,7 +3430,8 @@ function atualizarCarrinho() {
 }
 
 function calcularSubtotal() {
-    return carrinho.reduce((acc, item) => acc + Number(item.subtotal || 0), 0);
+    const soma = carrinho.reduce((acc, item) => acc + Number(item.subtotal || 0), 0);
+    return motorPrecoAtacadoDisponivel() ? MotorPrecoAtacado.arredondarMoeda(soma) : soma;
 }
 
 function calcularTotalValor() {
@@ -4194,15 +4286,23 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
             const quantidade = tipoVendaEhUnidade(tipoVenda)
                 ? Math.max(0, Math.round(Number(item.quantidade || 0)))
                 : normalizarQuantidadePdv(item.quantidade, produto);
+            const subtotalFiscal = motorPrecoAtacadoDisponivel()
+                ? Number(item.subtotal_exibicao ?? MotorPrecoAtacado.arredondarMoeda(Number(item.subtotal || 0)))
+                : Math.round(Number(item.preco_unitario) * Number(quantidade) * 100) / 100;
             const itemPayload = {
             produto_id: Number(item.id),
             quantidade,
-            preco_unitario: Number(item.preco_unitario),
+            preco_unitario: motorPrecoAtacadoDisponivel()
+                ? MotorPrecoAtacado.formatarPrecoExibicao(Number(item.preco_unitario))
+                : Number(item.preco_unitario),
+            preco_unitario_interno: motorPrecoAtacadoDisponivel()
+                ? Number(item.preco_unitario)
+                : null,
             desconto_percentual: Number(item.desconto_percentual || 0),
             promocao_id: item.promocao_id || null,
             desconto_atacado: Number(item.desconto_atacado || 0),
             tipo_preco: item.tipo_preco || 'varejo',
-            subtotal: Math.round(Number(item.preco_unitario) * Number(item.quantidade) * 100) / 100,
+            subtotal: subtotalFiscal,
             item_fiscal: Number(item.item_fiscal || 0),
             tipo_venda: tipoVenda
         };

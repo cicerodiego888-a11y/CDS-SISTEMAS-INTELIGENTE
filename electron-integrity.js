@@ -11,7 +11,9 @@ const crypto = require('crypto');
 const { execSync } = require('child_process');
 
 const MANIFEST_REL = 'electron-manifest.json';
+const BUILD_MANIFEST_REL = 'electron-build-manifest.json';
 const SCHEMA = 'cds-electron-manifest/v2';
+const BUILD_SCHEMA = 'cds-electron-build-manifest/v1';
 
 const ARQUIVOS_OBRIGATORIOS = [
   'frontend/erp/index.html',
@@ -25,6 +27,10 @@ const ARQUIVOS_OBRIGATORIOS = [
   'frontend/erp/js/configuracoes.js',
   'backend/server.js',
   'backend/database.js',
+  'backend/motores/muc/public.js',
+  'backend/motores/muc/constants/tiposApresentacao.js',
+  'backend/services/produto-embalagem/produtoEmbalagensSchema.js',
+  'backend/services/produto-embalagem/tiposApresentacao.js',
   'preload.js',
   'electron-common.js',
   'electron-erp.js',
@@ -630,6 +636,215 @@ function validarIntegridadePacoteLocal(rootDir, opcoes = {}) {
   return resultado;
 }
 
+function hashAsarCompleto(asarPath) {
+  if (!fs.existsSync(asarPath)) {
+    const err = new Error(`app.asar não encontrado: ${asarPath}`);
+    err.code = 'ASAR_MISSING';
+    throw err;
+  }
+  return sha256File(asarPath);
+}
+
+function gerarRelatorioDivergencias(cmp, opcoes = {}) {
+  const linhas = [
+    '# Relatório de Divergências — App Integrity',
+    '',
+    `Resultado: ${cmp.ok ? 'APROVADO' : 'REPROVADO'}`,
+    `Arquivos validados: ${cmp.quantidadeValidada || 0}`,
+    `Divergências: ${(cmp.divergencias || []).length}`,
+    `Ausentes no asar: ${(cmp.ausentesNoAsar || []).length}`,
+    ''
+  ];
+
+  if (cmp.porCamada) {
+    linhas.push('## Por camada');
+    Object.entries(cmp.porCamada).forEach(([camada, stats]) => {
+      if (stats.ok + stats.fail > 0) {
+        linhas.push(`- ${camada}: ${stats.ok} OK, ${stats.fail} falha(s)`);
+      }
+    });
+    linhas.push('');
+  }
+
+  if ((cmp.divergencias || []).length) {
+    linhas.push('## Divergências de hash');
+    cmp.divergencias.forEach((d) => {
+      linhas.push(`### ${d.arquivo}`);
+      linhas.push(`- Camada: ${d.camada || '—'}`);
+      linhas.push(`- Hash esperado: \`${d.esperado}\``);
+      linhas.push(`- Hash encontrado: \`${d.obtido}\``);
+      linhas.push(`- Motivo: ${d.motivo || 'manifesto_vs_asar'}`);
+      linhas.push('');
+    });
+  }
+
+  if ((cmp.ausentesNoAsar || []).length) {
+    linhas.push('## Ausentes no app.asar');
+    cmp.ausentesNoAsar.slice(0, opcoes.maxAusentes || 50).forEach((a) => linhas.push(`- ${a}`));
+    linhas.push('');
+  }
+
+  if ((cmp.erros || []).length) {
+    linhas.push('## Erros');
+    cmp.erros.forEach((e) => linhas.push(`- ${e}`));
+  }
+
+  return linhas.join('\n');
+}
+
+/** Módulos críticos RC4.31.7 — smoke test do pacote empacotado */
+const MODULOS_SMOKE_ASAR = Object.freeze([
+  { modulo: 'erp_core', arquivo: 'frontend/erp/js/app.js', marcas: ['loadPage', 'loadCentralEntradas'] },
+  { modulo: 'database', arquivo: 'backend/database.js', marcas: ['aplicarCertificacaoSql'] },
+  { modulo: 'sql_cert', arquivo: 'backend/lib/sqlCertification/index.js', marcas: ['validateSql', 'aplicarCertificacaoSql'] },
+  { modulo: 'compras', arquivo: 'backend/rotas/compras.js', marcas: ['obterMuc', 'INSERT INTO compras'] },
+  { modulo: 'produtos', arquivo: 'backend/rotas/produtos.js', marcas: ['produto_embalagens'] },
+  { modulo: 'financeiro', arquivo: 'backend/rotas/financeiro.js', marcas: ['financeiro'] },
+  { modulo: 'nfce', arquivo: 'backend/services/fiscal/emissor.js', marcas: ['nfce', 'NFC'] },
+  { modulo: 'nfe', arquivo: 'backend/services/fiscal/nfeEmissorVenda.js', marcas: ['nfe', 'NFe'] },
+  { modulo: 'muc', arquivo: 'backend/motores/muc/public.js', marcas: ['obterMuc', 'VERSAO'] }
+]);
+
+const MARCAS_OBSOLETAS_ASAR = Object.freeze([
+  { marca: 'runComValidacaoInsert', motivo: 'wrapper RC4.31.5 substituído por aplicarCertificacaoSql' }
+]);
+
+function executarSmokeTestAsar(asarPath) {
+  const erros = [];
+  const ok = [];
+
+  if (!fs.existsSync(asarPath)) {
+    return { ok: false, erros: [`app.asar não encontrado: ${asarPath}`], modulos: ok };
+  }
+
+  MODULOS_SMOKE_ASAR.forEach(({ modulo, arquivo, marcas }) => {
+    try {
+      const buf = lerArquivoAsar(asarPath, arquivo);
+      const conteudo = buf.toString('utf8');
+      const faltando = marcas.filter((m) => !conteudo.includes(m));
+      if (faltando.length) {
+        erros.push(`${modulo} (${arquivo}): marcas ausentes [${faltando.join(', ')}]`);
+      } else {
+        ok.push(modulo);
+      }
+    } catch (err) {
+      erros.push(`${modulo} (${arquivo}): ${err.message}`);
+    }
+  });
+
+  MARCAS_OBSOLETAS_ASAR.forEach(({ marca, motivo }) => {
+    try {
+      const db = lerArquivoAsar(asarPath, 'backend/database.js').toString('utf8');
+      if (db.includes(marca)) {
+        erros.push(`código obsoleto no asar: ${marca} (${motivo})`);
+      }
+    } catch (_) {
+      /* database.js já reportado acima */
+    }
+  });
+
+  return { ok: erros.length === 0, erros, modulos: ok };
+}
+
+function gerarManifestoBuild(rootDir, asarPath, cmp, opcoes = {}) {
+  const manifesto = cmp.manifesto || opcoes.manifesto || gerarManifesto(rootDir, { modulo: 'erp' });
+  const smoke = opcoes.smoke || executarSmokeTestAsar(asarPath);
+  const hashAppAsar = hashAsarCompleto(asarPath);
+  const timestamp = opcoes.timestamp || new Date().toISOString();
+
+  return {
+    schema: BUILD_SCHEMA,
+    versao: manifesto.versao,
+    data: timestamp,
+    build: manifesto.build || timestamp,
+    commit: manifesto.commit,
+    branch: manifesto.branch,
+    modulo: manifesto.modulo || 'erp',
+    hashAppAsar,
+    hashFrontend: manifesto.hashFrontend,
+    hashBackend: manifesto.hashBackend,
+    hashElectron: manifesto.hashElectron,
+    hashGlobal: manifesto.hash,
+    quantidadeArquivosEmpacotados: cmp.quantidadeValidada || Object.keys(manifesto.arquivos || {}).length,
+    modulosPrincipais: {
+      frontend: manifesto.quantidadeFrontend,
+      backend: manifesto.quantidadeBackend,
+      electron: manifesto.quantidadeElectron,
+      recursos: manifesto.quantidadeRecursos
+    },
+    certificacao: {
+      resultado: cmp.ok && smoke.ok ? 'APROVADO' : 'REPROVADO',
+      integridadeAsar: cmp.ok,
+      smokeTest: smoke.ok,
+      divergencias: (cmp.divergencias || []).length,
+      ausentesNoAsar: (cmp.ausentesNoAsar || []).length,
+      modulosSmokeOk: smoke.modulos || [],
+      timestamp
+    },
+    asarPath: toPosix(path.relative(rootDir, asarPath))
+  };
+}
+
+function escreverManifestoBuild(rootDir, manifestoBuild) {
+  const abs = path.join(rootDir, BUILD_MANIFEST_REL);
+  fs.writeFileSync(abs, `${JSON.stringify(manifestoBuild, null, 2)}\n`, 'utf8');
+  return abs;
+}
+
+function lerManifestoBuild(rootDir) {
+  const abs = path.join(rootDir, BUILD_MANIFEST_REL);
+  if (!fs.existsSync(abs)) {
+    const err = new Error(`Manifesto de build ausente: ${BUILD_MANIFEST_REL}`);
+    err.code = 'BUILD_MANIFEST_MISSING';
+    throw err;
+  }
+  return JSON.parse(fs.readFileSync(abs, 'utf8'));
+}
+
+function resolverAsarPathErp(rootDir) {
+  const candidatos = [
+    process.env.CDS_ASAR_PATH,
+    path.join(rootDir, 'dist', 'erp', 'win-unpacked', 'resources', 'app.asar')
+  ].filter(Boolean);
+  return candidatos.find((p) => fs.existsSync(p)) || null;
+}
+
+function certificarIntegridadeErp(rootDir, opcoes = {}) {
+  const asarPath = opcoes.asarPath || resolverAsarPathErp(rootDir);
+  const manifesto = opcoes.manifesto || (() => {
+    try {
+      return lerManifesto(rootDir);
+    } catch (_) {
+      return gerarManifesto(rootDir, { modulo: 'erp' });
+    }
+  })();
+
+  const cmp = asarPath
+    ? compararRepoComAsar(rootDir, asarPath, { manifesto, modulo: 'erp' })
+    : {
+      ok: false,
+      erros: ['app.asar não encontrado'],
+      divergencias: [],
+      ausentesNoAsar: [],
+      quantidadeValidada: 0,
+      porCamada: null,
+      manifesto
+    };
+
+  const smoke = asarPath ? executarSmokeTestAsar(asarPath) : { ok: false, erros: ['app.asar não encontrado'], modulos: [] };
+  const relatorio = gerarRelatorioDivergencias(cmp);
+  const buildManifest = asarPath ? gerarManifestoBuild(rootDir, asarPath, cmp, { manifesto, smoke }) : null;
+
+  return {
+    ok: cmp.ok && smoke.ok,
+    cmp,
+    smoke,
+    relatorio,
+    buildManifest,
+    asarPath
+  };
+}
+
 function resumoManifesto(manifesto) {
   if (!manifesto) return null;
   return {
@@ -656,9 +871,12 @@ function resumoManifesto(manifesto) {
 
 module.exports = {
   MANIFEST_REL,
+  BUILD_MANIFEST_REL,
   SCHEMA,
+  BUILD_SCHEMA,
   ARQUIVOS_OBRIGATORIOS,
   ARQUIVOS_ELECTRON,
+  MODULOS_SMOKE_ASAR,
   toPosix,
   sha256File,
   sha256Buffer,
@@ -683,7 +901,15 @@ module.exports = {
   lerManifesto,
   validarEstruturaManifesto,
   hashManifestoArquivos,
+  hashAsarCompleto,
   compararRepoComAsar,
+  gerarRelatorioDivergencias,
+  executarSmokeTestAsar,
+  gerarManifestoBuild,
+  escreverManifestoBuild,
+  lerManifestoBuild,
+  resolverAsarPathErp,
+  certificarIntegridadeErp,
   validarIntegridadePacoteLocal,
   listarAsar,
   lerArquivoAsar,

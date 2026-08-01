@@ -1822,15 +1822,25 @@ function showProdutoModal(produto = null) {
                                         <div class="row g-3">
                                             <div class="col-md-6">
                                                 <label for="categoria_id" class="form-label">Categoria</label>
-                                                <select class="form-control" id="categoria_id">
-                                                    <option value="">Carregando...</option>
-                                                </select>
+                                                <div class="input-group">
+                                                    <select class="form-control" id="categoria_id">
+                                                        <option value="">Carregando...</option>
+                                                    </select>
+                                                    <button type="button" class="btn btn-outline-success" id="btnCriarCategoriaRapida" title="Criar categoria rapidamente">
+                                                        <i class="fas fa-plus"></i>
+                                                    </button>
+                                                </div>
                                             </div>
                                             <div class="col-md-6">
                                                 <label for="subcategoria_id" class="form-label">Subcategoria</label>
-                                                <select class="form-control" id="subcategoria_id">
-                                                    <option value="">Selecione uma categoria</option>
-                                                </select>
+                                                <div class="input-group">
+                                                    <select class="form-control" id="subcategoria_id">
+                                                        <option value="">Selecione uma categoria</option>
+                                                    </select>
+                                                    <button type="button" class="btn btn-outline-success" id="btnCriarSubcategoriaRapida" title="Criar subcategoria rapidamente" disabled>
+                                                        <i class="fas fa-plus"></i>
+                                                    </button>
+                                                </div>
                                             </div>
                                             <div class="col-md-6">
                                                 <label for="marca_smart_input" class="form-label">Marca</label>
@@ -1868,59 +1878,9 @@ function showProdutoModal(produto = null) {
                                                     Selecione uma unidade fracionável (KG, MT, LT, M², M³, etc.).
                                                 </small>
                                             </div>
-                                            <div class="col-md-12">
-                                                <div class="form-check mt-1">
-                                                    <input class="form-check-input" type="checkbox" id="compra_por_embalagem"
-                                                        ${(() => {
-                                                            const flag = Number(isEdit ? (produto.compra_por_embalagem || 0) : 0) === 1;
-                                                            const legado = isEdit
-                                                                && String(produto.unidade_comercial || 'UN').toUpperCase() !== 'UN'
-                                                                && Number(produto.quantidade_por_embalagem || 0) > 0;
-                                                            return (flag || legado) ? 'checked' : '';
-                                                        })()}>
-                                                    <label class="form-check-label" for="compra_por_embalagem">
-                                                        Produto comprado por embalagem
-                                                    </label>
-                                                </div>
-                                                <small class="text-muted">Desmarcado: cadastro por unidade (padrão). Marcado: compra em pacote/caixa com conversão automática para estoque.</small>
-                                            </div>
-                                            <div class="col-12 ${(() => {
-                                                const flag = Number(isEdit ? (produto.compra_por_embalagem || 0) : 0) === 1;
-                                                const legado = isEdit
-                                                    && String(produto.unidade_comercial || 'UN').toUpperCase() !== 'UN'
-                                                    && Number(produto.quantidade_por_embalagem || 0) > 0;
-                                                return (flag || legado) ? '' : 'd-none';
-                                            })()}" id="painel_compra_por_embalagem">
-                                                <div class="row g-3 border rounded p-3 bg-light">
-                                                    <div class="col-md-4">
-                                                        <label class="form-label">Unidade de Estoque</label>
-                                                        <input type="text" class="form-control bg-white" value="UN" readonly>
-                                                        <small class="text-muted">Unidade que controla o estoque e a venda.</small>
-                                                    </div>
-                                                    <div class="col-md-4">
-                                                        <label for="unidade_comercial" class="form-label">Unidade de Compra</label>
-                                                        <select class="form-control" id="unidade_comercial">
-                                                            ${['PACOTE','CAIXA','FARDO','SACO','LATA','BALDE','ROLO','BARRA'].map((u) => {
-                                                                const atual = String(isEdit ? (produto.unidade_comercial || 'PACOTE') : 'PACOTE').toUpperCase();
-                                                                return `<option value="${u}" ${atual === u ? 'selected' : ''}>${u}</option>`;
-                                                            }).join('')}
-                                                        </select>
-                                                    </div>
-                                                    <div class="col-md-4" id="wrap_quantidade_por_embalagem">
-                                                        <label for="quantidade_por_embalagem" class="form-label">Quantidade por Embalagem</label>
-                                                        <input type="number" step="0.001" min="0" class="form-control" id="quantidade_por_embalagem"
-                                                            value="${isEdit ? Number(produto.quantidade_por_embalagem || 0) || '' : ''}"
-                                                            placeholder="Ex.: 12">
-                                                        <small class="text-muted">Unidades de estoque em 1 embalagem.</small>
-                                                    </div>
-                                                    <div class="col-md-4" id="wrap_valor_compra_embalagem">
-                                                        <label for="valor_compra_embalagem" class="form-label">Valor de Compra da Embalagem</label>
-                                                        <input type="number" step="0.01" min="0" class="form-control" id="valor_compra_embalagem"
-                                                            value="${isEdit && Number(produto.valor_compra_embalagem || 0) > 0 ? Number(produto.valor_compra_embalagem) : ''}"
-                                                            placeholder="Ex.: 40,00">
-                                                    </div>
-                                                </div>
-                                            </div>
+                                            ${typeof ProdutoEmbalagensUI !== 'undefined'
+                                                ? ProdutoEmbalagensUI.montarHtmlPainelApresentacoes()
+                                                : ''}
                                         </div>
                                     </div>
                                 </div>
@@ -2301,9 +2261,13 @@ function showProdutoModal(produto = null) {
     $('#btn-restaurar-produtoModal').remove();
 
     inicializarCategoriasESubcategorias(produto, isEdit);
+    inicializarBotoesCriacaoRapidaCategoriaSubcategoria();
     inicializarMarcasProdutoCadastro(produto, isEdit);
     inicializarAutocompleteFornecedor();
     inicializarCalculoPreco(produto, isEdit);
+    if (typeof ProdutoEmbalagensUI !== 'undefined') {
+        ProdutoEmbalagensUI.inicializarApresentacoes(produto);
+    }
     inicializarMotorConversaoUnidadesCadastro();
     inicializarVendaUnidadeCadastro(produto, isEdit);
     inicializarVendaAtacado(produto, isEdit);
@@ -2667,6 +2631,70 @@ function inicializarControleLoteInicial() {
 
 
 // Inicializa categorias e subcategorias
+function inicializarBotoesCriacaoRapidaCategoriaSubcategoria() {
+    const $btnCategoria = $('#btnCriarCategoriaRapida');
+    const $btnSubcategoria = $('#btnCriarSubcategoriaRapida');
+    if (!$btnCategoria.length && !$btnSubcategoria.length) return;
+
+    $btnCategoria.off('click.miipQuickCreate').on('click.miipQuickCreate', async function () {
+        const nome = window.prompt('Nome da categoria', '');
+        if (!nome || !nome.trim()) return;
+        try {
+            const criada = await window.categoriasAPI.criar({ nome: nome.trim(), tipo: 'produto' });
+            await window.categoriasAPI.listar('produto').done(function (categorias) {
+                const categoriasComSubs = (categorias || []).map((cat) => ({
+                    ...cat,
+                    subcategorias: (window.categoriasSistema || []).find((item) => String(item.id) === String(cat.id))?.subcategorias || []
+                }));
+                window.categoriasSistema = categoriasComSubs;
+                const catId = String(criada?.id || '');
+                const $cat = $('#categoria_id');
+                let options = '<option value="">Selecione</option>';
+                categoriasComSubs.forEach((cat) => {
+                    options += `<option value="${cat.id}"${String(cat.id) === catId ? ' selected' : ''}>${escapeHtml(cat.nome || '')}</option>`;
+                });
+                $cat.html(options);
+                $cat.val(catId);
+                $cat.trigger('change');
+                showNotification('Categoria criada com sucesso.', 'success');
+            });
+        } catch (err) {
+            showNotification(err?.responseJSON?.erro || 'Erro ao criar categoria.', 'danger');
+        }
+    });
+
+    $btnSubcategoria.off('click.miipQuickCreate').on('click.miipQuickCreate', async function () {
+        const categoriaId = $('#categoria_id').val();
+        if (!categoriaId) {
+            showNotification('Selecione uma categoria antes de criar uma subcategoria.', 'warning');
+            return;
+        }
+        const nome = window.prompt('Nome da subcategoria', '');
+        if (!nome || !nome.trim()) return;
+        try {
+            const criada = await window.subcategoriasAPI.criar({ nome: nome.trim(), categoria_id: categoriaId });
+            const subs = await window.subcategoriasAPI.listarPorCategoria(categoriaId).catch(() => []);
+            const $select = $('#subcategoria_id');
+            let options = '<option value="">Nenhuma</option>';
+            (subs || []).forEach((sub) => {
+                options += `<option value="${sub.id}"${String(sub.id) === String(criada?.id || '') ? ' selected' : ''}>${escapeHtml(sub.nome || '')}</option>`;
+            });
+            $select.html(options);
+            $select.val(String(criada?.id || ''));
+            showNotification('Subcategoria criada com sucesso.', 'success');
+        } catch (err) {
+            showNotification(err?.responseJSON?.erro || 'Erro ao criar subcategoria.', 'danger');
+        }
+    });
+
+    $('#categoria_id').off('change.miipQuickCreate').on('change.miipQuickCreate', function () {
+        const temCategoria = Boolean(String($(this).val() || '').trim());
+        $btnSubcategoria.prop('disabled', !temCategoria);
+    });
+}
+
+window.inicializarBotoesCriacaoRapidaCategoriaSubcategoria = inicializarBotoesCriacaoRapidaCategoriaSubcategoria;
+
 function inicializarCategoriasESubcategorias(produto, isEdit) {
     if (!(window.categoriasAPI && window.subcategoriasAPI)) {
         $('#categoria_id').html('<option value="">Categorias indisponíveis</option>');
@@ -2688,6 +2716,7 @@ function inicializarCategoriasESubcategorias(produto, isEdit) {
         function carregarSubs(catId, selectedSubId) {
             if (!catId) {
                 $('#subcategoria_id').html('<option value="">Selecione uma categoria</option>');
+                $('#btnCriarSubcategoriaRapida').prop('disabled', true);
                 return;
             }
             const cat = categoriasComSubs.find(c => String(c.id) === String(catId));
@@ -2696,6 +2725,7 @@ function inicializarCategoriasESubcategorias(produto, isEdit) {
                 subOptions += `<option value="${sub.id}">${escapeHtml(sub.nome || '')}</option>`;
             });
             $('#subcategoria_id').html(subOptions);
+            $('#btnCriarSubcategoriaRapida').prop('disabled', false);
             if (typeof selectedSubId !== 'undefined' && selectedSubId !== null) {
                 $('#subcategoria_id').val(String(selectedSubId));
             }
@@ -2713,6 +2743,7 @@ function inicializarCategoriasESubcategorias(produto, isEdit) {
             carregarSubs(produto.categoria_id, subId);
         } else {
             $('#subcategoria_id').html('<option value="">Selecione uma categoria</option>');
+            $('#btnCriarSubcategoriaRapida').prop('disabled', true);
         }
     }
 
@@ -3129,10 +3160,19 @@ function formatarPercentualPorPrecoAtacado(precoAtacado) {
     return `${percentual.toFixed(2)}%`;
 }
 
+function arredondarPrecoInternoAtacado(valor) {
+    if (typeof MotorPrecoAtacado !== 'undefined') {
+        return MotorPrecoAtacado.arredondarInterno(valor);
+    }
+    const n = Number(valor || 0);
+    if (!Number.isFinite(n)) return 0;
+    return Math.round(n * 1e6) / 1e6;
+}
+
 function obterPrecoPorPercentual(percentual) {
     const precoVenda = parseNumero($('#preco_venda').val());
     if (precoVenda <= 0) return 0;
-    return precoVenda * (1 - (parseNumero(percentual) / 100));
+    return arredondarPrecoInternoAtacado(precoVenda * (1 - (parseNumero(percentual) / 100)));
 }
 
 function extrairDadosFaixaLinha($tr) {
@@ -3152,7 +3192,7 @@ function extrairDadosFaixaLinha($tr) {
 
     return {
         quantidade_minima: q,
-        preco_atacado: Number(preco.toFixed(2))
+        preco_atacado: arredondarPrecoInternoAtacado(preco)
     };
 }
 
@@ -3228,10 +3268,18 @@ function fixarEventosFaixaRow($row) {
 
 // Inicializa cálculo automático do preço de venda
 function produtoCadastroUsaCompraPorEmbalagem() {
-    return $('#compra_por_embalagem').is(':checked');
+    if (typeof ProdutoEmbalagensUI !== 'undefined' && ProdutoEmbalagensUI.obterCompraPorEmbalagemAtiva) {
+        return ProdutoEmbalagensUI.obterCompraPorEmbalagemAtiva();
+    }
+    return false;
 }
 
 function sincronizarFormacaoPrecoProduto(origem = 'init') {
+    if (typeof ProdutoEmbalagensUI !== 'undefined'
+        && ProdutoEmbalagensUI.sincronizarFormacaoPrecoApresentacaoPrincipal(origem)) {
+        return;
+    }
+
     const $precoCompra = $('#preco_compra');
     const $lucro = $('#lucro_percentual');
     const $precoVenda = $('#preco_venda');
@@ -3239,40 +3287,9 @@ function sincronizarFormacaoPrecoProduto(origem = 'init') {
 
     const numero = (valor) => parseFloat(String(valor ?? '').replace(',', '.')) || 0;
     const compraPorEmbalagem = produtoCadastroUsaCompraPorEmbalagem();
-    const unidadeComercial = String($('#unidade_comercial').val() || 'PACOTE').toUpperCase();
-    const qtdEmb = numero($('#quantidade_por_embalagem').val());
-    const valorEmbCompra = numero($('#valor_compra_embalagem').val());
     const motor = window.MotorUnidadesMedidaCliente;
 
-    if (compraPorEmbalagem && motor && qtdEmb > 0) {
-        const calc = motor.calcularFormacaoPrecoCadastro({
-            compraPorEmbalagem: true,
-            unidadeComercial,
-            quantidadePorEmbalagem: qtdEmb,
-            valorEmbalagemCompra: valorEmbCompra,
-            custoUnitario: numero($precoCompra.val()),
-            margemPercentual: numero($lucro.val()),
-            precoVendaUnitario: numero($precoVenda.val()),
-            origem: origem === 'venda' ? 'venda' : (origem === 'lucro' ? 'margem' : (origem === 'embalagem' ? 'embalagem' : 'custo'))
-        });
-        $precoCompra.prop('readonly', true).addClass('bg-light');
-        if (valorEmbCompra > 0 || origem === 'embalagem' || origem === 'init') {
-            $precoCompra.val(calc.custoUnitario.toFixed(4));
-        }
-        if (origem === 'venda') {
-            $lucro.val(calc.margemPercentual.toFixed(2));
-        } else if (origem !== 'init' || numero($precoVenda.val()) <= 0) {
-            $precoVenda.val(calc.precoVendaUnitario.toFixed(2));
-            if (origem === 'init' && !String($lucro.val() ?? '').trim()) {
-                $lucro.val(calc.margemPercentual.toFixed(2));
-            }
-        }
-        $('#valor_embalagem_venda').val(
-            typeof formatCurrency === 'function'
-                ? formatCurrency(calc.valorEmbalagemVenda)
-                : `R$ ${calc.valorEmbalagemVenda.toFixed(2)}`
-        );
-        atualizarPreviewValorTotalEstoqueCadastro();
+    if (compraPorEmbalagem && motor) {
         return;
     }
 
@@ -3308,17 +3325,15 @@ function sincronizarFormacaoPrecoProduto(origem = 'init') {
 }
 
 function atualizarVisibilidadeEmbalagemComercialCadastro() {
-    const mostra = produtoCadastroUsaCompraPorEmbalagem();
-    $('#painel_compra_por_embalagem').toggleClass('d-none', !mostra);
-    $('#wrap_valor_embalagem_venda').toggleClass('d-none', !mostra);
-    if (!mostra) {
-        $('#quantidade_por_embalagem').val('');
-        $('#valor_compra_embalagem').val('');
+    const usaApresentacao = produtoCadastroUsaCompraPorEmbalagem();
+    $('#wrap_valor_embalagem_venda').toggleClass('d-none', !usaApresentacao);
+    if (!usaApresentacao) {
         $('#valor_embalagem_venda').val('R$ 0,00');
         $('#preco_compra').prop('readonly', false).removeClass('bg-light');
     }
-    sincronizarFormacaoPrecoProduto(mostra ? 'embalagem' : 'init');
+    sincronizarFormacaoPrecoProduto(usaApresentacao ? 'embalagem' : 'init');
 }
+window.atualizarVisibilidadeEmbalagemComercialCadastro = atualizarVisibilidadeEmbalagemComercialCadastro;
 
 function inicializarCalculoPreco(produto, isEdit) {
     const $precoCompra = $('#preco_compra');
@@ -3337,18 +3352,13 @@ function inicializarCalculoPreco(produto, isEdit) {
         .off('input.precoMotor change.precoMotor')
         .on('input.precoMotor change.precoMotor', () => sincronizarFormacaoPrecoProduto('venda'));
 
-    $('#compra_por_embalagem')
-        .off('change.embalagemMotor')
-        .on('change.embalagemMotor', () => atualizarVisibilidadeEmbalagemComercialCadastro());
-    $('#unidade_comercial')
-        .off('change.embalagemMotor')
-        .on('change.embalagemMotor', () => sincronizarFormacaoPrecoProduto('embalagem'));
-    $('#quantidade_por_embalagem')
-        .off('input.embalagemMotor change.embalagemMotor')
-        .on('input.embalagemMotor change.embalagemMotor', () => sincronizarFormacaoPrecoProduto('embalagem'));
-    $('#valor_compra_embalagem')
-        .off('input.embalagemMotor change.embalagemMotor')
-        .on('input.embalagemMotor change.embalagemMotor', () => sincronizarFormacaoPrecoProduto('embalagem'));
+    $('#unidade')
+        .off('change.apresentacoesUnidade')
+        .on('change.apresentacoesUnidade', () => {
+            if (typeof ProdutoEmbalagensUI !== 'undefined') {
+                ProdutoEmbalagensUI.sincronizarFormacaoPrecoApresentacaoPrincipal('init');
+            }
+        });
 
     atualizarVisibilidadeEmbalagemComercialCadastro();
     setTimeout(() => sincronizarFormacaoPrecoProduto('init'), 0);
@@ -3431,18 +3441,18 @@ async function saveProduto() {
 
     sincronizarFormacaoPrecoProduto('init');
 
-    if ($('#compra_por_embalagem').is(':checked')) {
-        const qtdEmb = parseFloat($('#quantidade_por_embalagem').val()) || 0;
-        const valorEmb = parseFloat($('#valor_compra_embalagem').val()) || 0;
-        if (qtdEmb <= 0) {
-            showNotification('Informe a Quantidade por Embalagem (ex.: 12 unidades).', 'warning');
-            $('#quantidade_por_embalagem').focus();
-            return;
-        }
-        if (valorEmb <= 0) {
-            showNotification('Informe o Valor de Compra da Embalagem.', 'warning');
-            $('#valor_compra_embalagem').focus();
-            return;
+    if (typeof ProdutoEmbalagensUI !== 'undefined') {
+        const apresentacoes = ProdutoEmbalagensUI.coletarApresentacoesDoFormulario();
+        for (let i = 0; i < apresentacoes.length; i += 1) {
+            const ap = apresentacoes[i];
+            if (String(ap.tipo || 'UN').toUpperCase() !== 'UN' && Number(ap.quantidade || 0) <= 0) {
+                showNotification(`Apresentação ${i + 1}: informe a quantidade de conversão.`, 'warning');
+                return;
+            }
+            if (Number(ap.compra) === 1 && String(ap.tipo || 'UN').toUpperCase() !== 'UN' && Number(ap.valor_compra || 0) <= 0) {
+                showNotification(`Apresentação ${i + 1}: informe o valor de compra da embalagem.`, 'warning');
+                return;
+            }
         }
     }
 
@@ -3509,16 +3519,6 @@ async function saveProduto() {
         observacoes: ($('#produto_observacoes').val() || '').trim() || null,
         imagem_principal: ($('#produtoModal').data('produtoImagemPath') || null),
         unidade: ($('#unidade').val() || '').trim(),
-        compra_por_embalagem: $('#compra_por_embalagem').is(':checked') ? 1 : 0,
-        unidade_comercial: $('#compra_por_embalagem').is(':checked')
-            ? String($('#unidade_comercial').val() || 'PACOTE').toUpperCase()
-            : 'UN',
-        quantidade_por_embalagem: $('#compra_por_embalagem').is(':checked')
-            ? (parseFloat($('#quantidade_por_embalagem').val()) || 0)
-            : 0,
-        valor_compra_embalagem: $('#compra_por_embalagem').is(':checked')
-            ? (parseFloat($('#valor_compra_embalagem').val()) || 0)
-            : 0,
         preco_compra: parseFloat($('#preco_compra').val()) || 0,
         preco_venda: parseFloat($('#preco_venda').val()) || 0,
         lucro_percentual: $('#lucro_percentual').val() !== '' ? parseFloat($('#lucro_percentual').val()) : (
@@ -3550,6 +3550,7 @@ async function saveProduto() {
         peso_medio_unidade: permiteVendaUnidade ? pesoMedioUnidade : 0,
         preco_unidade: permiteVendaUnidade ? precoUnidadeVenda : 0,
         venda_atacado: $('#venda_atacado').is(':checked') ? 1 : 0,
+        compra_por_embalagem: produtoCadastroUsaCompraPorEmbalagem() ? 1 : 0,
         // Campos para lote inicial (apenas para novos produtos)
         data_validade_inicial: ($('#data_validade_inicial').val() || '').trim() || null
     };
@@ -3627,6 +3628,26 @@ async function saveProduto() {
     const faixasTemp = $('#produtoModal').data('faixasTemp');
     if (!id && Array.isArray(faixasTemp) && faixasTemp.length > 0) {
         data.atacado_faixas = faixasTemp;
+    }
+
+    if (typeof ProdutoEmbalagensUI !== 'undefined') {
+        const precoVendaUnit = parseFloat($('#preco_venda').val()) || 0;
+        data.embalagens = ProdutoEmbalagensUI.coletarApresentacoesDoFormulario().map((ap) => ({
+            ...ap,
+            preco_venda: Number((precoVendaUnit * Number(ap.quantidade || 1)).toFixed(2))
+        }));
+        if (data.compra_por_embalagem === 1) {
+            const temEmbComercial = data.embalagens.some(
+                (ap) => String(ap.tipo || 'UN').toUpperCase() !== 'UN'
+                    && Number(ap.ativa ?? 1) === 1
+                    && Number(ap.compra ?? 0) === 1
+                    && Number(ap.quantidade || 0) > 0
+            );
+            if (!temEmbComercial) {
+                showNotification('Ative "Compra por Embalagem" somente após cadastrar ao menos uma embalagem comercial habilitada para compra.', 'warning');
+                return;
+            }
+        }
     }
 
     $.ajax({

@@ -2,6 +2,8 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
+const { validateInsertAlignment, analisarInsertSql, tabelaMonitorada } = require('./lib/validateInsertAlignment');
+const { aplicarCertificacaoSql } = require('./lib/sqlCertification');
 
 // BANCO OFICIAL DEFINITIVO
 // Prioridade 1: variável DB_DIR
@@ -82,6 +84,7 @@ db.insertSafe = function(table, data, callback) {
     const placeholders = useKeys.map(() => '?').join(', ');
     const sql = `INSERT INTO ${table} (${useKeys.join(', ')}) VALUES (${placeholders})`;
     const values = useKeys.map(k => data[k]);
+    validateInsertAlignment(sql, values, { caller: `db.insertSafe:${table}` });
     db.run(sql, values, function(runErr) {
       if (callback) callback(runErr, this);
     });
@@ -163,7 +166,8 @@ function aplicarAlteracoesPosCriacao() {
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN quantidade_fiscal REAL DEFAULT 0`);
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN quantidade_nao_fiscal REAL DEFAULT 0`);
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN valor_fiscal REAL DEFAULT 0`);
-  aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN valor_nao_fiscal REAL DEFAULT 0`);
+  aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN preco_unitario_interno REAL`);
+  // RCM-ATACADO-02 — SQLite REAL preserva precisão > 2 casas (DECIMAL(18,6) lógico)
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN modo_venda TEXT DEFAULT 'peso'`);
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN tipo_venda TEXT DEFAULT 'PESO'`);
 
@@ -320,7 +324,10 @@ function aplicarAlteracoesPosCriacao() {
     `ALTER TABLE compras_itens ADD COLUMN compra_em TEXT`,
     `ALTER TABLE compras_itens ADD COLUMN quantidade_embalagens DECIMAL(10,3) DEFAULT 0`,
     `ALTER TABLE compras_itens ADD COLUMN quantidade_por_embalagem DECIMAL(10,3) DEFAULT 0`,
-    `ALTER TABLE compras_itens ADD COLUMN valor_total_embalagem DECIMAL(10,2) DEFAULT 0`
+    `ALTER TABLE compras_itens ADD COLUMN valor_total_embalagem DECIMAL(10,2) DEFAULT 0`,
+    `ALTER TABLE compras_itens ADD COLUMN cfop TEXT`,
+    `ALTER TABLE compras_itens ADD COLUMN tipo_fiscal_item TEXT`,
+    `ALTER TABLE compras_itens ADD COLUMN bonificacao INTEGER DEFAULT 0`
   ];
 
   const alteracoesVendas = [
@@ -1489,7 +1496,7 @@ function criarTabelas() {
         subcategoria_id INTEGER,
         unidade VARCHAR(20),
         preco_compra DECIMAL(10,2),
-        preco_venda DECIMAL(10,2) NOT NULL,
+        preco_venda DECIMAL(18,6) NOT NULL,
         lucro_percentual DECIMAL(10,2),
         estoque_atual DECIMAL(10,2) DEFAULT 0,
         estoque_minimo DECIMAL(10,2) DEFAULT 0,
@@ -1518,7 +1525,7 @@ function criarTabelas() {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           produto_id INTEGER NOT NULL,
           quantidade_minima INTEGER NOT NULL,
-          preco_atacado DECIMAL(10,2) NOT NULL,
+          preco_atacado DECIMAL(18,6) NOT NULL,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           FOREIGN KEY (produto_id) REFERENCES produtos(id) ON DELETE CASCADE
@@ -1550,6 +1557,30 @@ function criarTabelas() {
       });
     } catch (requireErr) {
       console.error('Erro ao carregar schema produto_imagens:', requireErr.message);
+    }
+
+    // Apresentações comerciais — produto_embalagens (1 produto → N apresentações)
+    try {
+      const { garantirSchemaProdutoEmbalagens } = require('./services/produto-embalagem/produtoEmbalagensSchema');
+      garantirSchemaProdutoEmbalagens(db, (schemaErr) => {
+        if (schemaErr) {
+          console.error('Erro ao garantir schema produto_embalagens:', schemaErr.message);
+        }
+      });
+    } catch (requireErr) {
+      console.error('Erro ao carregar schema produto_embalagens:', requireErr.message);
+    }
+
+    // MUC RC1 — Motor Universal de Conversão (schema + auditoria + aprendizado)
+    try {
+      const { garantirSchemaMuc } = require('./motores/muc/schema/mucSchema');
+      garantirSchemaMuc(db, (schemaErr) => {
+        if (schemaErr) {
+          console.error('Erro ao garantir schema MUC RC1:', schemaErr.message);
+        }
+      });
+    } catch (requireErr) {
+      console.error('Erro ao carregar schema MUC RC1:', requireErr.message);
     }
 
     const colunasProdutoPeso = [
@@ -3386,3 +3417,6 @@ db.isReady = function isReady() {
 };
 
 module.exports = db;
+
+// RC4.31.6 — Certificação universal SQL (INSERT, UPDATE, DELETE, SELECT, prepared statements)
+aplicarCertificacaoSql(db);

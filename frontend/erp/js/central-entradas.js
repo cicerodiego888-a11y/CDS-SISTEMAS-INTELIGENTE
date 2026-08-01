@@ -277,7 +277,8 @@ function rotuloTipoEntradaCentral(tipo) {
     const map = {
         REVENDA: 'Compra para Revenda',
         INDUSTRIALIZACAO: 'Compra para Industrialização',
-        USO_CONSUMO: 'Uso e Consumo'
+        USO_CONSUMO: 'Uso e Consumo',
+        BONIFICACAO: 'Compra por Bonificação'
     };
     return map[tipo] || tipo || '—';
 }
@@ -4035,7 +4036,14 @@ async function abrirCentralRevisaoMiip(documentoId, dadosImportacao) {
                     carregarDashboardCentral(),
                     carregarDocumentosCentral()
                 ]);
+                const docAtualizado = centralEntradasState.documentos?.find((d) => Number(d.id) === Number(documentoId))
+                    || { status: 'PRONTA_IMPORTACAO', parseDisponivel: true };
                 await selecionarDocumentoCentral(documentoId);
+                aplicarRetornoCentralDepoisDaRevisao(documentoId, {
+                    ...docAtualizado,
+                    status: docAtualizado.status || 'PRONTA_IMPORTACAO',
+                    parseDisponivel: docAtualizado.parseDisponivel !== false
+                });
             } catch (error) {
                 showNotification('Erro ao concluir revisão: ' + error.message, 'danger');
             }
@@ -4489,6 +4497,24 @@ async function abrirRevisaoMiipCentral(documentoId) {
     }
 }
 
+function aplicarRetornoCentralDepoisDaRevisao(documentoId, doc) {
+    const reviewUx = (typeof window !== 'undefined' && window.CentralEntradasReviewUx)
+        || (typeof globalThis !== 'undefined' && globalThis.CentralEntradasReviewUx)
+        || null;
+    if (!reviewUx) return;
+
+    const retorno = reviewUx.montarRetornoCentralDepoisDaRevisao(documentoId, doc);
+    if (!retorno?.documentoId) return;
+
+    centralEntradasState.abaAtiva = retorno.aba || 'resumo';
+    centralEntradasState.documentoSelecionadoId = retorno.documentoId;
+    if (retorno.focarImportarCompra) {
+        setTimeout(() => {
+            reviewUx.prepararFocoImportarCompraCentral({ documentoId: retorno.documentoId });
+        }, 250);
+    }
+}
+
 async function abrirCompraDesdeCentral(documentoId) {
     try {
         const resultado = await centralEntradasFetch(`/${documentoId}/abrir-compra`, {
@@ -4819,10 +4845,17 @@ function bindEventosCentralEntradas() {
         this.setAttribute('aria-expanded', String(!aberto));
     });
 
-    $(document).on('change.centralEntradas', '#centralFiltroDataInicio, #centralFiltroDataFim', function () {
+    $(document).on('blur.centralEntradas', '#centralFiltroDataInicio, #centralFiltroDataFim', function () {
         centralEntradasState.pagina = 1;
         carregarDocumentosCentral();
         carregarInteligenciaCentral().catch(() => {});
+    });
+
+    $(document).on('keydown.centralEntradas', '#centralFiltroDataInicio, #centralFiltroDataFim', function (event) {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            this.blur();
+        }
     });
 
     $(document).on('keydown.centralEntradas', '.central-entradas-card-click', function (event) {

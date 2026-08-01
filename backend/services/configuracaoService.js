@@ -190,7 +190,24 @@ function normalizePadraoFiscal(obj) {
       : '',
     cest_padrao: obj?.cest_padrao !== undefined && obj?.cest_padrao !== null
       ? String(obj.cest_padrao).trim()
-      : ''
+      : '',
+    entrada_bonificacao_cfop_padrao: obj?.entrada_bonificacao_cfop_padrao !== undefined
+      ? String(obj.entrada_bonificacao_cfop_padrao || '5910').trim()
+      : '5910',
+    entrada_bonificacao_csosn_padrao: obj?.entrada_bonificacao_csosn_padrao !== undefined
+      ? String(obj.entrada_bonificacao_csosn_padrao || '').trim()
+      : '',
+    entrada_bonificacao_natureza: obj?.entrada_bonificacao_natureza !== undefined
+      ? String(obj.entrada_bonificacao_natureza || 'Bonificação recebida').trim()
+      : 'Bonificação recebida',
+    entrada_bonificacao_atualizar_custo: normalizeBoolFlag(
+      obj?.entrada_bonificacao_atualizar_custo,
+      false
+    ),
+    entrada_bonificacao_gerar_estoque: normalizeBoolFlag(
+      obj?.entrada_bonificacao_gerar_estoque,
+      true
+    )
   };
 }
 

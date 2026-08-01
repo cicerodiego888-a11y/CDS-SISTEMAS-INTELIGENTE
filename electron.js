@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { resolverIconeJanela } = require('./electron-icon');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -375,7 +376,7 @@ function criarMainWindow(opcoes = {}) {
     autoHideMenuBar: true,
     focusable: true,
     skipTaskbar: false,
-    icon: require('./assets/branding/BrandService').electronIconPath(),
+    icon: resolverIconeJanela(),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,

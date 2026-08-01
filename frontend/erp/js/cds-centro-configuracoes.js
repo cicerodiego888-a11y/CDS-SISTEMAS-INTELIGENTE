@@ -214,6 +214,46 @@
               </button>
             </div>
           `, 'cfop csosn origem cest padrão fiscal')}
+          ${card('<i class="fas fa-gift"></i> Entrada por Bonificação', `
+            <p class="cds-cfg-hint mb-3">Parâmetros aplicados a itens bonificados (CFOP 5910/5949 ou tipo Bonificação).</p>
+            <div class="row g-3">
+              <div class="col-md-2" data-cfg-search="bonificação cfop">
+                <label for="bonifCfopPadrao" class="cds-cfg-label">CFOP padrão</label>
+                <input type="text" class="form-control" id="bonifCfopPadrao" maxlength="4"
+                  value="${escapeHtml(config.entrada_bonificacao_cfop_padrao || '5910')}" placeholder="5910">
+              </div>
+              <div class="col-md-2" data-cfg-search="bonificação csosn cst">
+                <label for="bonifCsosnPadrao" class="cds-cfg-label">CSOSN/CST padrão</label>
+                <input type="text" class="form-control" id="bonifCsosnPadrao"
+                  value="${escapeHtml(config.entrada_bonificacao_csosn_padrao || '')}" placeholder="Ex.: 400">
+              </div>
+              <div class="col-md-4" data-cfg-search="bonificação natureza operação">
+                <label for="bonifNatureza" class="cds-cfg-label">Natureza da operação</label>
+                <input type="text" class="form-control" id="bonifNatureza"
+                  value="${escapeHtml(config.entrada_bonificacao_natureza || 'Bonificação recebida')}"
+                  placeholder="Bonificação recebida">
+              </div>
+              <div class="col-md-2" data-cfg-search="bonificação estoque">
+                <div class="form-check mt-4">
+                  <input class="form-check-input" type="checkbox" id="bonifGerarEstoque"
+                    ${config.entrada_bonificacao_gerar_estoque !== false ? 'checked' : ''}>
+                  <label class="form-check-label" for="bonifGerarEstoque">Gerar estoque</label>
+                </div>
+              </div>
+              <div class="col-md-2" data-cfg-search="bonificação custo">
+                <div class="form-check mt-4">
+                  <input class="form-check-input" type="checkbox" id="bonifAtualizarCusto"
+                    ${config.entrada_bonificacao_atualizar_custo === true ? 'checked' : ''}>
+                  <label class="form-check-label" for="bonifAtualizarCusto">Atualizar custo</label>
+                </div>
+              </div>
+            </div>
+            <div class="cds-cfg-actions">
+              <button type="button" class="btn btn-success btn-sm" onclick="salvarPadraoFiscalEmpresa()">
+                <i class="fas fa-save"></i> Salvar padrão
+              </button>
+            </div>
+          `, 'bonificação brinde entrada estoque custo cfop')}
         </div>` : ''}
       </div>
 

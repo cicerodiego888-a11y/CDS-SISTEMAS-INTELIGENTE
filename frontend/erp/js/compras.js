@@ -13,6 +13,8 @@ let linhaIdEditandoCompra = null;
 let compraImportadaXml = null;
 let cnpjEmitenteXmlOriginal = null;
 let centralDocumentoIdAtual = null;
+/** RC4.31.16 — origem do lançamento (MANUAL | CENTRAL_NFE) */
+let origemCompraAtual = 'MANUAL';
 let modoEntradaF7Compra = false;
 let tipoEntradaCompraAtual = 'REVENDA';
 let pendenciaPoliticaEntradaPayload = null;
@@ -20,6 +22,11 @@ let classificacaoEntradaAtual = null;
 /** RC8.5.0 / RC8.5.2 — grade de parcelas da compra (editável) */
 let parcelasCompraGrade = [];
 let parcelasCompraEditadasManual = false;
+/** RC4.31.14 — parcelas importadas da NF-e; proíbe regeneração automática de vencimentos */
+let parcelasImportadasXml = false;
+/** BUG3 — adia re-render enquanto o usuário digita em type="date" */
+let compraRenderItensAgendado = null;
+let compraParcelasRegenerarAgendado = null;
 
 /**
  * RC8.4.1 — deep clone obrigatório (structuredClone).
@@ -40,6 +47,54 @@ function clonarDadosItemCompra(item) {
 function clonarNestedMiipItemCompra(valor) {
     if (valor == null || typeof valor !== 'object') return valor || null;
     return clonarDadosItemCompra(valor);
+}
+
+const MIIP_MOTOR_LABELS_COMPRA = Object.freeze({
+    motor_gtin: 'GTIN / Código de Barras',
+    motor_associacao_fornecedor: 'Associação Fornecedor',
+    motor_mubc: 'Busca Universal (MUBC)',
+    motor_similarity: 'Similaridade'
+});
+
+/** RC4.31.2 — espelha MiipImportacaoXmlService.paraSugestaoUi no frontend. */
+function montarSugestaoMiipCompraFromResultado(resultado) {
+    if (!resultado?.precisaConfirmacao || !resultado.produtoEncontrado?.id) return null;
+    const motor = resultado.motor;
+    return {
+        indice: resultado.indice,
+        encontrado: true,
+        produtoId: Number(resultado.produtoEncontrado.id),
+        produtoNome: resultado.produtoEncontrado.nome || '',
+        produtoCodigo: resultado.produtoEncontrado.codigo || '',
+        codigoBarras: resultado.produtoEncontrado.codigoBarras
+            || resultado.produtoEncontrado.codigo_barras
+            || null,
+        confianca: resultado.nivelCerteza || resultado.confianca || 'NENHUMA',
+        motor,
+        motorLabel: MIIP_MOTOR_LABELS_COMPRA[motor] || motor || 'MIIP',
+        score: resultado.score,
+        acao: resultado.acao,
+        operacaoId: resultado.operacaoId,
+        status: 'pendente'
+    };
+}
+
+function extrairProdutoIdSugestaoMiip(sugestao, item = null) {
+    const id = Number(
+        sugestao?.produtoId
+        ?? sugestao?.produto_id
+        ?? sugestao?.produtoEncontrado?.id
+        ?? item?.miip_resultado?.produtoEncontrado?.id
+    );
+    return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function obterSugestaoMiipItemCompra(item) {
+    if (!item) return null;
+    if (item.miip_sugestao && extrairProdutoIdSugestaoMiip(item.miip_sugestao, item)) {
+        return item.miip_sugestao;
+    }
+    return montarSugestaoMiipCompraFromResultado(item.miip_resultado);
 }
 
 function gerarLinhaIdCompra() {
@@ -100,6 +155,7 @@ function limparDraftCompra() {
     itemDraftCompra = null;
     indiceEditandoCompra = null;
     linhaIdEditandoCompra = null;
+    modoEntradaF7Compra = false;
 }
 
 function iniciarDraftCompraNovo() {
@@ -147,7 +203,7 @@ function sincronizarDraftCompraDoFormulario(extras = {}) {
     draft.compra_em = $('#compra_em_item').val() || draft.compra_em || '';
     draft.quantidade_embalagens = Number($('#quantidade_embalagens_item').val() || draft.quantidade_embalagens || 0);
     draft.quantidade_por_embalagem = Number($('#quantidade_por_embalagem_item').val() || draft.quantidade_por_embalagem || 0);
-    draft.valor_total_embalagem = Number($('#valor_total_fracionado_item').val() || draft.valor_total_embalagem || 0);
+    draft.valor_total_embalagem = Number(obterValorTotalCompraMuc() || draft.valor_total_embalagem || 0);
     Object.assign(draft, extras);
     return draft;
 }
@@ -180,8 +236,691 @@ function recalcularFormacaoPrecoDraftCompra(origem = 'custo') {
 const TIPOS_ENTRADA_COMPRA = Object.freeze({
     REVENDA: 'REVENDA',
     INDUSTRIALIZACAO: 'INDUSTRIALIZACAO',
-    USO_CONSUMO: 'USO_CONSUMO'
+    USO_CONSUMO: 'USO_CONSUMO',
+    BONIFICACAO: 'BONIFICACAO'
 });
+
+const ORIGEM_COMPRA = Object.freeze({
+    MANUAL: 'MANUAL',
+    CENTRAL_NFE: 'CENTRAL_NFE'
+});
+
+let configBonificacaoCompra = {
+    cfop_padrao: '5910',
+    csosn_padrao: '',
+    natureza_operacao: 'Bonificação recebida',
+    atualizar_custo: false,
+    gerar_estoque: true
+};
+
+async function carregarConfigBonificacaoCompra() {
+    try {
+        const resp = await fetch(`${API_URL}/configuracoes-avancadas/padrao-fiscal`, {
+            headers: { Authorization: `Bearer ${localStorage.getItem('token') || ''}` }
+        });
+        if (!resp.ok) return;
+        const json = await resp.json();
+        configBonificacaoCompra = {
+            cfop_padrao: json.entrada_bonificacao_cfop_padrao || '5910',
+            csosn_padrao: json.entrada_bonificacao_csosn_padrao || '',
+            natureza_operacao: json.entrada_bonificacao_natureza || 'Bonificação recebida',
+            atualizar_custo: json.entrada_bonificacao_atualizar_custo === true,
+            gerar_estoque: json.entrada_bonificacao_gerar_estoque !== false
+        };
+    } catch (_) { /* defaults */ }
+}
+
+/** RC4.31.12 — estado embalagem comercial / MUC */
+let embalagensProdutoCompraAtual = [];
+let modoPainelEmbalagemCompra = null;
+let ultimaSimulacaoMucCompra = null;
+let timerSimulacaoMucCompra = null;
+/** RC4.31.12.1 — evita sobrescrever valores ao restaurar edição */
+let restaurandoEmbalagemCompraEdicao = null;
+/** RC4.31.12.8 — UCs criadas só para o lançamento atual */
+let unidadesComerciaisTemporariasCompra = [];
+/** RC4.31.12.8 — última seleção válida do select Comprar em */
+let embalagemCompraSelecionadaAnterior = null;
+const CHAVE_ULTIMA_EMBALAGEM_COMPRA = 'cds_compra_ultima_embalagem_';
+
+const ROTULOS_TIPO_EMBALAGEM = Object.freeze({
+    UN: 'Unidade', CX: 'Caixa', FD: 'Fardo', PCT: 'Pacote', DISPLAY: 'Display',
+    KIT: 'Kit', SACO: 'Saco', ROLO: 'Rolo', BOBINA: 'Bobina', BALDE: 'Balde',
+    GALAO: 'Galão', CAIXA: 'Caixa', FARDO: 'Fardo', PACOTE: 'Pacote',
+    BANDEJA: 'Bandeja', 'CAIXA MASTER': 'Caixa Master',
+    VARA: 'Vara', TUBO: 'Tubo', PERFIL: 'Perfil', CHAPA: 'Chapa', BARRA: 'Barra'
+});
+
+function rotuloTipoEmbalagemCompra(tipo) {
+    if (typeof ProdutoApresentacaoResolver !== 'undefined'
+        && ProdutoApresentacaoResolver.labelUnidadeComercial) {
+        return ProdutoApresentacaoResolver.labelUnidadeComercial(tipo);
+    }
+    const raw = String(tipo || 'UN').trim().toUpperCase();
+    return ROTULOS_TIPO_EMBALAGEM[raw] || raw;
+}
+
+function formatarRotuloOpcaoCompraComercial(opcao) {
+    if (typeof ProdutoApresentacaoResolver !== 'undefined'
+        && ProdutoApresentacaoResolver.formatarRotuloOpcaoCompra) {
+        return ProdutoApresentacaoResolver.formatarRotuloOpcaoCompra(opcao);
+    }
+    const tipo = rotuloTipoEmbalagemCompra(opcao?.tipo || opcao?.descricao);
+    const qtd = Number(opcao?.quantidade || opcao?.quantidade_por_embalagem || 1);
+    const un = String(opcao?.unidade || 'UN').toUpperCase();
+    return `${tipo} (${formatQuantidadeExibicao(qtd, 3)} ${un})`;
+}
+
+function obterModoPainelEmbalagemCompra(produto) {
+    if (produtoUsaConversaoUnidadesCompra(produto)) return 'FRACIONADO';
+    if (produtoUsaEmbalagemComercialCompra(produto)) return 'COMERCIAL';
+    return null;
+}
+
+function chaveUltimaEmbalagemCompra(produtoId) {
+    return `${CHAVE_ULTIMA_EMBALAGEM_COMPRA}${produtoId}`;
+}
+
+function obterUltimaEmbalagemCompraProduto(produtoId) {
+    try {
+        return localStorage.getItem(chaveUltimaEmbalagemCompra(produtoId)) || null;
+    } catch {
+        return null;
+    }
+}
+
+function salvarUltimaEmbalagemCompraProduto(produtoId, embalagemId) {
+    if (!produtoId || !embalagemId) return;
+    try {
+        localStorage.setItem(chaveUltimaEmbalagemCompra(produtoId), String(embalagemId));
+    } catch { /* ignore */ }
+}
+
+async function carregarEmbalagensProdutoCompra(produto) {
+    embalagensProdutoCompraAtual = [];
+    if (!produto?.id) return [];
+
+    let produtoCompleto = produto;
+    if (!Array.isArray(produto.embalagens)) {
+        try {
+            const resp = await fetch(`${API_URL}/produtos/${produto.id}`, {
+                headers: { Authorization: `Bearer ${localStorage.getItem('token') || ''}` }
+            });
+            if (resp.ok) {
+                produtoCompleto = await resp.json();
+                const idx = produtosCompraList.findIndex((p) => String(p.id) === String(produto.id));
+                if (idx >= 0) produtosCompraList[idx] = { ...produtosCompraList[idx], ...produtoCompleto };
+            }
+        } catch { /* fallback legado */ }
+    }
+
+    if (typeof ProdutoApresentacaoResolver !== 'undefined') {
+        const cadastradas = ProdutoApresentacaoResolver.listarOpcoesCompraProduto(produtoCompleto);
+        const temporarias = unidadesComerciaisTemporariasCompra.filter(
+            (t) => String(t.produto_id) === String(produtoCompleto.id) && Number(t.compra ?? 1) === 1
+        );
+        embalagensProdutoCompraAtual = ProdutoApresentacaoResolver.montarOpcoesComprarEm(
+            produtoCompleto,
+            [...cadastradas, ...temporarias]
+        );
+    }
+    return embalagensProdutoCompraAtual;
+}
+
+function obterOpcoesEmbalagemCompraConteudo() {
+    return embalagensProdutoCompraAtual.filter((emb) => {
+        if (typeof ProdutoApresentacaoResolver !== 'undefined'
+            && ProdutoApresentacaoResolver.ehOpcaoNovaUnidadeComercial(emb)) {
+            return false;
+        }
+        return !emb._acao;
+    });
+}
+
+function renderSelectEmbalagemCompra(selecionarId) {
+    const $sel = $('#embalagem_compra_item');
+    if (!$sel.length) return;
+
+    const opts = embalagensProdutoCompraAtual.map((emb) => {
+        const id = emb.id || `legado-${emb.tipo || emb.unidade_comercial || 'UN'}`;
+        const rotulo = emb._acao === 'nova_uc'
+            ? (emb.descricao || '+ Nova Unidade Comercial...')
+            : formatarRotuloOpcaoCompraComercial(emb);
+        const qtd = Number(emb.quantidade || emb.quantidade_por_embalagem || 1);
+        const origem = emb.tipo_origem_compra || 'EMBALAGEM_COMERCIAL';
+        const classe = emb._acao === 'nova_uc' ? ' class="text-primary fw-semibold"' : '';
+        return `<option value="${escapeHtml(String(id))}" data-qtd="${qtd}" data-origem="${escapeHtml(origem)}" data-tipo="${escapeHtml(String(emb.tipo || emb.unidade_comercial || 'UN'))}"${classe}>${escapeHtml(rotulo)}</option>`;
+    }).join('');
+
+    $sel.html(opts || '<option value="">Sem opções</option>');
+
+    const alvo = selecionarId
+        || embalagemCompraSelecionadaAnterior
+        || embalagensProdutoCompraAtual.find((e) => typeof ProdutoApresentacaoResolver !== 'undefined'
+            && ProdutoApresentacaoResolver.ehOpcaoUnidadeBase(e))?.id
+        || embalagensProdutoCompraAtual[0]?.id;
+
+    if (alvo && $(`#embalagem_compra_item option[value="${alvo}"]`).length) {
+        $sel.val(String(alvo));
+        embalagemCompraSelecionadaAnterior = String(alvo);
+    }
+}
+
+function renderPainelConteudoEmbalagensCompra() {
+    const $painel = $('#painelConteudoEmbalagens');
+    if (!$painel.length) return;
+
+    const opcoes = obterOpcoesEmbalagemCompraConteudo().filter((emb) => {
+        if (typeof ProdutoApresentacaoResolver !== 'undefined'
+            && ProdutoApresentacaoResolver.ehOpcaoUnidadeBase(emb)) {
+            return false;
+        }
+        return true;
+    });
+
+    if (!opcoes.length) {
+        $painel.html('<small class="text-muted">Nenhuma unidade comercial cadastrada. Use <strong>+ Nova Unidade Comercial...</strong>.</small>');
+        return;
+    }
+
+    const linhas = opcoes.map((emb) => {
+        const rotulo = formatarRotuloOpcaoCompraComercial(emb);
+        return `<div class="col-md-4"><strong>${escapeHtml(rotulo.split(' (')[0])}</strong><br><span class="text-muted">${escapeHtml(rotulo.includes('(') ? rotulo.slice(rotulo.indexOf('(')) : rotulo)}</span></div>`;
+    }).join('');
+
+    $painel.html(`
+        <div class="small text-muted mb-1">Conteúdo</div>
+        <div class="row g-2">${linhas}</div>
+    `);
+}
+
+function embalagemCompraEhUnidade(emb) {
+    if (!emb) return true;
+    if (emb.tipo_origem_compra === 'UNIDADE_COMERCIAL') {
+        return Number(emb.quantidade || emb.quantidade_por_embalagem || 1) <= 1
+            && normalizarTipoApresentacaoCompra(emb.tipo || emb.unidade_comercial) === 'UN';
+    }
+    const tipo = normalizarTipoApresentacaoCompra(emb.tipo || emb.unidade_comercial || 'UN');
+    if (tipo !== 'UN') return false;
+    return Number(emb.quantidade || emb.quantidade_por_embalagem || 1) <= 1;
+}
+
+function normalizarTipoApresentacaoCompra(valor) {
+    return String(valor || 'UN').trim().toUpperCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, '');
+}
+
+/** RC4.31.12.10 — preço único no formulário; MUC usa #preco_item como valor total da compra. */
+function obterValorTotalCompraMuc() {
+    if (!obterModoPainelEmbalagemCompra(obterProdutoSelecionadoCompra())) return 0;
+    return Number($('#preco_item').val() || 0);
+}
+
+function onPrecoCompraItemInput() {
+    if (obterModoPainelEmbalagemCompra(obterProdutoSelecionadoCompra())) {
+        agendarSimulacaoMucCompra();
+        return;
+    }
+    calcularValorVendaItem();
+}
+
+function atualizarRotuloPrecoCompraItem() {
+    const muc = Boolean(obterModoPainelEmbalagemCompra(obterProdutoSelecionadoCompra()));
+    $('#label_preco_compra_item').text(muc ? 'Preço de Compra' : 'Preço compra (unidade)');
+}
+
+function aplicarEmbalagemCompraSelecionada(embalagemId, opcoes = {}) {
+    const emb = embalagensProdutoCompraAtual.find((e) => String(e.id) === String(embalagemId))
+        || embalagensProdutoCompraAtual.find((e) => !e._acao);
+    if (!emb || emb._acao === 'nova_uc') return;
+
+    const tipo = String(emb.tipo || emb.unidade_comercial || 'PCT').toUpperCase();
+    const qtd = Number(emb.quantidade || emb.quantidade_por_embalagem || 1);
+    const un = String(emb.unidade || obterProdutoSelecionadoCompra()?.unidade || 'UN').toUpperCase();
+    const ehUnidade = embalagemCompraEhUnidade(emb);
+
+    if ($('#compra_em_item option[value="' + tipo + '"]').length) {
+        $('#compra_em_item').val(tipo);
+    } else if (TIPOS_COMPRA_EMBALAGEM.includes(tipo)) {
+        $('#compra_em_item').val(tipo);
+    } else {
+        $('#compra_em_item').html(
+            opcoesCompraEmbalagemHtml('PCT') +
+            `<option value="${escapeHtml(tipo)}" selected>${escapeHtml(rotuloTipoEmbalagemCompra(tipo))}</option>`
+        );
+    }
+
+    if (!opcoes.preservarFator) {
+        $('#quantidade_por_embalagem_item').val(formatQuantidadeExibicao(qtd, 3));
+    }
+    $('#unidade_fracionada_item').val(un);
+    if (!opcoes.preservarPreco && Number(emb.valor_compra || 0) > 0) {
+        $('#preco_item').val(formatNumberInput(Number(emb.valor_compra), 2));
+    }
+    if (!opcoes.preservarQuantidade && !$('#quantidade_embalagens_item').val()) {
+        $('#quantidade_embalagens_item').val('1');
+    }
+    $('#embalagem_compra_item').val(String(emb.id || embalagemId || ''));
+    $('#colCompraEmLegado').addClass('d-none');
+    $('#colQtdPorEmbalagemCompra').toggleClass('d-none', isModoEmbalagemComercialCompraAtivo() && !ehUnidade);
+    agendarSimulacaoMucCompra();
+}
+
+function onEmbalagemCompraSelecionada() {
+    const id = $('#embalagem_compra_item').val();
+
+    if (typeof ProdutoApresentacaoResolver !== 'undefined'
+        && ProdutoApresentacaoResolver.ehOpcaoNovaUnidadeComercial(id)) {
+        const produto = obterProdutoSelecionadoCompra();
+        const revert = embalagemCompraSelecionadaAnterior
+            || (produto && typeof ProdutoApresentacaoResolver !== 'undefined'
+                ? `unidade-base-${produto.id}`
+                : '');
+        if (revert && $(`#embalagem_compra_item option[value="${revert}"]`).length) {
+            $('#embalagem_compra_item').val(revert);
+        }
+        abrirModalNovaUnidadeComercialCompra();
+        return;
+    }
+
+    const emb = embalagensProdutoCompraAtual.find((e) => String(e.id) === String(id));
+    if (emb && Number(emb.compra ?? 1) === 0) {
+        showNotification('Esta embalagem não está habilitada para utilização em compras.', 'warning');
+        return;
+    }
+    embalagemCompraSelecionadaAnterior = String(id || '');
+    aplicarEmbalagemCompraSelecionada(id);
+}
+
+function abrirModalNovaUnidadeComercialCompra() {
+    const produto = obterProdutoSelecionadoCompra();
+    if (!produto?.id) {
+        showNotification('Selecione um produto antes de cadastrar a unidade comercial.', 'warning');
+        return;
+    }
+
+    const modalId = 'modalNovaUnidadeComercialCompra';
+    $(`#${modalId}`).remove();
+    const unidadeEstoque = String(produto.unidade || 'UN').toUpperCase();
+
+    $('body').append(`
+        <div class="modal fade" id="${modalId}" tabindex="-1" data-bs-backdrop="static">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Nova Unidade Comercial</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold">Descrição</label>
+                            <input type="text" class="form-control" id="nova_uc_descricao" placeholder="Ex.: Vara">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold">Quantidade de conversão</label>
+                            <input type="number" step="0.001" min="0.001" class="form-control" id="nova_uc_quantidade" placeholder="Ex.: 6">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold">Unidade de estoque</label>
+                            <input type="text" class="form-control" id="nova_uc_unidade" value="${escapeHtml(unidadeEstoque)}" readonly>
+                        </div>
+                        <hr class="my-2">
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold d-block">Utilizar em</label>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="nova_uc_utilizar_compra" checked>
+                                <label class="form-check-label" for="nova_uc_utilizar_compra">Compras</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="nova_uc_utilizar_venda">
+                                <label class="form-check-label" for="nova_uc_utilizar_venda">Vendas</label>
+                            </div>
+                        </div>
+                        <hr class="my-2">
+                        <div class="mb-2">
+                            <label class="form-label fw-semibold d-block">Salvar no cadastro do produto</label>
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="nova_uc_persistencia" id="nova_uc_salvar_cadastro" value="cadastro" checked>
+                                <label class="form-check-label" for="nova_uc_salvar_cadastro">Sim</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="nova_uc_persistencia" id="nova_uc_somente_compra" value="somente">
+                                <label class="form-check-label" for="nova_uc_somente_compra">Apenas nesta compra</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="button" class="btn btn-primary" id="btnConfirmarNovaUcCompra">Confirmar</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `);
+
+    const el = document.getElementById(modalId);
+    const modal = new bootstrap.Modal(el);
+    $('#btnConfirmarNovaUcCompra').on('click', () => {
+        confirmarNovaUnidadeComercialCompra(modal, modalId);
+    });
+    el.addEventListener('hidden.bs.modal', () => {
+        $(`#${modalId}`).remove();
+    }, { once: true });
+    modal.show();
+    setTimeout(() => $('#nova_uc_descricao').trigger('focus'), 200);
+}
+
+async function persistirUnidadeComercialNoCadastroProduto(produto, payloadEmbalagem) {
+    const token = localStorage.getItem('token') || '';
+    const resp = await fetch(`${API_URL}/produtos/${produto.id}/embalagens/aprendizagem-compra`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify(payloadEmbalagem)
+    });
+
+    if (!resp.ok) {
+        const errJson = await resp.json().catch(() => ({}));
+        throw new Error(errJson.error || 'Falha ao salvar unidade comercial no produto.');
+    }
+
+    const json = await resp.json();
+    const produtoAtualizado = json.produto || json;
+    sincronizarCacheProdutoAposAprendizagem(produtoAtualizado, json.embalagem);
+    return produtoAtualizado;
+}
+
+function sincronizarCacheProdutoAposAprendizagem(produto, embalagemNova) {
+    if (!produto?.id) return;
+
+    const mesclar = (lista) => {
+        if (!Array.isArray(lista)) return;
+        const idx = lista.findIndex((p) => String(p.id) === String(produto.id));
+        if (idx >= 0) {
+            lista[idx] = { ...lista[idx], ...produto };
+        }
+    };
+
+    mesclar(produtosCompraList);
+    if (typeof window !== 'undefined') {
+        mesclar(window.produtosCache);
+        mesclar(window.produtosList);
+        mesclar(window.produtosOriginais);
+    }
+
+    if (typeof ProdutoEmbalagensUI !== 'undefined' && ProdutoEmbalagensUI.inicializarApresentacoes) {
+        const produtoModalId = $('#produto_id').val() || window._produtoEmEdicaoId;
+        if (produtoModalId && String(produtoModalId) === String(produto.id)) {
+            ProdutoEmbalagensUI.inicializarApresentacoes(produto);
+        }
+    }
+
+    if (embalagemNova && typeof ProdutoApresentacaoResolver !== 'undefined') {
+        console.log('[Compras] UC aprendida disponível — compra:', embalagemNova.compra, 'venda:', embalagemNova.venda);
+    }
+}
+
+function localizarOpcaoEmbalagemAprendida(descricao, quantidade) {
+    return embalagensProdutoCompraAtual.find(
+        (e) => !e._acao
+            && String(e.descricao || '').trim().toLowerCase() === descricao.toLowerCase()
+            && Math.abs(Number(e.quantidade || e.quantidade_por_embalagem || 0) - quantidade) < 0.0001
+    ) || embalagensProdutoCompraAtual.find(
+        (e) => e.tipo_origem_compra === 'UNIDADE_COMERCIAL'
+            && typeof ProdutoApresentacaoResolver !== 'undefined'
+            && !ProdutoApresentacaoResolver.ehOpcaoUnidadeBase(e)
+            && String(e.descricao || '').trim().toLowerCase() === descricao.toLowerCase()
+    );
+}
+
+async function confirmarNovaUnidadeComercialCompra(modal, modalId) {
+    const produto = obterProdutoSelecionadoCompra();
+    if (!produto?.id) return;
+
+    const descricao = ($('#nova_uc_descricao').val() || '').trim();
+    const quantidade = Number($('#nova_uc_quantidade').val() || 0);
+    const unidade = String($('#nova_uc_unidade').val() || produto.unidade || 'UN');
+    const persistirCadastro = $('input[name="nova_uc_persistencia"]:checked').val() === 'cadastro';
+    const utilizarCompra = $('#nova_uc_utilizar_compra').is(':checked');
+    const utilizarVenda = $('#nova_uc_utilizar_venda').is(':checked');
+
+    if (!descricao) {
+        showNotification('Informe a descrição da unidade comercial.', 'warning');
+        $('#nova_uc_descricao').focus();
+        return;
+    }
+    if (!(quantidade > 0)) {
+        showNotification('Informe a quantidade de conversão.', 'warning');
+        $('#nova_uc_quantidade').focus();
+        return;
+    }
+
+    const dados = {
+        descricao,
+        quantidade,
+        unidade,
+        tipo: 'ROLO',
+        compra: utilizarCompra ? 1 : 0,
+        venda: utilizarVenda ? 1 : 0
+    };
+
+    if (typeof ProdutoApresentacaoResolver !== 'undefined') {
+        const validacao = ProdutoApresentacaoResolver.validarUtilizacaoAprendizagemCompra(dados);
+        if (!validacao.ok) {
+            showNotification(validacao.mensagem, 'warning');
+            return;
+        }
+    }
+
+    if (!persistirCadastro && !utilizarCompra) {
+        showNotification('Para usar nesta compra, marque Compras em Utilizar em.', 'warning');
+        return;
+    }
+
+    let novaOpcao = null;
+
+    try {
+        if (persistirCadastro) {
+            if (typeof ProdutoApresentacaoResolver === 'undefined') {
+                throw new Error('Resolver de apresentação indisponível.');
+            }
+            const payload = ProdutoApresentacaoResolver.montarEmbalagemAprendidaCompra(dados, produto);
+            const produtoAtualizado = await persistirUnidadeComercialNoCadastroProduto(produto, payload);
+            await carregarEmbalagensProdutoCompra(produtoAtualizado);
+            novaOpcao = localizarOpcaoEmbalagemAprendida(descricao, quantidade);
+            if (!novaOpcao && utilizarCompra) {
+                showNotification('Unidade comercial salva, porém não está habilitada para compras.', 'warning');
+            } else {
+                const uso = [
+                    utilizarCompra ? 'compras' : null,
+                    utilizarVenda ? 'vendas' : null
+                ].filter(Boolean).join(' e ');
+                showNotification(`Unidade comercial salva no cadastro (${uso}).`, 'success');
+            }
+        } else {
+            if (typeof ProdutoApresentacaoResolver === 'undefined') {
+                throw new Error('Resolver de apresentação indisponível.');
+            }
+            novaOpcao = ProdutoApresentacaoResolver.montarUnidadeComercialTemporariaCompra(dados, produto);
+            novaOpcao.produto_id = produto.id;
+            unidadesComerciaisTemporariasCompra.push(novaOpcao);
+            await carregarEmbalagensProdutoCompra(produto);
+            showNotification('Unidade comercial aplicada somente nesta compra.', 'info');
+        }
+    } catch (err) {
+        console.error('[Compras] Nova UC:', err);
+        showNotification(err.message || 'Erro ao registrar unidade comercial.', 'danger');
+        return;
+    }
+
+    modal.hide();
+    renderSelectEmbalagemCompra(novaOpcao?.id);
+    renderPainelConteudoEmbalagensCompra();
+    if (novaOpcao?.id) {
+        embalagemCompraSelecionadaAnterior = String(novaOpcao.id);
+        aplicarEmbalagemCompraSelecionada(novaOpcao.id);
+    } else if (utilizarCompra) {
+        agendarSimulacaoMucCompra();
+    }
+}
+
+function atualizarPainelResumoConversaoMuc(resultado, modo) {
+    const $painel = $('#painelResumoConversaoMuc');
+    if (!$painel.length) return;
+
+    if (!resultado || Number(resultado.quantidadeEstoque || 0) <= 0) {
+        $painel.addClass('d-none').html('');
+        return;
+    }
+
+    const produto = obterProdutoSelecionadoCompra();
+    const un = String(produto?.unidade || resultado.unidadeEstoque || 'UN').toUpperCase();
+    const embSel = embalagensProdutoCompraAtual.find((e) => String(e.id) === String($('#embalagem_compra_item').val()));
+    const rotuloCompra = embSel
+        ? formatarRotuloOpcaoCompraComercial(embSel).split(' (')[0]
+        : rotuloTipoEmbalagemCompra($('#compra_em_item').val() || resultado.unidadeCompra);
+    const qtdEmb = Number($('#quantidade_embalagens_item').val() || resultado.quantidadeCompra || 0);
+    const qtdPorEmb = Number($('#quantidade_por_embalagem_item').val() || resultado.fatorConversao || 0);
+    const custoUnit = Number(resultado.custoUnitario || 0);
+
+    $painel.removeClass('d-none').html(`
+        <div class="card border-success mt-2">
+            <div class="card-header bg-light py-2"><strong>Resumo</strong></div>
+            <div class="card-body py-2 small">
+                <div class="row g-2">
+                    <div class="col-md-6"><strong>Compra:</strong> ${formatQuantidadeExibicao(qtdEmb, 3)} ${escapeHtml(rotuloCompra)}${qtdEmb > 1 ? 's' : ''}</div>
+                    <div class="col-md-6"><strong>Conteúdo:</strong> ${formatQuantidadeExibicao(qtdPorEmb, 3)} ${escapeHtml(un)} por ${escapeHtml(rotuloCompra.toLowerCase())}</div>
+                    <div class="col-md-6"><strong>Entrada no estoque:</strong> ${formatQuantidadeExibicao(resultado.quantidadeEstoque, 3)} ${escapeHtml(un)}</div>
+                    <div class="col-md-6"><strong>Custo unitário:</strong> R$ ${formatarCustoUnitarioVenda(custoUnit)}</div>
+                    ${modo === 'COMERCIAL' ? '<div class="col-12 text-muted">Conversão via Motor Universal de Comercialização (MUC)</div>' : ''}
+                </div>
+            </div>
+        </div>
+    `);
+}
+
+function agendarSimulacaoMucCompra() {
+    if (timerSimulacaoMucCompra) clearTimeout(timerSimulacaoMucCompra);
+    timerSimulacaoMucCompra = setTimeout(() => {
+        simularConversaoMucCompra().catch(() => { /* UI silenciosa */ });
+    }, 120);
+}
+
+async function simularConversaoMucCompra(forcar = false) {
+    const produto = obterProdutoSelecionadoCompra();
+    const modo = obterModoPainelEmbalagemCompra(produto);
+    if (!modo) {
+        ultimaSimulacaoMucCompra = null;
+        return null;
+    }
+
+    const qtdEmb = Number($('#quantidade_embalagens_item').val() || 0);
+    const qtdPorEmb = Number($('#quantidade_por_embalagem_item').val() || 0);
+    const valorTotal = obterValorTotalCompraMuc();
+    const unidade = String($('#unidade_fracionada_item').val() || produto?.unidade || 'UN').toUpperCase();
+
+    if (qtdEmb <= 0 || qtdPorEmb <= 0) {
+        $('#resultado_formula_conversao').text('');
+        $('#resultado_qtd_total_fracionado').text(`0 ${unidade}`);
+        $('#resultado_custo_unitario_fracionado').text('R$ 0,0000');
+        atualizarPainelResumoConversaoMuc(null, modo);
+        ultimaSimulacaoMucCompra = null;
+        return null;
+    }
+
+    if (typeof CompraMucClient === 'undefined') {
+        if (!forcar) return null;
+        throw new Error('Cliente MUC indisponível');
+    }
+
+    const resultado = await CompraMucClient.simularConversao({
+        quantidade_embalagens: qtdEmb,
+        quantidade_por_embalagem: qtdPorEmb,
+        valor_total_embalagem: valorTotal
+    });
+
+    ultimaSimulacaoMucCompra = resultado;
+    const qtdTotal = Number(resultado.quantidadeEstoque || 0);
+    const custoUnitario = Number(resultado.custoUnitario || 0);
+    const compraEm = obterRotuloCompraEmAtual();
+
+    $('#resultado_qtd_total_fracionado').text(`${formatQuantidadeExibicao(qtdTotal, 3)} ${unidade}`);
+    $('#resultado_custo_unitario_fracionado').text(`R$ ${formatarCustoUnitarioVenda(custoUnitario)}`);
+
+    if (qtdEmb > 0 && qtdPorEmb > 0) {
+        const tipoPlural = pluralizarTipoEmbalagem(compraEm, qtdEmb);
+        $('#resultado_formula_conversao').text(
+            `${formatQuantidadeExibicao(qtdEmb, 3)} ${tipoPlural} × ${formatQuantidadeExibicao(qtdPorEmb, 3)} ${unidade} = ${formatQuantidadeExibicao(qtdTotal, 3)} ${unidade}`
+        );
+    }
+
+    if (modo === 'FRACIONADO') {
+        if (isOrigemCompraCentralNfe() && !itemDraftCompra?.distribuicao_fiscal_editada_manual) {
+            const fiscalAtual = Number($('#quantidade_fiscal_item').val() || 0);
+            const naoFiscalAtual = Number($('#quantidade_nao_fiscal_item').val() || 0);
+            const somaAtual = fiscalAtual + naoFiscalAtual;
+            if (somaAtual <= 0 || Math.abs(somaAtual - qtdTotal) > 0.001) {
+                const dist = calcularDistribuicaoFiscalMotorItem({
+                    peso_total_compra: qtdTotal,
+                    quantidade_convertida: qtdTotal,
+                    quantidade_comercial: Number($('#quantidade_embalagens_item').val() || 0),
+                    quantidade_embalagens: Number($('#quantidade_embalagens_item').val() || 0),
+                    quantidade_por_embalagem: Number($('#quantidade_por_embalagem_item').val() || 0),
+                    unidade
+                }, obterTipoEntradaSelecionado());
+                $('#quantidade_fiscal_item').val(formatQuantidadeExibicao(dist.quantidade_fiscal, 3));
+                $('#quantidade_nao_fiscal_item').val(formatQuantidadeExibicao(dist.quantidade_nao_fiscal, 3));
+            }
+        }
+        atualizarIndicadorDistribuicaoFiscal(qtdTotal, unidade);
+    }
+
+    $('#custo_unitario_fracionado_item').val(
+        custoUnitario > 0 ? formatarCustoUnitarioVenda(custoUnitario) : ''
+    );
+    calcularValorVendaItem();
+
+    atualizarPainelResumoConversaoMuc(resultado, modo);
+
+    return {
+        qtdTotal,
+        custoUnitario,
+        valorTotal,
+        unidade,
+        compraEm,
+        muc: resultado
+    };
+}
+
+function renderResumoConversaoItemCompraHtml(item) {
+    const comercial = obterQuantidadeComercialItemCompra(item);
+    const convertida = obterQuantidadeConvertidaItemCompra(item);
+    if (!(comercial > 0) || Math.abs(comercial - convertida) < 0.001) return '';
+
+    const tipo = rotuloTipoEmbalagemCompra(item.compra_em || item.unidade_comercial || 'UN');
+    const un = String(item.unidade || 'UN').toUpperCase();
+    const valorEmb = Number(item.valor_total_embalagem || item.subtotal || 0);
+    const custoUnit = Number(item.preco_unitario || item.custo_unitario_final || 0);
+
+    return `
+        <div class="small text-muted mt-1 compra-resumo-embalagem">
+            <div><strong>Comprado:</strong> ${formatQuantidadeExibicao(comercial, 3)} ${escapeHtml(tipo)}${comercial > 1 ? 's' : ''}</div>
+            <div><strong>Conversão:</strong> ${formatQuantidadeExibicao(convertida, 3)} ${escapeHtml(un)}</div>
+            <div><strong>Preço embalagem:</strong> ${formatCurrency(valorEmb)} | <strong>Unitário:</strong> R$ ${formatarCustoUnitarioVenda(custoUnit)}</div>
+        </div>`;
+}
+
+function enriquecerItemFiscalCompraUi(item) {
+    if (typeof TratamentoFiscalItemCompra === 'undefined') return item;
+    return TratamentoFiscalItemCompra.enriquecerItemFiscalCompra(item, {
+        tipoEntradaCompra: obterTipoEntradaSelecionado(),
+        configBonificacao: configBonificacaoCompra
+    });
+}
 
 function obterTipoEntradaSelecionado() {
     const sel = $('input[name="tipo_entrada_compra"]:checked').val();
@@ -196,15 +935,37 @@ function rotuloTipoEntradaCompra(tipo) {
     const map = {
         REVENDA: 'Compra para Revenda',
         INDUSTRIALIZACAO: 'Compra para Industrialização',
-        USO_CONSUMO: 'Compra para Uso e Consumo'
+        USO_CONSUMO: 'Compra para Uso e Consumo',
+        BONIFICACAO: 'Compra por Bonificação'
     };
     return map[tipo] || map.REVENDA;
+}
+
+function isBonificacaoCompraAtual() {
+    return obterTipoEntradaSelecionado() === TIPOS_ENTRADA_COMPRA.BONIFICACAO;
 }
 
 function definirTipoEntradaCompra(tipo, { silencioso } = {}) {
     tipoEntradaCompraAtual = tipo || TIPOS_ENTRADA_COMPRA.REVENDA;
     $(`input[name="tipo_entrada_compra"][value="${tipoEntradaCompraAtual}"]`).prop('checked', true);
     if (!silencioso) aplicarPoliticaEntradaCompra();
+}
+
+function reenriquecerItensFiscalCompra() {
+    if (!itensCompraAtual.length) return;
+    const tipoEntrada = obterTipoEntradaSelecionado();
+    itensCompraAtual = itensCompraAtual.map((item) => {
+        const clone = clonarDadosItemCompra(item);
+        if (!clone.tipo_fiscal_manual) {
+            clone.tipo_fiscal_item = null;
+        }
+        const enriquecido = enriquecerItemFiscalCompraUi(clone);
+        if (isOrigemCompraCentralNfe()) {
+            return aplicarDistribuicaoFiscalItemCentral(enriquecido, tipoEntrada);
+        }
+        return enriquecido;
+    });
+    if ($('#itensCompraBody').length) renderItensCompraTabelaCore();
 }
 
 function aplicarPoliticaEntradaCompra() {
@@ -240,6 +1001,7 @@ function aplicarPoliticaEntradaCompra() {
             toggleNotaFiscalAvulsa();
         }
     }
+    reenriquecerItensFiscalCompra();
 }
 
 async function classificarEntradaCompraApi(dadosCompra) {
@@ -298,6 +1060,11 @@ function mostrarDialogoPoliticaEntrada(callback, classificacao) {
                         <div class="form-check mb-2">
                             <input class="form-check-input" type="radio" name="politica_entrada_import" id="politica_industrializacao" value="INDUSTRIALIZACAO"${check(TIPOS_ENTRADA_COMPRA.INDUSTRIALIZACAO)}>
                             <label class="form-check-label" for="politica_industrializacao">Compra para Industrialização</label>
+                        </div>
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="radio" name="politica_entrada_import" id="politica_bonificacao" value="BONIFICACAO"${check(TIPOS_ENTRADA_COMPRA.BONIFICACAO)}>
+                            <label class="form-check-label" for="politica_bonificacao">Compra por Bonificação</label>
+                            <small class="text-muted d-block">Aplica regras fiscais de bonificação; itens mantêm CFOP individual do XML.</small>
                         </div>
                         <div class="form-check mb-2">
                             <input class="form-check-input" type="radio" name="politica_entrada_import" id="politica_uso_consumo" value="USO_CONSUMO"${check(TIPOS_ENTRADA_COMPRA.USO_CONSUMO)}>
@@ -487,6 +1254,7 @@ function onFornecedorCnpjBlur() {
 }
 
 function loadCompras() {
+    carregarConfigBonificacaoCompra();
     $.when(
         $.ajax({ url: `${API_URL}/produtos`, method: 'GET' }),
         $.ajax({ url: `${API_URL}/compras`, method: 'GET' }),
@@ -681,6 +1449,52 @@ function adicionarDiasDataCompra(dataIso, dias) {
     return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
 }
 
+/** BUG3 — evita perda de foco: detecta type="date" ativo dentro do modal de compra. */
+function obterInputDataCompraEmFoco() {
+    const el = document.activeElement;
+    if (!el || el.tagName !== 'INPUT' || el.type !== 'date') return null;
+    const modal = document.getElementById('compraModal');
+    return modal && modal.contains(el) ? el : null;
+}
+
+function compraModalDatasEmEdicao() {
+    return obterInputDataCompraEmFoco() != null;
+}
+
+function agendarRenderItensCompraTabela() {
+    if (compraRenderItensAgendado != null) return;
+    compraRenderItensAgendado = window.setTimeout(() => {
+        compraRenderItensAgendado = null;
+        if (compraModalDatasEmEdicao()) {
+            agendarRenderItensCompraTabela();
+            return;
+        }
+        renderItensCompraTabelaCore();
+    }, 120);
+}
+
+function agendarRegenerarGradeParcelasCompra(forcar = true) {
+    if (compraParcelasRegenerarAgendado != null) return;
+    compraParcelasRegenerarAgendado = window.setTimeout(() => {
+        compraParcelasRegenerarAgendado = null;
+        if (compraModalDatasEmEdicao()) {
+            agendarRegenerarGradeParcelasCompra(forcar);
+            return;
+        }
+        regenerarGradeParcelasCompra(forcar);
+    }, 120);
+}
+
+function vincularEventosDatasCompraModal() {
+    $('#data_compra, #data_emissao, #data_entrada, #data_vencimento, #data_validade_item')
+        .off('blur.compraDatas')
+        .on('blur.compraDatas', function () {
+            if (this.id === 'data_vencimento') {
+                onParametroParcelamentoCompraAlterado();
+            }
+        });
+}
+
 /** RC8.5.2 — grade sempre gerada (à vista = 1 parcela; à prazo = N). */
 function condicaoCompraUsaParcelasFlexiveis(condicao) {
     return condicao === 'avista' || condicao === 'prazo'
@@ -688,6 +1502,9 @@ function condicaoCompraUsaParcelasFlexiveis(condicao) {
 }
 
 function gerarGradeParcelasCompraAutomatica() {
+    if (parcelasImportadasXml) {
+        return parcelasCompraGrade.length ? parcelasCompraGrade.map((p) => ({ ...p })) : [];
+    }
     const total = moedaParcelaCompra(obterTotalNotaCompraParaParcelas());
     const dataBase = $('#data_vencimento').val() || $('#data_compra').val();
     const condicao = $('#condicao_pagamento').val();
@@ -736,6 +1553,23 @@ function validarSomaParcelasCompraGrade(grade, totalNota) {
     };
 }
 
+function atualizarResumoValidacaoParcelasCompra() {
+    const $box = $('#parcelas_detalhes');
+    if (!$box.length || !parcelasCompraGrade.length) return;
+
+    const total = obterTotalNotaCompraParaParcelas();
+    const validacao = validarSomaParcelasCompraGrade(parcelasCompraGrade, total);
+    const alerta = validacao.ok
+        ? `<span class="text-success"><i class="fas fa-check-circle"></i> Total das parcelas confere com a nota.</span>`
+        : `<span class="text-danger fw-semibold"><i class="fas fa-exclamation-triangle"></i> ${validacao.mensagem}</span>`;
+    const somaTxt = typeof formatCurrency === 'function'
+        ? formatCurrency(validacao.soma)
+        : validacao.soma.toFixed(2);
+
+    $box.find('.parcelas-compra-alerta').html(alerta);
+    $box.find('.parcelas-compra-soma').text(somaTxt);
+}
+
 function renderizarGradeParcelasCompra() {
     const condicao = $('#condicao_pagamento').val();
     const $box = $('#parcelas_detalhes');
@@ -755,6 +1589,7 @@ function renderizarGradeParcelasCompra() {
     const linhas = parcelasCompraGrade.map((p, idx) => `
         <tr data-parcela-idx="${idx}">
             <td class="text-center align-middle">${p.numero}${p.tipo === 'entrada' ? ' <small class="text-muted">(entrada)</small>' : ''}</td>
+            <td class="align-middle small text-muted">${p.documento ? escapeHtml(String(p.documento)) : '—'}</td>
             <td>
                 <input type="date" class="form-control form-control-sm parcela-vencimento-compra"
                     value="${p.vencimento || ''}" data-idx="${idx}">
@@ -768,62 +1603,73 @@ function renderizarGradeParcelasCompra() {
 
     $box.html(`
         <div class="d-flex justify-content-between align-items-center mb-2">
-            <h6 class="mb-0">Parcelas</h6>
-            <div class="small">${alerta}</div>
+            <h6 class="mb-0">Parcelas / Duplicatas</h6>
+            <div class="small parcelas-compra-alerta">${alerta}</div>
         </div>
         <div class="table-responsive">
             <table class="table table-sm table-bordered mb-1" id="tabela_parcelas_compra">
                 <thead class="table-light">
-                    <tr><th style="width:70px">Nº</th><th>Vencimento</th><th style="width:160px">Valor</th></tr>
+                    <tr><th style="width:70px">Nº</th><th style="width:90px">Dup.</th><th>Vencimento</th><th style="width:160px">Valor</th></tr>
                 </thead>
                 <tbody>${linhas}</tbody>
                 <tfoot>
                     <tr>
-                        <td colspan="2" class="text-end fw-semibold">Soma</td>
-                        <td class="fw-semibold">${typeof formatCurrency === 'function' ? formatCurrency(validacao.soma) : validacao.soma.toFixed(2)}</td>
+                        <td colspan="3" class="text-end fw-semibold">Soma</td>
+                        <td class="fw-semibold parcelas-compra-soma">${typeof formatCurrency === 'function' ? formatCurrency(validacao.soma) : validacao.soma.toFixed(2)}</td>
                     </tr>
                 </tfoot>
             </table>
         </div>
-        <small class="text-muted">Altere vencimentos ou valores livremente. Enquanto não editar, a grade recalcula sozinha.</small>
+        <small class="text-muted">Duplicatas importadas do XML (grupo cobr/dup). Altere vencimentos ou valores se necessário.</small>
     `);
 
-    $box.find('.parcela-vencimento-compra').off('change.rc850').on('change.rc850', function () {
+    $box.find('.parcela-vencimento-compra').off('blur.rc850').on('blur.rc850', function () {
         const idx = Number($(this).data('idx'));
         if (!parcelasCompraGrade[idx]) return;
         parcelasCompraGrade[idx].vencimento = $(this).val();
         parcelasCompraEditadasManual = true;
-        renderizarGradeParcelasCompra();
+        atualizarResumoValidacaoParcelasCompra();
     });
-    $box.find('.parcela-valor-compra').off('change.rc850 input.rc850').on('change.rc850', function () {
+    $box.find('.parcela-valor-compra').off('blur.rc850').on('blur.rc850', function () {
         const idx = Number($(this).data('idx'));
         if (!parcelasCompraGrade[idx]) return;
         parcelasCompraGrade[idx].valor = moedaParcelaCompra($(this).val());
         parcelasCompraEditadasManual = true;
-        renderizarGradeParcelasCompra();
+        atualizarResumoValidacaoParcelasCompra();
     });
 }
 
 function regenerarGradeParcelasCompra(forcar = false) {
     const condicao = $('#condicao_pagamento').val();
     if (!condicaoCompraUsaParcelasFlexiveis(condicao)) {
-        parcelasCompraGrade = [];
-        parcelasCompraEditadasManual = false;
-        $('#parcelas_detalhes').html('');
+        if (!parcelasImportadasXml) {
+            parcelasCompraGrade = [];
+            parcelasCompraEditadasManual = false;
+            $('#parcelas_detalhes').html('');
+        }
+        return;
+    }
+
+    // RC4.31.14 — grade XML nunca é substituída por regeneração automática
+    if (parcelasImportadasXml && parcelasCompraGrade.length > 0) {
+        renderizarGradeParcelasCompra();
+        atualizarResumoValidacaoParcelasCompra();
         return;
     }
 
     const aplicar = () => {
+        if (parcelasImportadasXml) return;
         parcelasCompraGrade = gerarGradeParcelasCompraAutomatica();
         parcelasCompraEditadasManual = false;
         renderizarGradeParcelasCompra();
     };
 
-    if (!forcar && parcelasCompraEditadasManual) {
+    if (!forcar && (parcelasCompraEditadasManual || parcelasImportadasXml)) {
         const ok = window.confirm(
-            'As parcelas foram alteradas manualmente.\n\nDeseja recalcular os vencimentos?'
+            'As parcelas foram alteradas manualmente ou importadas do XML.\n\nDeseja recalcular os vencimentos?'
         );
         if (!ok) return;
+        parcelasImportadasXml = false;
     }
     aplicar();
 }
@@ -858,7 +1704,12 @@ function atualizarVisibilidadePagamentoCompra() {
         }
     }
 
-    regenerarGradeParcelasCompra(true);
+    // RC4.31.3 / RC4.31.14 — preserva duplicatas importadas do XML (cobr/dup)
+    if ((parcelasImportadasXml || parcelasCompraEditadasManual) && parcelasCompraGrade.length > 0) {
+        renderizarGradeParcelasCompra();
+    } else {
+        regenerarGradeParcelasCompra(true);
+    }
 }
 
 /** @deprecated nome legado — RC8.5.0 usa regenerarGradeParcelasCompra */
@@ -869,6 +1720,36 @@ function calcularParcelasCompra() {
 function formatNumberInput(value, decimals = 2) {
     const num = Number(value || 0);
     return Number.isFinite(num) ? num.toFixed(decimals) : Number(0).toFixed(decimals);
+}
+
+/** Exibição enxuta: 6 em vez de 6,000 — mantém decimais só quando necessário. */
+function formatQuantidadeExibicao(value, maxDecimals = 3) {
+    const num = Number(value || 0);
+    if (!Number.isFinite(num)) return '0';
+    const fixed = num.toFixed(maxDecimals);
+    if (!fixed.includes('.')) return fixed;
+    return fixed.replace(/0+$/, '').replace(/\.$/, '');
+}
+
+if (typeof window !== 'undefined') {
+    window.formatQuantidadeExibicao = formatQuantidadeExibicao;
+}
+
+/** RC4.31.19 — delega ao motor canônico (motor-quantidade-compra.js) */
+function obterQuantidadeComercialItemCompra(item = {}) {
+    if (typeof obterQuantidadeComercial === 'function') return obterQuantidadeComercial(item);
+    return Number(item.quantidade_comercial || item.quantidade_embalagens || item.quantidade || 0);
+}
+
+function obterQuantidadeConvertidaItemCompra(item = {}) {
+    if (typeof obterQuantidadeConvertida === 'function') return obterQuantidadeConvertida(item);
+    const emb = Number(item.quantidade_embalagens || 0) * Number(item.quantidade_por_embalagem || 0);
+    return Number(item.quantidade_convertida || item.peso_total_compra || 0) || emb || Number(item.quantidade || 0);
+}
+
+/** @deprecated RC4.31.19 — use obterQuantidadeConvertidaItemCompra */
+function obterTotalConvertidoItemCompraSalvo(item = {}) {
+    return obterQuantidadeConvertidaItemCompra(item);
 }
 
 /** Motor de Conversão de Unidades — embalagem de compra → unidade de estoque/venda */
@@ -907,10 +1788,64 @@ function formatarCustoUnitarioVenda(value) {
     return formatNumberInput(value, 4);
 }
 
+function obterRotuloCompraEmAtual() {
+    const embSel = embalagensProdutoCompraAtual.find(
+        (e) => String(e.id) === String($('#embalagem_compra_item').val())
+    );
+    if (embSel && !embSel._acao) {
+        return formatarRotuloOpcaoCompraComercial(embSel).split(' (')[0];
+    }
+    return String($('#compra_em_item').val() || 'UN');
+}
+
+async function aprenderUnidadeComercialAutomaticaNoProduto(produto, embSel) {
+    if (!produto?.id || !embSel || embSel._acao) return produto;
+    if (typeof ProdutoApresentacaoResolver !== 'undefined') {
+        if (ProdutoApresentacaoResolver.ehOpcaoUnidadeBase(embSel)) return produto;
+        if (ProdutoApresentacaoResolver.ehOpcaoNovaUnidadeComercial(embSel)) return produto;
+    }
+    if (embSel.somente_compra || String(embSel.id || '').startsWith('temp-')) return produto;
+    if (embSel.embalagem_ref_id || (embSel.id && !String(embSel.id).startsWith('uc-') && !String(embSel.id).startsWith('legado-'))) {
+        return produto;
+    }
+
+    const quantidade = Number($('#quantidade_por_embalagem_item').val() || embSel.quantidade || embSel.quantidade_por_embalagem || 0);
+    const descricao = String(embSel.descricao || obterRotuloCompraEmAtual() || '').trim();
+    if (!descricao || !(quantidade > 0)) return produto;
+
+    const jaCadastrada = (produto.embalagens || []).some((e) => {
+        const d = String(e.descricao || '').trim().toLowerCase();
+        const q = Number(e.quantidade ?? e.quantidade_por_embalagem ?? 0);
+        return d === descricao.toLowerCase() && Math.abs(q - quantidade) < 0.0001;
+    });
+    if (jaCadastrada) return produto;
+
+    const payload = ProdutoApresentacaoResolver.montarEmbalagemAprendidaCompra({
+        descricao,
+        quantidade,
+        unidade: embSel.unidade || produto.unidade,
+        tipo: embSel.tipo || 'ROLO',
+        compra: 1,
+        venda: Number(embSel.venda ?? 1) === 1 ? 1 : 0
+    }, produto);
+
+    const atualizado = await persistirUnidadeComercialNoCadastroProduto(produto, payload);
+    showNotification(`Unidade "${descricao}" salva automaticamente no cadastro do produto.`, 'success');
+    return atualizado;
+}
+
 function obterProdutoSelecionadoCompra() {
     const produtoId = $('#produto_id_item').val();
     if (!produtoId) return null;
     return produtosCompraList.find(p => String(p.id) === String(produtoId)) || null;
+}
+
+function isModoPainelEmbalagemCompraAtivo() {
+    return obterModoPainelEmbalagemCompra(obterProdutoSelecionadoCompra()) !== null;
+}
+
+function isModoEmbalagemComercialCompraAtivo() {
+    return obterModoPainelEmbalagemCompra(obterProdutoSelecionadoCompra()) === 'COMERCIAL';
 }
 
 function isModoConversaoUnidadesCompraAtivo() {
@@ -920,60 +1855,148 @@ function isModoConversaoUnidadesCompraAtivo() {
 const isModoFracionadoCompraAtivo = isModoConversaoUnidadesCompraAtivo;
 
 function calcularConversaoEmbalagemCompra() {
-    if (!isModoConversaoUnidadesCompraAtivo()) return null;
+    agendarSimulacaoMucCompra();
+    return ultimaSimulacaoMucCompra ? {
+        qtdTotal: Number(ultimaSimulacaoMucCompra.quantidadeEstoque || 0),
+        custoUnitario: Number(ultimaSimulacaoMucCompra.custoUnitario || 0),
+        valorTotal: obterValorTotalCompraMuc() || Number(ultimaSimulacaoMucCompra.custoTotal || 0),
+        unidade: String($('#unidade_fracionada_item').val() || 'UN').toUpperCase(),
+        compraEm: String($('#compra_em_item').val() || 'UN'),
+        muc: ultimaSimulacaoMucCompra
+    } : null;
+}
 
-    const compraEm = String($('#compra_em_item').val() || 'Rolo');
-    const qtdEmbalagens = Number($('#quantidade_embalagens_item').val() || 0);
-    const qtdPorEmbalagem = Number($('#quantidade_por_embalagem_item').val() || 0);
-    const valorTotal = Number($('#valor_total_fracionado_item').val() || 0);
-    const unidade = String($('#unidade_fracionada_item').val() || 'UN').toUpperCase();
-    const qtdTotal = qtdEmbalagens * qtdPorEmbalagem;
-    const custoUnitario = qtdTotal > 0 ? valorTotal / qtdTotal : 0;
+function aplicarLayoutPainelEmbalagemCompra() {
+    const ativo = Boolean(modoPainelEmbalagemCompra);
+    const comercial = modoPainelEmbalagemCompra === 'COMERCIAL';
 
-    $('#resultado_qtd_total_fracionado').text(`${formatNumberInput(qtdTotal, 3)} ${unidade}`);
-    $('#resultado_custo_unitario_fracionado').text(`R$ ${formatarCustoUnitarioVenda(custoUnitario)}`);
+    $('#painelConversaoEmbalagem').toggleClass('d-none', !ativo);
+    $('#embalagemCompraRow').toggleClass('d-none', !ativo);
+    $('#painelConteudoEmbalagensWrap').toggleClass('d-none', !ativo);
+    $('#campoQuantidadeSimplesCompra').toggleClass('d-none', ativo);
+    $('#colCompraEmLegado').addClass('d-none');
+    $('#label_qtd_embalagens_compra').text(comercial ? 'Quantidade' : 'Quantidade Comprada');
 
-    if (qtdEmbalagens > 0 && qtdPorEmbalagem > 0) {
-        const tipoPlural = pluralizarTipoEmbalagem(compraEm, qtdEmbalagens);
-        $('#resultado_formula_conversao').text(
-            `${formatNumberInput(qtdEmbalagens, 3)} ${tipoPlural} × ${formatNumberInput(qtdPorEmbalagem, 3)} ${unidade} = ${formatNumberInput(qtdTotal, 3)} ${unidade}`
-        );
+    if (ativo && comercial) {
+        $('#painelConversaoEmbalagem .card-header strong').text('Compra por Embalagem');
+        $('#painelConversaoEmbalagem .card-header small').text('Conversão automática via MUC');
+    } else if (ativo) {
+        $('#painelConversaoEmbalagem .card-header strong').text('Motor de Conversão de Unidades');
+        $('#painelConversaoEmbalagem .card-header small').text('Ex.: 10 Rolos × 50 MT = 500 MT');
     } else {
-        $('#resultado_formula_conversao').text('');
-    }
-
-    atualizarIndicadorDistribuicaoFiscal(qtdTotal, unidade);
-
-    if (custoUnitario > 0) {
-        $('#preco_item').val(formatarCustoUnitarioVenda(custoUnitario));
-        $('#custo_unitario_fracionado_item').val(formatarCustoUnitarioVenda(custoUnitario));
-        calcularValorVendaItem();
-    } else {
+        embalagensProdutoCompraAtual = [];
+        ultimaSimulacaoMucCompra = null;
+        restaurandoEmbalagemCompraEdicao = null;
         $('#custo_unitario_fracionado_item').val('');
+        $('#painelResumoConversaoMuc').addClass('d-none').html('');
+    }
+    atualizarRotuloPrecoCompraItem();
+}
+
+function finalizarPainelEmbalagemComercialCompra(produto) {
+    renderSelectEmbalagemCompra();
+    renderPainelConteudoEmbalagensCompra();
+
+    if (restaurandoEmbalagemCompraEdicao) {
+        const r = restaurandoEmbalagemCompraEdicao;
+        let embId = r.embalagem_id;
+        if (embId && !$(`#embalagem_compra_item option[value="${embId}"]`).length) {
+            embId = null;
+        }
+        if (!embId && r.compra_em) {
+            const porTipo = embalagensProdutoCompraAtual.find(
+                (e) => String(e.tipo || e.unidade_comercial || '').toUpperCase() === String(r.compra_em).toUpperCase()
+            );
+            embId = porTipo?.id || null;
+        }
+        if (embId) {
+            $('#embalagem_compra_item').val(String(embId));
+        }
+        aplicarEmbalagemCompraSelecionada($('#embalagem_compra_item').val() || embalagensProdutoCompraAtual[0]?.id, {
+            preservarQuantidade: true,
+            preservarPreco: true,
+            preservarFator: true
+        });
+        $('#quantidade_embalagens_item').val(formatQuantidadeExibicao(r.quantidade_embalagens || 1, 3));
+        $('#quantidade_por_embalagem_item').val(formatQuantidadeExibicao(r.quantidade_por_embalagem || 0, 3));
+        $('#preco_item').val(formatNumberInput(r.valor_total_embalagem || 0, 2));
+        if (r.compra_em) {
+            $('#compra_em_item').val(r.compra_em);
+        }
+        restaurandoEmbalagemCompraEdicao = null;
+        agendarSimulacaoMucCompra();
+        return;
     }
 
-    return { qtdTotal, custoUnitario, valorTotal, unidade, compraEm };
+    const ultima = obterUltimaEmbalagemCompraProduto(produto.id);
+    const unidadeBase = embalagensProdutoCompraAtual.find(
+        (e) => typeof ProdutoApresentacaoResolver !== 'undefined' && ProdutoApresentacaoResolver.ehOpcaoUnidadeBase(e)
+    );
+    const embPadrao = embalagensProdutoCompraAtual.find((e) => String(e.id) === String(ultima))
+        || embalagensProdutoCompraAtual.find((e) => Number(e.principal) === 1 && !e._acao)
+        || embalagensProdutoCompraAtual.find((e) => e.tipo_origem_compra === 'UNIDADE_COMERCIAL' && !e._acao)
+        || unidadeBase
+        || embalagensProdutoCompraAtual.find((e) => !e._acao);
+    if (embPadrao && !embPadrao._acao) {
+        aplicarEmbalagemCompraSelecionada(embPadrao.id || '');
+        embalagemCompraSelecionadaAnterior = String(embPadrao.id || '');
+    } else {
+        agendarSimulacaoMucCompra();
+    }
 }
 
 function atualizarPainelConversaoUnidadesCompra() {
-    const ativo = isModoConversaoUnidadesCompraAtivo();
     const produto = obterProdutoSelecionadoCompra();
 
-    $('#painelConversaoEmbalagem').toggleClass('d-none', !ativo);
-    $('#linhaPrecoCompraNormal .campo-preco-compra-item').toggleClass('d-none', ativo);
-    $('#campoCustoUnitarioFracionado').toggleClass('d-none', !ativo);
+    if (!produto?.id) {
+        modoPainelEmbalagemCompra = null;
+        aplicarLayoutPainelEmbalagemCompra();
+        atualizarCamposQuantidadeCompra();
+        return;
+    }
 
-    if (ativo && produto) {
+    const fracionado = produtoUsaConversaoUnidadesCompra(produto);
+    const produtoId = produto.id;
+
+    if (fracionado) {
+        modoPainelEmbalagemCompra = 'FRACIONADO';
         $('#unidade_fracionada_item').val(String(produto.unidade || 'UN').toUpperCase());
         if (!$('#quantidade_embalagens_item').val()) {
             $('#quantidade_embalagens_item').val('1');
         }
-        calcularConversaoEmbalagemCompra();
     } else {
-        $('#custo_unitario_fracionado_item').val('');
+        modoPainelEmbalagemCompra = Number(produto.compra_por_embalagem || 0) === 1 ? 'COMERCIAL' : null;
     }
 
-    atualizarCamposQuantidadeCompra();
+    if (!modoPainelEmbalagemCompra) {
+        aplicarLayoutPainelEmbalagemCompra();
+        atualizarCamposQuantidadeCompra();
+        return;
+    }
+
+    carregarEmbalagensProdutoCompra(produto).then(() => {
+        const atual = obterProdutoSelecionadoCompra();
+        if (!atual || String(atual.id) !== String(produtoId)) return;
+
+        if (!fracionado) {
+            modoPainelEmbalagemCompra = Number(atual.compra_por_embalagem || 0) === 1 ? 'COMERCIAL' : null;
+        }
+
+        if (modoPainelEmbalagemCompra) {
+            $('#unidade_fracionada_item').val(String(atual.unidade || 'UN').toUpperCase());
+            if (!$('#quantidade_embalagens_item').val()) {
+                $('#quantidade_embalagens_item').val('1');
+            }
+        }
+
+        aplicarLayoutPainelEmbalagemCompra();
+
+        if (modoPainelEmbalagemCompra) {
+            finalizarPainelEmbalagemComercialCompra(atual);
+        }
+
+        atualizarCamposQuantidadeCompra();
+    });
 }
 
 const atualizarPainelFracionadoCompra = atualizarPainelConversaoUnidadesCompra;
@@ -997,10 +2020,12 @@ function toggleModoEntradaF7Compra() {
 function obterTotalConvertidoItemCompra() {
     if (!isModoConversaoUnidadesCompraAtivo()) return null;
 
-    const qtdEmbalagens = Number($('#quantidade_embalagens_item').val() || 0);
-    const qtdPorEmbalagem = Number($('#quantidade_por_embalagem_item').val() || 0);
     const unidade = String($('#unidade_fracionada_item').val() || 'UN').toUpperCase();
-    const qtdTotal = qtdEmbalagens * qtdPorEmbalagem;
+    const qtdTotal = obterQuantidadeConvertidaItemCompra({
+        quantidade_comercial: Number($('#quantidade_embalagens_item').val() || 0),
+        quantidade_embalagens: Number($('#quantidade_embalagens_item').val() || 0),
+        quantidade_por_embalagem: Number($('#quantidade_por_embalagem_item').val() || 0)
+    });
 
     if (qtdTotal <= 0) return null;
     return { qtdTotal, unidade };
@@ -1019,17 +2044,90 @@ function validarDistribuicaoFiscalCompra(qtdFiscal, qtdNaoFiscal, totalConvertid
     if (soma <= 0) {
         return {
             ok: false,
-            mensagem: `Informe quantidades absolutas${unidadeLabel}: Fiscal + Não Fiscal = ${formatNumberInput(total, 3)}${unidadeLabel}.`
+            mensagem: `Informe quantidades absolutas${unidadeLabel}: Fiscal + Não Fiscal = ${formatQuantidadeExibicao(total, 3)}${unidadeLabel}.`
         };
     }
     if (Math.abs(soma - total) > 0.001) {
         return {
             ok: false,
-            mensagem: `Fiscal + Não Fiscal deve somar ${formatNumberInput(total, 3)}${unidadeLabel}. Informado: ${formatNumberInput(fiscal, 3)} + ${formatNumberInput(naoFiscal, 3)} = ${formatNumberInput(soma, 3)}.`
+            mensagem: `Fiscal + Não Fiscal deve somar ${formatQuantidadeExibicao(total, 3)}${unidadeLabel}. Informado: ${formatQuantidadeExibicao(fiscal, 3)} + ${formatQuantidadeExibicao(naoFiscal, 3)} = ${formatQuantidadeExibicao(soma, 3)}.`
         };
     }
 
     return { ok: true, fiscal, naoFiscal, total, soma };
+}
+
+function isOrigemCompraCentralNfe() {
+    return origemCompraAtual === ORIGEM_COMPRA.CENTRAL_NFE;
+}
+
+function itemCompraEhTratamentoNaoFiscal(item = {}, tipoEntrada) {
+    if (Number(item.item_fiscal) === 0) return true;
+    const enriquecido = enriquecerItemFiscalCompraUi(clonarDadosItemCompra(item));
+    if (enriquecido.tipo_fiscal_item === TIPOS_ENTRADA_COMPRA.USO_CONSUMO) return true;
+    if (typeof TratamentoFiscalItemCompra !== 'undefined') {
+        const trat = TratamentoFiscalItemCompra.classificarTratamentoFiscalItem(
+            enriquecido,
+            tipoEntrada || obterTipoEntradaSelecionado()
+        );
+        return trat.tipoFiscal === TIPOS_ENTRADA_COMPRA.USO_CONSUMO;
+    }
+    return (tipoEntrada || obterTipoEntradaSelecionado()) === TIPOS_ENTRADA_COMPRA.USO_CONSUMO;
+}
+
+/** RC4.31.16/19 — espelha Motor Fiscal/Não Fiscal sobre quantidade_convertida */
+function calcularDistribuicaoFiscalMotorItem(item = {}, tipoEntrada) {
+    const total = obterQuantidadeConvertidaItemCompra(item);
+    if (total <= 0) {
+        return { quantidade_fiscal: 0, quantidade_nao_fiscal: 0, total: 0, item_fiscal: 1 };
+    }
+    if (itemCompraEhTratamentoNaoFiscal(item, tipoEntrada)) {
+        return { quantidade_fiscal: 0, quantidade_nao_fiscal: total, total, item_fiscal: 0 };
+    }
+    return { quantidade_fiscal: total, quantidade_nao_fiscal: 0, total, item_fiscal: 1 };
+}
+
+function aplicarDistribuicaoFiscalItemCentral(item, tipoEntrada) {
+    if (!itemCompraEhFracionado(item)) return item;
+    if (item.distribuicao_fiscal_editada_manual) return item;
+    const dist = calcularDistribuicaoFiscalMotorItem(item, tipoEntrada);
+    if (dist.total <= 0) return item;
+    return sincronizarQuantidadesEstoqueItemCompra({
+        ...clonarDadosItemCompra(item),
+        quantidade_fiscal: dist.quantidade_fiscal,
+        quantidade_nao_fiscal: dist.quantidade_nao_fiscal,
+        item_fiscal: dist.item_fiscal,
+        quantidade_convertida: dist.total,
+        peso_total_compra: dist.total,
+        quantidade: dist.total,
+        distribuicao_fiscal_preenchida: true,
+        origem_compra: ORIGEM_COMPRA.CENTRAL_NFE
+    });
+}
+
+function aplicarDistribuicaoFiscalItensCentral(itens, tipoEntrada) {
+    return (itens || []).map((item) => aplicarDistribuicaoFiscalItemCentral(item, tipoEntrada));
+}
+
+function itemCompraDistribuicaoFiscalValida(item) {
+    if (!itemCompraEhFracionado(item)) return true;
+    const total = obterQuantidadeConvertidaItemCompra(item);
+    return validarDistribuicaoFiscalCompra(
+        item.quantidade_fiscal,
+        item.quantidade_nao_fiscal,
+        total,
+        String(item.unidade || '').toUpperCase()
+    ).ok;
+}
+
+function deveExigirValidacaoDistribuicaoFiscalItem(item) {
+    if (!itemCompraEhFracionado(item)) return false;
+    if (isOrigemCompraCentralNfe()
+        && item.distribuicao_fiscal_preenchida
+        && itemCompraDistribuicaoFiscalValida(item)) {
+        return false;
+    }
+    return true;
 }
 
 function atualizarIndicadorDistribuicaoFiscal(totalInformado, unidadeInformada) {
@@ -1065,34 +2163,35 @@ function atualizarIndicadorDistribuicaoFiscal(totalInformado, unidadeInformada) 
 
     if (soma === 0) {
         $indicador.addClass('alert alert-info py-2 mb-0');
-        $indicador.html(`Informe <strong>valores absolutos</strong> em ${unidade}: Fiscal + Não Fiscal = <strong>${formatNumberInput(qtdTotal, 3)} ${unidade}</strong>.`);
+        $indicador.html(`Informe <strong>valores absolutos</strong> em ${unidade}: Fiscal + Não Fiscal = <strong>${formatQuantidadeExibicao(qtdTotal, 3)} ${unidade}</strong>.`);
         return;
     }
 
     if (ok) {
         $indicador.addClass('alert alert-success py-2 mb-0');
-        $indicador.html(`✓ ${formatNumberInput(qtdFiscal, 3)} + ${formatNumberInput(qtdNaoFiscal, 3)} = ${formatNumberInput(qtdTotal, 3)} ${unidade}`);
+        $indicador.html(`✓ ${formatQuantidadeExibicao(qtdFiscal, 3)} + ${formatQuantidadeExibicao(qtdNaoFiscal, 3)} = ${formatQuantidadeExibicao(qtdTotal, 3)} ${unidade}`);
         return;
     }
 
     if (soma < qtdTotal) {
         $indicador.addClass('alert alert-warning py-2 mb-0');
-        $indicador.html(`${formatNumberInput(qtdFiscal, 3)} + ${formatNumberInput(qtdNaoFiscal, 3)} = ${formatNumberInput(soma, 3)} ${unidade}. Faltam <strong>${formatNumberInput(diff, 3)} ${unidade}</strong> para completar ${formatNumberInput(qtdTotal, 3)}.`);
+        $indicador.html(`${formatQuantidadeExibicao(qtdFiscal, 3)} + ${formatQuantidadeExibicao(qtdNaoFiscal, 3)} = ${formatQuantidadeExibicao(soma, 3)} ${unidade}. Faltam <strong>${formatQuantidadeExibicao(diff, 3)} ${unidade}</strong> para completar ${formatQuantidadeExibicao(qtdTotal, 3)}.`);
         return;
     }
 
     $indicador.addClass('alert alert-danger py-2 mb-0');
-    $indicador.html(`${formatNumberInput(qtdFiscal, 3)} + ${formatNumberInput(qtdNaoFiscal, 3)} = ${formatNumberInput(soma, 3)} ${unidade}. Excede o total convertido em <strong>${formatNumberInput(Math.abs(diff), 3)} ${unidade}</strong>.`);
+    $indicador.html(`${formatQuantidadeExibicao(qtdFiscal, 3)} + ${formatQuantidadeExibicao(qtdNaoFiscal, 3)} = ${formatQuantidadeExibicao(soma, 3)} ${unidade}. Excede o total convertido em <strong>${formatQuantidadeExibicao(Math.abs(diff), 3)} ${unidade}</strong>.`);
 }
 
 function atualizarCamposQuantidadeCompra() {
     const fracionado = isModoConversaoUnidadesCompraAtivo();
+    const painelEmb = isModoPainelEmbalagemCompraAtivo();
     const ativo = fracionado || isModoEntradaF7CompraAtivo();
     const unidade = fracionado
         ? String($('#unidade_fracionada_item').val() || obterProdutoSelecionadoCompra()?.unidade || 'UN').toUpperCase()
         : '';
 
-    $('#campoQuantidadeSimplesCompra').toggleClass('d-none', ativo);
+    $('#campoQuantidadeSimplesCompra').toggleClass('d-none', ativo || painelEmb);
     $('#campoQuantidadeFiscalCompra').toggleClass('d-none', !ativo);
     $('#campoQuantidadeNaoFiscalCompra').toggleClass('d-none', !ativo);
 
@@ -1149,45 +2248,101 @@ function resolverQuantidadesItemCompra(quantidadeSimples, quantidadeFiscal, quan
 }
 
 function formatarQuantidadeItemCompra(item = {}) {
-    const qtdFiscal = Number(item.quantidade_fiscal ?? item.quantidade ?? 0);
-    const qtdNaoFiscal = Number(item.quantidade_nao_fiscal || 0);
-    const qtdTotal = Number(item.quantidade ?? (qtdFiscal + qtdNaoFiscal));
+    const comercial = obterQuantidadeComercialItemCompra(item);
+    const convertida = obterQuantidadeConvertidaItemCompra(item);
+    const rotuloCom = rotuloTipoEmbalagemCompra(item.compra_em || item.unidade_comercial || 'UN');
+    const un = String(item.unidade || 'UN').toUpperCase();
+    const temConversao = Number(item.quantidade_por_embalagem || 0) > 0
+        && Math.abs(comercial - convertida) > 0.001;
 
-    if (itemCompraEhFracionado(item) && qtdNaoFiscal > 0) {
-        return `${formatNumberInput(qtdFiscal, 3)} + ${formatNumberInput(qtdNaoFiscal, 3)}`;
+    if (temConversao && comercial > 0) {
+        const linhaComercial = `${formatQuantidadeExibicao(comercial, 3)} ${rotuloCom}${comercial > 1 ? 's' : ''}`;
+        const linhaConvertida = `(${formatQuantidadeExibicao(convertida, 3)} ${un})`;
+        const qtdNaoFiscal = Number(item.quantidade_nao_fiscal || 0);
+        if (itemCompraEhFracionado(item) && qtdNaoFiscal > 0) {
+            return `${linhaComercial}<br><small class="text-muted">${linhaConvertida}</small><br><small>${formatQuantidadeExibicao(Number(item.quantidade_fiscal || 0), 3)} + ${formatQuantidadeExibicao(qtdNaoFiscal, 3)}</small>`;
+        }
+        return `${linhaComercial}<br><small class="text-muted">${linhaConvertida}</small>`;
     }
 
-    if (isModoEntradaF7CompraAtivo() && !itemCompraEhFracionado(item)) {
-        return formatNumberInput(qtdTotal);
+    const qtdFiscal = Number(item.quantidade_fiscal ?? convertida ?? 0);
+    const qtdNaoFiscal = Number(item.quantidade_nao_fiscal || 0);
+
+    if (itemCompraEhFracionado(item) && qtdNaoFiscal > 0) {
+        return `${formatQuantidadeExibicao(qtdFiscal, 3)} + ${formatQuantidadeExibicao(qtdNaoFiscal, 3)} ${un}`;
     }
 
     if (itemCompraEhFracionado(item)) {
-        return formatNumberInput(qtdFiscal, 3);
+        return `${formatQuantidadeExibicao(convertida, 3)} ${un}`;
     }
 
-    return formatNumberInput(qtdFiscal);
+    return `${formatQuantidadeExibicao(qtdFiscal, 3)} ${un !== 'UN' ? un : ''}`.trim();
 }
 
 function calcularSubtotalFinanceiroItemCompra(item = {}) {
-    const quantidade = Number(item.quantidade || 0);
+    const quantidade = obterQuantidadeConvertidaItemCompra(item);
     const preco = Number(item.preco_unitario || 0);
     return Number((quantidade * preco).toFixed(2));
 }
 
-function normalizeItemCompra(itemBruto = {}) {
+function prepararItemQuantidadesImportacaoCentral(itemBruto = {}) {
     const item = clonarDadosItemCompra(itemBruto) || {};
-    const qtds = item.quantidade_fiscal !== undefined || item.quantidade_nao_fiscal !== undefined
-        ? {
-            quantidade_fiscal: Number(item.quantidade_fiscal || 0),
-            quantidade_nao_fiscal: Number(item.quantidade_nao_fiscal || 0),
-            quantidade: Number(item.quantidade_fiscal || 0) + Number(item.quantidade_nao_fiscal || 0)
+    const qCom = Number(item.quantidade_comercial ?? item.quantidade ?? 0);
+    if (qCom > 0) {
+        item.quantidade_comercial = qCom;
+        if (!Number(item.quantidade_embalagens)) {
+            item.quantidade_embalagens = qCom;
         }
-        : {
-            quantidade_fiscal: Number(item.quantidade || 1),
-            quantidade_nao_fiscal: 0,
-            quantidade: Number(item.quantidade || 1)
-        };
-    const quantidade = qtds.quantidade || Number(item.quantidade || 1);
+    }
+    if (Number(item.quantidade_por_embalagem || 0) > 0 && qCom > 0) {
+        item.quantidade_convertida = qCom * Number(item.quantidade_por_embalagem);
+    }
+    return item;
+}
+
+function normalizeItemCompra(itemBruto = {}) {
+    const item = isOrigemCompraCentralNfe()
+        ? prepararItemQuantidadesImportacaoCentral(itemBruto)
+        : (clonarDadosItemCompra(itemBruto) || {});
+
+    const quantidadeComercial = obterQuantidadeComercialItemCompra(item);
+    if (quantidadeComercial > 0) {
+        item.quantidade_comercial = quantidadeComercial;
+        if (!Number(item.quantidade_embalagens)) {
+            item.quantidade_embalagens = quantidadeComercial;
+        }
+    }
+
+    const quantidadeConvertida = obterQuantidadeConvertidaItemCompra(item);
+    item.quantidade_convertida = quantidadeConvertida;
+    item.peso_total_compra = quantidadeConvertida;
+
+    let qtdFiscal = Number(item.quantidade_fiscal ?? NaN);
+    let qtdNaoFiscal = Number(item.quantidade_nao_fiscal || 0);
+    const somaExistente = (Number.isFinite(qtdFiscal) ? qtdFiscal : 0) + qtdNaoFiscal;
+
+    if (item.quantidade_fiscal !== undefined || item.quantidade_nao_fiscal !== undefined) {
+        qtdFiscal = Number(item.quantidade_fiscal || 0);
+        qtdNaoFiscal = Number(item.quantidade_nao_fiscal || 0);
+        if (quantidadeConvertida > 0
+            && Math.abs(qtdFiscal + qtdNaoFiscal - quantidadeComercial) < 0.001
+            && Math.abs(quantidadeComercial - quantidadeConvertida) > 0.001
+            && qtdNaoFiscal <= 0) {
+            qtdFiscal = quantidadeConvertida;
+        }
+    } else if (quantidadeConvertida > 0) {
+        qtdFiscal = quantidadeConvertida;
+        qtdNaoFiscal = 0;
+    } else {
+        qtdFiscal = quantidadeComercial || 1;
+        qtdNaoFiscal = 0;
+    }
+
+    const quantidade = quantidadeConvertida > 0
+        ? (somaExistente > 0 && Math.abs(somaExistente - quantidadeConvertida) <= 0.001
+            ? somaExistente
+            : quantidadeConvertida)
+        : (qtdFiscal + qtdNaoFiscal || quantidadeComercial || 1);
     const fracionado = itemCompraEhFracionado(item);
     const casasCusto = fracionado ? 4 : 2;
     const custo = fracionado
@@ -1206,15 +2361,17 @@ function normalizeItemCompra(itemBruto = {}) {
         unidade_comercial: item.unidade_comercial || item.unidadeComercial || 'UN',
         ncm: item.ncm || '',
         quantidade,
-        quantidade_fiscal: qtds.quantidade_fiscal,
-        quantidade_nao_fiscal: qtds.quantidade_nao_fiscal,
+        quantidade_comercial: quantidadeComercial,
+        quantidade_convertida: quantidadeConvertida,
+        quantidade_fiscal: qtdFiscal,
+        quantidade_nao_fiscal: qtdNaoFiscal,
         preco_unitario: Number(custo.toFixed(casasCusto)),
         ultimo_preco_compra: Number(ultimoPrecoCompra.toFixed(casasCusto)),
         margem_lucro: Number(margem.toFixed(2)),
         preco_venda_sugerido: Number(precoVenda.toFixed(2)),
         produto_fracionado: itemCompraEhFracionado(item) ? 1 : 0,
         vendido_por_peso: itemCompraEhFracionado(item) ? 1 : 0,
-        peso_total_compra: Number(item.peso_total_compra || item.quantidade || 0),
+        peso_total_compra: quantidadeConvertida,
         custo_por_kg: Number((item.custo_por_kg || custo || 0).toFixed(casasCusto)),
         atualizar_preco_venda: Number(item.atualizar_preco_venda ?? 1),
         frete_rateado: Number(item.frete_rateado || 0),
@@ -1233,11 +2390,23 @@ function normalizeItemCompra(itemBruto = {}) {
         quantidade_embalagens: Number(item.quantidade_embalagens || 0),
         quantidade_por_embalagem: Number(item.quantidade_por_embalagem || 0),
         valor_total_embalagem: Number(item.valor_total_embalagem || 0),
-        valor_embalagem_venda: Number(item.valor_embalagem_venda || 0)
+        valor_embalagem_venda: Number(item.valor_embalagem_venda || 0),
+        embalagem_id: item.embalagem_id != null ? item.embalagem_id : null,
+        produto_apresentacao_id: item.produto_apresentacao_id != null ? item.produto_apresentacao_id : null,
+        origem_conversao: item.origem_conversao || null,
+        fator_conversao: item.fator_conversao != null ? Number(item.fator_conversao) : null,
+        tipo_conversao: item.tipo_conversao || null,
+        confianca_conversao: item.confianca_conversao != null ? Number(item.confianca_conversao) : null,
+        tipo_origem_compra: item.tipo_origem_compra || null,
+        cfop: String(item.cfop || '').replace(/\D/g, '').slice(0, 4),
+        tipo_fiscal_item: item.tipo_fiscal_item || null,
+        tipo_fiscal_manual: Boolean(item.tipo_fiscal_manual),
+        bonificacao: Number(item.bonificacao || 0)
     };
 
+    const enriquecido = enriquecerItemFiscalCompraUi(normalizado);
     return sincronizarQuantidadesEstoqueItemCompra(
-        sincronizarPrecosCadastroItemCompra(normalizado)
+        sincronizarPrecosCadastroItemCompra(enriquecido)
     );
 }
 
@@ -1290,26 +2459,33 @@ function recalcularTotaisCompraNota() {
     $('#totalCompra').text(formatCurrency(totalNota));
 
     const diferenca = Number((totalNota - totalComponentes).toFixed(2));
+    const datasEmEdicao = compraModalDatasEmEdicao();
 
-    $('#conferencia_total_compra').remove();
+    if (!datasEmEdicao) {
+        $('#conferencia_total_compra').remove();
 
-    let classe = Math.abs(diferenca) <= 0.05 ? 'alert-success' : 'alert-warning';
-    let texto = Math.abs(diferenca) <= 0.05
-        ? 'Conferência OK: total dos componentes bate com o total da NF-e.'
-        : `Atenção: diferença entre XML e componentes: ${formatCurrency(diferenca)}. Verifique frete, desconto, IPI ou despesas.`;
+        let classe = Math.abs(diferenca) <= 0.05 ? 'alert-success' : 'alert-warning';
+        let texto = Math.abs(diferenca) <= 0.05
+            ? 'Conferência OK: total dos componentes bate com o total da NF-e.'
+            : `Atenção: diferença entre XML e componentes: ${formatCurrency(diferenca)}. Verifique frete, desconto, IPI ou despesas.`;
 
-    $('#valor_total_nota').closest('.row').after(`
-      <div class="col-12 mt-2" id="conferencia_total_compra">
-        <div class="alert ${classe} py-2 mb-0">${texto}</div>
-      </div>
-    `);
+        $('#valor_total_nota').closest('.row').after(`
+          <div class="col-12 mt-2" id="conferencia_total_compra">
+            <div class="alert ${classe} py-2 mb-0">${texto}</div>
+          </div>
+        `);
+    }
 
-    // RC8.5.0 — total da nota altera a grade (sem prompt em digitação de frete/desconto)
+    // RC8.5.0 / RC4.31.14 — total da nota: não regenerar parcelas XML importadas
     if (condicaoCompraUsaParcelasFlexiveis($('#condicao_pagamento').val())) {
-        if (!parcelasCompraEditadasManual) {
-            regenerarGradeParcelasCompra(true);
+        if (datasEmEdicao) {
+            if (!parcelasImportadasXml) {
+                agendarRegenerarGradeParcelasCompra(true);
+            }
+        } else if (parcelasImportadasXml || parcelasCompraEditadasManual) {
+            atualizarResumoValidacaoParcelasCompra();
         } else {
-            renderizarGradeParcelasCompra();
+            regenerarGradeParcelasCompra(true);
         }
     }
 }
@@ -1327,7 +2503,6 @@ function removerItemCompra(index) {
     // splice apenas na remoção explícita — nunca durante edição
     itensCompraAtual.splice(index, 1);
     renderItensCompraTabela();
-    calcularParcelasCompra();
 }
 
 function alterarAtualizarPrecoItemCompra(index, checked) {
@@ -1385,32 +2560,102 @@ function sincronizarPrecosCadastroItemCompra(item = {}) {
 }
 
 function sincronizarQuantidadesEstoqueItemCompra(item = {}) {
-    if (!itemCompraEhFracionado(item)) return item;
+    const quantidadeComercial = obterQuantidadeComercialItemCompra(item);
+    const quantidadeConvertida = obterQuantidadeConvertidaItemCompra(item);
+    item.quantidade_comercial = quantidadeComercial;
+    item.quantidade_convertida = quantidadeConvertida;
+    item.peso_total_compra = quantidadeConvertida;
+
+    if (!itemCompraEhFracionado(item) && Number(item.quantidade_por_embalagem || 0) <= 0) {
+        item.quantidade = quantidadeConvertida;
+        return item;
+    }
 
     const qtdFiscal = Number(item.quantidade_fiscal || 0);
     const qtdNaoFiscal = Number(item.quantidade_nao_fiscal || 0);
-    const totalConvertido = Number(item.peso_total_compra || 0)
-        || (Number(item.quantidade_embalagens || 0) * Number(item.quantidade_por_embalagem || 0));
-    const qtdEmbalagens = Number(item.quantidade_embalagens || 0);
     const somaInformada = qtdFiscal + qtdNaoFiscal;
 
-    let quantidadeEstoque = somaInformada > 0 ? somaInformada : totalConvertido;
-    if (qtdEmbalagens > 0 && Math.abs(quantidadeEstoque - qtdEmbalagens) < 0.001 && totalConvertido > qtdEmbalagens) {
-        quantidadeEstoque = totalConvertido;
+    let quantidadeEstoque = somaInformada > 0 ? somaInformada : quantidadeConvertida;
+    if (somaInformada > 0
+        && Math.abs(somaInformada - quantidadeComercial) < 0.001
+        && quantidadeConvertida > quantidadeComercial) {
+        quantidadeEstoque = quantidadeConvertida;
+        if (qtdNaoFiscal <= 0) item.quantidade_fiscal = quantidadeConvertida;
     }
 
-    item.quantidade_fiscal = qtdFiscal;
-    item.quantidade_nao_fiscal = qtdNaoFiscal;
+    item.quantidade_fiscal = Number(item.quantidade_fiscal || 0);
+    item.quantidade_nao_fiscal = Number(item.quantidade_nao_fiscal || 0);
     item.quantidade = quantidadeEstoque;
-    item.peso_total_compra = totalConvertido > 0 ? totalConvertido : quantidadeEstoque;
+    if (!Number(item.quantidade_embalagens) && quantidadeComercial > 0) {
+        item.quantidade_embalagens = quantidadeComercial;
+    }
     return item;
 }
 
 function renderItensCompraTabela() {
+    if (compraModalDatasEmEdicao()) {
+        agendarRenderItensCompraTabela();
+        return;
+    }
+    renderItensCompraTabelaCore();
+}
+
+function renderCfopColunaItemCompra(item, index) {
+    const trat = (typeof TratamentoFiscalItemCompra !== 'undefined')
+        ? TratamentoFiscalItemCompra.classificarTratamentoFiscalItem(item, obterTipoEntradaSelecionado())
+        : { bonificacao: Number(item.bonificacao) === 1, tooltip: '' };
+    const tooltip = escapeHtml(item._tooltip_fiscal || trat.tooltip || 'Tratamento fiscal do item');
+    const ehBonif = trat.bonificacao || Number(item.bonificacao) === 1;
+    const badge = ehBonif
+        ? `<span class="badge bg-warning text-dark mt-1" title="${tooltip}">BONIFICAÇÃO</span>`
+        : '';
+    const tipos = (typeof TratamentoFiscalItemCompra !== 'undefined')
+        ? Object.values(TratamentoFiscalItemCompra.TIPOS)
+        : Object.values(TIPOS_ENTRADA_COMPRA);
+    const rotulo = (t) => (typeof TratamentoFiscalItemCompra !== 'undefined'
+        ? TratamentoFiscalItemCompra.rotuloTipoFiscalItem(t)
+        : rotuloTipoEntradaCompra(t));
+    const tipoOpts = tipos.map((t) =>
+        `<option value="${t}"${item.tipo_fiscal_item === t ? ' selected' : ''}>${escapeHtml(rotulo(t))}</option>`
+    ).join('');
+    return `
+        <input type="text" maxlength="4" class="form-control form-control-sm mb-1"
+            value="${escapeHtml(item.cfop || '')}" placeholder="CFOP"
+            title="CFOP conforme XML da NF-e"
+            onchange="alterarCfopItemCompra(${index}, this.value)">
+        ${badge}
+        <select class="form-select form-select-sm" title="${tooltip}"
+            onchange="alterarTipoFiscalItemCompra(${index}, this.value)">
+            ${tipoOpts}
+        </select>`;
+}
+
+function alterarCfopItemCompra(index, cfop) {
+    atualizarItemCompraImutavel(index, (draft) => {
+        draft.cfop = String(cfop || '').replace(/\D/g, '').slice(0, 4);
+        draft.tipo_fiscal_manual = false;
+        draft.tipo_fiscal_item = null;
+    });
+    itensCompraAtual[index] = enriquecerItemFiscalCompraUi(clonarDadosItemCompra(itensCompraAtual[index]));
+    renderItensCompraTabelaCore();
+}
+
+function alterarTipoFiscalItemCompra(index, tipo) {
+    atualizarItemCompraImutavel(index, (draft) => {
+        draft.tipo_fiscal_item = tipo;
+        draft.tipo_fiscal_manual = true;
+    });
+    itensCompraAtual[index] = enriquecerItemFiscalCompraUi(clonarDadosItemCompra(itensCompraAtual[index]));
+    renderItensCompraTabelaCore();
+}
+
+function renderItensCompraTabelaCore() {
     const tbody = $('#itensCompraBody');
     const optionsProdutos = '<option value="">Selecione</option>' + produtosCompraList.map(p => `<option value="${p.id}">${p.nome}</option>`).join('');
-    tbody.html(itensCompraAtual.map((item, index) => `
-        <tr>
+    tbody.html(itensCompraAtual.map((item, index) => {
+        const linhaBonif = Number(item.bonificacao) === 1 ? ' class="table-warning"' : '';
+        return `
+        <tr${linhaBonif}>
             <td style="min-width:220px;">
                 <select class="form-control form-control-sm mb-1" onchange="alterarProdutoItemCompra(${index}, this.value)">
                     ${optionsProdutos.replace(`value="${item.produto_id}"`, `value="${item.produto_id}" selected`)}
@@ -1420,7 +2665,11 @@ function renderItensCompraTabela() {
             </td>
             <td style="min-width:120px;">${escapeHtml(item.codigo_barras || '')}</td>
             <td style="min-width:110px;">${item.data_validade ? escapeHtml(item.data_validade) : '<span class="text-muted">-</span>'}</td>
-            <td style="min-width:90px;">${formatarQuantidadeItemCompra(item)}</td>
+            <td style="min-width:100px;">${renderCfopColunaItemCompra(item, index)}</td>
+            <td style="min-width:90px;">
+              ${formatarQuantidadeItemCompra(item)}
+              ${renderResumoConversaoItemCompraHtml(item)}
+            </td>
             <td style="min-width:110px;">
               ${formatarPrecoCompraItem(item)}
               ${item.custo_unitario_final && Number(item.custo_unitario_final) !== Number(item.preco_unitario)
@@ -1444,10 +2693,9 @@ function renderItensCompraTabela() {
                 <button class="btn btn-sm btn-warning me-1" onclick="editarItemCompra(${index})"><i class="fas fa-edit"></i></button>
                 <button class="btn btn-sm btn-danger" onclick="removerItemCompra(${index})"><i class="fas fa-trash"></i></button>
             </td>
-        </tr>
-    `).join('') || '<tr><td colspan="9" class="text-center">Nenhum item adicionado.</td></tr>');
+        </tr>`;
+    }).join('') || '<tr><td colspan="10" class="text-center">Nenhum item adicionado.</td></tr>');
     recalcularTotaisCompraNota();
-    calcularParcelasCompra();
 }
 
 function escapeHtml(value) {
@@ -1488,17 +2736,18 @@ function miipMotorIcon(motor) {
 }
 
 function miipItemExibeSugestao(item) {
+    const sugestao = obterSugestaoMiipItemCompra(item);
     return Boolean(
         compraImportadaXml
-        && item?.miip_sugestao
-        && item.miip_sugestao.encontrado
-        && item.miip_sugestao.status === 'pendente'
-        && item.miip_sugestao.produtoId
+        && sugestao
+        && (sugestao.encontrado !== false)
+        && sugestao.status === 'pendente'
+        && extrairProdutoIdSugestaoMiip(sugestao, item)
     );
 }
 
 function renderMiipSugestaoCard(item, index) {
-    const sugestao = item.miip_sugestao;
+    const sugestao = obterSugestaoMiipItemCompra(item) || item.miip_sugestao;
     if (!sugestao) return '';
 
     if (sugestao.status === 'confirmado') {
@@ -1595,11 +2844,14 @@ function aplicarMiipImportacaoXml(data) {
             if (resultado.associadoAutomaticamente && resultado.produtoEncontrado?.id) {
                 draft.produto_id = resultado.produtoEncontrado.id;
             }
-            if (resultado.precisaConfirmacao && draft.miip_sugestao) {
-                draft.miip_sugestao = {
-                    ...clonarNestedMiipItemCompra(draft.miip_sugestao),
-                    status: 'pendente'
-                };
+            if (resultado.precisaConfirmacao) {
+                const sugestaoUi = montarSugestaoMiipCompraFromResultado(resultado)
+                    || (draft.miip_sugestao
+                        ? { ...clonarNestedMiipItemCompra(draft.miip_sugestao), status: 'pendente' }
+                        : null);
+                if (sugestaoUi) {
+                    draft.miip_sugestao = sugestaoUi;
+                }
             }
         });
     });
@@ -1668,10 +2920,19 @@ function carregarSugestoesMiipXml() {
 
 function confirmarAssociacaoMiip(index) {
     const itemSnap = clonarDadosItemCompra(itensCompraAtual[index]);
-    const sugestao = itemSnap?.miip_sugestao;
-    if (!itemSnap || !sugestao || !sugestao.produtoId) return;
+    if (!itemSnap) {
+        showNotification('Item não encontrado para confirmar associação.', 'warning');
+        return;
+    }
 
-    alterarProdutoItemCompra(index, sugestao.produtoId);
+    const sugestao = obterSugestaoMiipItemCompra(itemSnap);
+    const produtoId = extrairProdutoIdSugestaoMiip(sugestao, itemSnap);
+    if (!sugestao || !produtoId) {
+        showNotification('Não há sugestão de produto válida para confirmar.', 'warning');
+        return;
+    }
+
+    alterarProdutoItemCompra(index, produtoId);
 
     const usuario = obterUsuarioLogadoCompra();
     const fornecedorCnpj = obterCnpjCompraDigitos() || compraImportadaXml?.fornecedor_cnpj || '';
@@ -1683,7 +2944,7 @@ function confirmarAssociacaoMiip(index) {
             contentType: 'application/json',
             data: JSON.stringify({
                 confirmado: true,
-                produtoId: sugestao.produtoId,
+                produtoId,
                 fornecedorCnpj,
                 codigoFornecedor: itemSnap.codigo_fornecedor,
                 fornecedorNome: compraImportadaXml?.fornecedor || $('#fornecedor').val() || '',
@@ -1696,11 +2957,14 @@ function confirmarAssociacaoMiip(index) {
                 motivo: 'confirmacao_importacao_xml',
                 item: itemSnap
             })
+        }).fail(function () {
+            showNotification('Associação aplicada, mas o aprendizado MIIP não foi registrado.', 'warning');
         });
     }
 
     atualizarItemCompraImutavel(index, (draft) => {
-        draft.miip_sugestao = { ...clonarNestedMiipItemCompra(sugestao), status: 'confirmado' };
+        draft.miip_sugestao = { ...clonarNestedMiipItemCompra(sugestao), status: 'confirmado', produtoId };
+        draft.produto_id = produtoId;
     });
     renderItensCompraTabela();
     showNotification('Associação confirmada.', 'success');
@@ -1789,11 +3053,30 @@ function alterarProdutoItemCompra(index, produtoId) {
         draft.produto_nome = produto.nome;
         draft.codigo_barras = produto.codigo_barras || produto.codigo || '';
         draft.unidade = produto.unidade || 'UN';
-        draft.unidade_comercial = produto.unidade_comercial || 'UN';
-        draft.ncm = produto.ncm || '';
-        if (Number(produto.quantidade_por_embalagem || 0) > 0) {
-            draft.quantidade_por_embalagem = Number(produto.quantidade_por_embalagem);
+        if (produtoUsaConversaoUnidadesCompra(produto)) {
+            draft.produto_fracionado = 1;
+            draft.vendido_por_peso = 1;
         }
+        const apCompra = typeof ProdutoEmbalagensUI !== 'undefined'
+            ? ProdutoEmbalagensUI.obterApresentacaoCompraProduto(produto)
+            : null;
+        if (apCompra) {
+            draft.unidade_comercial = apCompra.unidade_comercial
+                || apCompra.tipo
+                || produto.unidade_comercial
+                || 'UN';
+            draft.quantidade_por_embalagem = Number(
+                apCompra.quantidade || apCompra.quantidade_por_embalagem || 0
+            );
+            if (apCompra.gtin) draft.codigo_barras = apCompra.gtin;
+            draft.embalagem_id = apCompra.id || null;
+        } else {
+            draft.unidade_comercial = produto.unidade_comercial || 'UN';
+            if (Number(produto.quantidade_por_embalagem || 0) > 0) {
+                draft.quantidade_por_embalagem = Number(produto.quantidade_por_embalagem);
+            }
+        }
+        draft.ncm = produto.ncm || '';
         if (!Number(draft.preco_unitario)) {
             draft.preco_unitario = Number(produto.preco_compra || 0);
         }
@@ -1804,6 +3087,21 @@ function alterarProdutoItemCompra(index, produtoId) {
         if (!Number(draft.margem_lucro)) {
             draft.margem_lucro = Number(produto.lucro_percentual || 30);
         }
+        if (isOrigemCompraCentralNfe() && !draft.distribuicao_fiscal_editada_manual) {
+            if (!Number(draft.quantidade_comercial) && Number(draft.quantidade_embalagens)) {
+                draft.quantidade_comercial = Number(draft.quantidade_embalagens);
+            }
+            const aplicado = aplicarDistribuicaoFiscalItemCentral(draft, obterTipoEntradaSelecionado());
+            draft.quantidade_comercial = aplicado.quantidade_comercial;
+            draft.quantidade_convertida = aplicado.quantidade_convertida;
+            draft.quantidade_fiscal = aplicado.quantidade_fiscal;
+            draft.quantidade_nao_fiscal = aplicado.quantidade_nao_fiscal;
+            draft.quantidade = aplicado.quantidade;
+            draft.peso_total_compra = aplicado.peso_total_compra;
+            draft.item_fiscal = aplicado.item_fiscal;
+            draft.distribuicao_fiscal_preenchida = aplicado.distribuicao_fiscal_preenchida;
+            draft.origem_compra = aplicado.origem_compra;
+        }
     });
     if (produto) {
         recalcularLinhaCompra(index, 'custo');
@@ -1812,11 +3110,19 @@ function alterarProdutoItemCompra(index, produtoId) {
 }
 
 function adicionarItemCompra() {
+    return adicionarItemCompraAsync().catch((err) => {
+        console.error('[Compras] adicionarItemCompra:', err);
+        showNotification(err.message || 'Erro ao adicionar item.', 'danger');
+    });
+}
+
+async function adicionarItemCompraAsync() {
     const produtoId = $('#produto_id_item').val();
     const descricaoLivre = ($('#codigo_barras_item').val() || '').trim();
     const produto = produtosCompraList.find(p => String(p.id) === String(produtoId));
     const fracionado = produtoUsaConversaoUnidadesCompra(produto);
     const usaEmbalagemComercial = !fracionado && produtoUsaEmbalagemComercialCompra(produto);
+    const painelEmb = fracionado || usaEmbalagemComercial;
 
     let qtds = resolverQuantidadesItemCompra(
         $('#quantidade_item').val(),
@@ -1829,90 +3135,136 @@ function adicionarItemCompra() {
     const margem = Number.isFinite(margemInput) ? margemInput : 30;
     let valorTotalEmbalagem = 0;
     let dadosEmbalagem = {};
+    let embalagemIdSelecionada = null;
 
-    if (fracionado) {
-        const conv = calcularConversaoEmbalagemCompra();
+    if (painelEmb) {
+        const conv = await simularConversaoMucCompra(true);
         if (!conv || conv.qtdTotal <= 0) {
             showNotification('Informe quantidade comprada e quantidade por embalagem.', 'warning');
             return;
         }
         if (conv.valorTotal <= 0) {
-            showNotification('Informe o valor total da compra.', 'warning');
-            $('#valor_total_fracionado_item').focus();
+            showNotification('Informe o preço de compra.', 'warning');
+            $('#preco_item').focus();
             return;
         }
 
-        const validacaoDistribuicao = validarDistribuicaoFiscalCompra(
-            qtds.quantidade_fiscal,
-            qtds.quantidade_nao_fiscal,
-            conv.qtdTotal,
-            conv.unidade
-        );
-        if (!validacaoDistribuicao.ok) {
-            showNotification(validacaoDistribuicao.mensagem, 'warning');
-            if (qtds.quantidade_fiscal <= 0) {
-                $('#quantidade_fiscal_item').focus();
-            } else {
-                $('#quantidade_nao_fiscal_item').focus();
+        if (fracionado) {
+            if (isOrigemCompraCentralNfe()
+                && (Number(qtds.quantidade_fiscal || 0) + Number(qtds.quantidade_nao_fiscal || 0)) <= 0) {
+                const dist = calcularDistribuicaoFiscalMotorItem(
+                    {
+                        quantidade: conv.qtdTotal,
+                        peso_total_compra: conv.qtdTotal,
+                        quantidade_embalagens: Number($('#quantidade_embalagens_item').val() || 0),
+                        quantidade_por_embalagem: Number($('#quantidade_por_embalagem_item').val() || 0),
+                        unidade: conv.unidade
+                    },
+                    obterTipoEntradaSelecionado()
+                );
+                if (dist.total > 0) {
+                    qtds = {
+                        quantidade_fiscal: dist.quantidade_fiscal,
+                        quantidade_nao_fiscal: dist.quantidade_nao_fiscal,
+                        quantidade: dist.total
+                    };
+                }
             }
-            return;
+            const validacaoDistribuicao = validarDistribuicaoFiscalCompra(
+                qtds.quantidade_fiscal,
+                qtds.quantidade_nao_fiscal,
+                conv.qtdTotal,
+                conv.unidade
+            );
+            if (!validacaoDistribuicao.ok) {
+                showNotification(validacaoDistribuicao.mensagem, 'warning');
+                if (qtds.quantidade_fiscal <= 0) {
+                    $('#quantidade_fiscal_item').focus();
+                } else {
+                    $('#quantidade_nao_fiscal_item').focus();
+                }
+                return;
+            }
+        } else {
+            qtds = {
+                quantidade_fiscal: conv.qtdTotal,
+                quantidade_nao_fiscal: 0,
+                quantidade: conv.qtdTotal
+            };
         }
 
         preco = conv.custoUnitario;
         valorTotalEmbalagem = conv.valorTotal;
-        dadosEmbalagem = {
-            compra_em: $('#compra_em_item').val() || '',
-            quantidade_embalagens: Number($('#quantidade_embalagens_item').val() || 0),
-            quantidade_por_embalagem: Number($('#quantidade_por_embalagem_item').val() || 0),
-            valor_total_embalagem: conv.valorTotal,
-            produto_fracionado: 1,
-            vendido_por_peso: 1,
-            peso_total_compra: conv.qtdTotal,
-            custo_por_kg: conv.custoUnitario
-        };
-    } else if (usaEmbalagemComercial) {
-        const qtdEmb = Number($('#quantidade_embalagens_item').val() || qtds.quantidade || 0);
-        const qtdPorEmb = Number(
-            $('#quantidade_por_embalagem_item').val()
-            || produto.quantidade_por_embalagem
-            || 0
-        );
-        const valorEmb = Number($('#valor_total_fracionado_item').val() || 0);
-        const motor = typeof window.MotorUnidadesMedidaCliente !== 'undefined'
-            ? window.MotorUnidadesMedidaCliente
-            : null;
-        const calc = motor
-            ? motor.calcularCompraEmbalagem({
-                quantidadeEmbalagens: qtdEmb,
-                quantidadePorEmbalagem: qtdPorEmb,
-                valorTotalEmbalagem: valorEmb > 0 ? valorEmb : (preco * qtdEmb),
-                margemPercentual: margem,
-                precoVendaUnitario: precoVendaInput
-            })
-            : calcularEmbalagemComercialLocal(qtdEmb, qtdPorEmb, valorEmb > 0 ? valorEmb : (preco * qtdEmb), margem);
 
-        if (!calc || calc.quantidadeEstoque <= 0) {
-            showNotification('Informe quantidade de embalagens e quantidade por embalagem.', 'warning');
+        const embSel = embalagensProdutoCompraAtual.find((e) => String(e.id) === String($('#embalagem_compra_item').val()))
+            || embalagensProdutoCompraAtual.find((e) => !e._acao);
+        if (usaEmbalagemComercial && embSel && Number(embSel.compra ?? 1) === 0) {
+            showNotification('Esta embalagem não está habilitada para utilização em compras.', 'warning');
             return;
         }
 
-        preco = calc.custoUnitario;
-        qtds = {
-            quantidade_fiscal: calc.quantidadeEstoque,
-            quantidade_nao_fiscal: 0,
-            quantidade: calc.quantidadeEstoque
-        };
-        valorTotalEmbalagem = calc.valorTotalEmbalagem;
+        if (embSel && !embSel.somente_compra && !String(embSel.id || '').startsWith('temp-')) {
+            try {
+                const produtoAtualizado = await aprenderUnidadeComercialAutomaticaNoProduto(produto, embSel);
+                if (produtoAtualizado && produtoAtualizado !== produto) {
+                    await carregarEmbalagensProdutoCompra(produtoAtualizado);
+                    const descricao = String(embSel.descricao || obterRotuloCompraEmAtual() || '').trim();
+                    const qtdConv = Number($('#quantidade_por_embalagem_item').val() || embSel.quantidade || 0);
+                    const opcaoPersistida = localizarOpcaoEmbalagemAprendida(descricao, qtdConv);
+                    if (opcaoPersistida?.id) {
+                        $('#embalagem_compra_item').val(String(opcaoPersistida.id));
+                        embalagemCompraSelecionadaAnterior = String(opcaoPersistida.id);
+                    }
+                }
+            } catch (aprendErr) {
+                console.warn('[Compras] aprendizagem automática:', aprendErr);
+            }
+        }
+
+        const embSelFinal = embalagensProdutoCompraAtual.find((e) => String(e.id) === String($('#embalagem_compra_item').val()))
+            || embSel;
+        embalagemIdSelecionada = embSelFinal?.embalagem_ref_id || embSelFinal?.id || null;
+        if (String(embalagemIdSelecionada || '').startsWith('unidade-')
+            || String(embalagemIdSelecionada || '').startsWith('uc-')
+            || String(embalagemIdSelecionada || '').startsWith('legado-')
+            || String(embalagemIdSelecionada || '').startsWith('unidade-base-')
+            || String(embalagemIdSelecionada || '').startsWith('temp-')) {
+            embalagemIdSelecionada = embSel?.embalagem_ref_id || null;
+        }
+        if (produto?.id && embalagemIdSelecionada) {
+            salvarUltimaEmbalagemCompraProduto(produto.id, embalagemIdSelecionada);
+        }
+
+        const muc = conv.muc || {};
+        const tipoOrigemCompra = embSelFinal?.tipo_origem_compra
+            || (String(embSelFinal?.id || '').startsWith('uc-') ? 'UNIDADE_COMERCIAL' : 'EMBALAGEM_COMERCIAL');
         dadosEmbalagem = {
-            unidade_comercial: produto.unidade_comercial || $('#compra_em_item').val() || 'PACOTE',
-            compra_em: produto.unidade_comercial || $('#compra_em_item').val() || 'PACOTE',
-            quantidade_embalagens: qtdEmb,
-            quantidade_por_embalagem: qtdPorEmb,
-            valor_total_embalagem: calc.valorTotalEmbalagem,
-            valor_embalagem_venda: calc.valorEmbalagemVenda,
-            produto_fracionado: 0,
-            vendido_por_peso: 0
+            compra_em: embSelFinal?.descricao || obterRotuloCompraEmAtual() || embSelFinal?.tipo || produto?.unidade_comercial || 'PCT',
+            unidade_comercial: embSelFinal?.unidade_comercial || embSelFinal?.tipo || produto?.unidade_comercial || obterRotuloCompraEmAtual() || 'PCT',
+            quantidade_comercial: Number($('#quantidade_embalagens_item').val() || 0),
+            quantidade_embalagens: Number($('#quantidade_embalagens_item').val() || 0),
+            quantidade_por_embalagem: Number($('#quantidade_por_embalagem_item').val() || 0),
+            quantidade_convertida: conv.qtdTotal,
+            valor_total_embalagem: conv.valorTotal,
+            embalagem_id: embalagemIdSelecionada,
+            produto_apresentacao_id: embalagemIdSelecionada,
+            tipo_origem_compra: tipoOrigemCompra,
+            origem_conversao: 'MANUAL',
+            fator_conversao: Number(muc.fatorConversao || dadosEmbalagem.quantidade_por_embalagem || 0),
+            tipo_conversao: muc.tipoConversao || 'MULTIPLICADOR',
+            confianca_conversao: Number(muc.confianca || 100),
+            produto_fracionado: fracionado ? 1 : 0,
+            vendido_por_peso: fracionado ? 1 : 0,
+            peso_total_compra: conv.qtdTotal,
+            custo_por_kg: fracionado ? conv.custoUnitario : undefined
         };
+
+        if (usaEmbalagemComercial) {
+            const valorEmbVenda = Number((precoVendaInput > 0
+                ? precoVendaInput * Number(dadosEmbalagem.quantidade_por_embalagem || 1)
+                : preco * (1 + margem / 100) * Number(dadosEmbalagem.quantidade_por_embalagem || 1)).toFixed(2));
+            dadosEmbalagem.valor_embalagem_venda = valorEmbVenda;
+        }
     } else if ((!produtoId && !descricaoLivre) || !qtds.quantidade || !preco) {
         const msgQtd = isModoEntradaF7CompraAtivo()
             ? 'Informe produto, preço e ao menos uma quantidade (fiscal ou não fiscal).'
@@ -1971,6 +3323,14 @@ function adicionarItemCompra() {
         subtotal: (fracionado || usaEmbalagemComercial) ? valorTotalEmbalagem : undefined,
         miip_sugestao: clonarNestedMiipItemCompra(itemExistente?.miip_sugestao || itemDraftCompra?.miip_sugestao),
         miip_resultado: clonarNestedMiipItemCompra(itemExistente?.miip_resultado || itemDraftCompra?.miip_resultado),
+        distribuicao_fiscal_preenchida: isOrigemCompraCentralNfe()
+            && !itemDraftCompra?.distribuicao_fiscal_editada_manual
+            && !itemExistente?.distribuicao_fiscal_editada_manual
+            ? true
+            : Boolean(itemExistente?.distribuicao_fiscal_preenchida),
+        distribuicao_fiscal_editada_manual: Boolean(itemDraftCompra?.distribuicao_fiscal_editada_manual
+            || itemExistente?.distribuicao_fiscal_editada_manual),
+        origem_compra: isOrigemCompraCentralNfe() ? ORIGEM_COMPRA.CENTRAL_NFE : ORIGEM_COMPRA.MANUAL,
         ...dadosEmbalagem
     });
 
@@ -1999,17 +3359,23 @@ function calcularEmbalagemComercialLocal(qtdEmb, qtdPorEmb, valorTotal, margem) 
 }
 
 function produtoUsaEmbalagemComercialCompra(produto) {
-    if (!produto) return false;
-    const qtd = Number(produto.quantidade_por_embalagem || 0);
-    if (!(qtd > 0)) return false;
-    // RC8.4.2 — opt-in; legado RC8.4.0 (unidade_comercial ≠ UN) permanece válido até regravar
-    if (Number(produto.compra_por_embalagem || 0) === 1) return true;
-    const uc = String(produto.unidade_comercial || 'UN').toUpperCase();
-    return uc !== 'UN';
+    return Boolean(produto && Number(produto.compra_por_embalagem || 0) === 1);
+}
+
+function atualizarRotuloBotaoItemCompra() {
+    const $btn = $('#btnAdicionarItemCompra');
+    if (!$btn.length) return;
+    if (linhaIdEditandoCompra != null || indiceEditandoCompra != null) {
+        $btn.html('<i class="fas fa-save"></i> Salvar alterações');
+    } else {
+        $btn.html('<i class="fas fa-plus"></i> Adicionar');
+    }
 }
 
 function limparFormularioItemCompra() {
     limparDraftCompra();
+    modoEntradaF7Compra = false;
+    atualizarRotuloBotaoItemCompra();
     $('#codigo_barras_item').val('');
     $('#produto_id_item').val('');
     $('#quantidade_item').val('1');
@@ -2021,11 +3387,16 @@ function limparFormularioItemCompra() {
     $('#compra_em_item').html(opcoesCompraEmbalagemHtml('Rolo'));
     $('#quantidade_embalagens_item').val('1');
     $('#quantidade_por_embalagem_item').val('');
-    $('#valor_total_fracionado_item').val('');
     $('#custo_unitario_fracionado_item').val('');
     $('#resultado_formula_conversao').text('');
-    $('#resultado_qtd_total_fracionado').text('0,000 UN');
+    $('#resultado_qtd_total_fracionado').text('0 UN');
     $('#resultado_custo_unitario_fracionado').text('R$ 0,0000');
+    $('#painelResumoConversaoMuc').addClass('d-none').html('');
+    embalagensProdutoCompraAtual = [];
+    ultimaSimulacaoMucCompra = null;
+    restaurandoEmbalagemCompraEdicao = null;
+    embalagemCompraSelecionadaAnterior = null;
+    $('#embalagem_compra_item').val('');
     $('#data_validade_item').val('');
     atualizarCamposValidadeCompra();
     atualizarPainelConversaoUnidadesCompra();
@@ -2035,6 +3406,12 @@ function limparFormularioItemCompra() {
 function calcularValorVendaItem() {
     // RC8.4.1 — formação de preço só no draft
     sincronizarDraftCompraDoFormulario();
+    if (obterModoPainelEmbalagemCompra(obterProdutoSelecionadoCompra())) {
+        const custoPreview = Number(ultimaSimulacaoMucCompra?.custoUnitario || 0);
+        if (custoPreview > 0) {
+            itemDraftCompra.preco_unitario = custoPreview;
+        }
+    }
     recalcularFormacaoPrecoDraftCompra('custo');
     $('#preco_venda_item').val(formatNumberInput(itemDraftCompra.preco_venda_sugerido));
 }
@@ -2050,22 +3427,35 @@ function editarItemCompra(index) {
     const draft = iniciarDraftCompraEdicao(index);
     if (!draft) return;
 
+    atualizarRotuloBotaoItemCompra();
+
     const temSplit = Number(draft.quantidade_nao_fiscal || 0) > 0;
     modoEntradaF7Compra = temSplit;
+    const fracionado = itemCompraEhFracionado(draft);
+    const usaEmbalagemComercial = !fracionado && (
+        draft.embalagem_id != null
+        || Number(draft.quantidade_embalagens || 0) > 0
+        || Number(draft.quantidade_por_embalagem || 0) > 0
+        || String(draft.compra_em || '').trim() !== ''
+    );
 
     $('#codigo_barras_item').val(draft.produto_nome || draft.codigo_barras || '');
     $('#produto_id_item').val(draft.produto_id || '');
-    $('#quantidade_item').val(formatNumberInput(draft.quantidade));
-    $('#quantidade_fiscal_item').val(formatNumberInput(draft.quantidade_fiscal ?? draft.quantidade));
-    $('#quantidade_nao_fiscal_item').val(formatNumberInput(draft.quantidade_nao_fiscal || 0));
+    $('#quantidade_item').val(formatQuantidadeExibicao(draft.quantidade, 3));
+    $('#quantidade_fiscal_item').val(formatQuantidadeExibicao(draft.quantidade_fiscal ?? draft.quantidade, 3));
+    $('#quantidade_nao_fiscal_item').val(formatQuantidadeExibicao(draft.quantidade_nao_fiscal || 0, 3));
+    const painelEmb = fracionado || usaEmbalagemComercial;
     $('#preco_item').val(formatNumberInput(
-        draft.preco_unitario,
-        itemCompraEhFracionado(draft) ? 4 : 2
+        painelEmb
+            ? (draft.valor_total_embalagem || draft.subtotal || 0)
+            : draft.preco_unitario,
+        painelEmb ? 2 : (fracionado ? 4 : 2)
     ));
     $('#margem_padrao_item').val(formatNumberInput(draft.margem_lucro));
     $('#preco_venda_item').val(formatNumberInput(draft.preco_venda_sugerido));
-    if (itemCompraEhFracionado(draft) || Number(draft.quantidade_por_embalagem || 0) > 0) {
-        if (itemCompraEhFracionado(draft)) modoEntradaF7Compra = true;
+
+    if (painelEmb) {
+        if (fracionado) modoEntradaF7Compra = true;
         const compraEmSalva = draft.compra_em || draft.unidade_comercial || 'Rolo';
         if (TIPOS_COMPRA_EMBALAGEM.includes(compraEmSalva)) {
             $('#compra_em_item').val(compraEmSalva);
@@ -2076,11 +3466,21 @@ function editarItemCompra(index) {
             );
         }
         $('#quantidade_embalagens_item').val(draft.quantidade_embalagens || 1);
-        $('#quantidade_por_embalagem_item').val(formatNumberInput(draft.quantidade_por_embalagem || 0, 3));
-        $('#valor_total_fracionado_item').val(formatNumberInput(draft.valor_total_embalagem || draft.subtotal || 0, 2));
+        $('#quantidade_por_embalagem_item').val(formatQuantidadeExibicao(draft.quantidade_por_embalagem || 0, 3));
+
+        if (usaEmbalagemComercial) {
+            restaurandoEmbalagemCompraEdicao = {
+                embalagem_id: draft.embalagem_id,
+                compra_em: draft.compra_em || draft.unidade_comercial,
+                quantidade_embalagens: draft.quantidade_embalagens || 1,
+                quantidade_por_embalagem: draft.quantidade_por_embalagem || 0,
+                valor_total_embalagem: draft.valor_total_embalagem || draft.subtotal || 0
+            };
+        }
     }
-    $('#data_validade_item').val(draft.data_validade || '');
+
     onProdutoSelecionado();
+    $('#data_validade_item').val(draft.data_validade || '');
     atualizarCamposQuantidadeCompra();
     $('#codigo_barras_item').focus();
 }
@@ -2124,8 +3524,10 @@ function onProdutoSelecionado() {
     const produto = obterProdutoSelecionadoCompra();
     if (produto && produtoUsaConversaoUnidadesCompra(produto)) {
         $('#margem_padrao_item').val(produto.lucro_percentual || 30);
-        $('#quantidade_fiscal_item').val('');
-        $('#quantidade_nao_fiscal_item').val('');
+        if (!linhaIdEditandoCompra && indiceEditandoCompra == null) {
+            $('#quantidade_fiscal_item').val('');
+            $('#quantidade_nao_fiscal_item').val('');
+        }
     }
 }
 
@@ -2298,10 +3700,13 @@ async function findProdutoByInputAsync(input) {
 
 function showCompraModal() {
     console.log('showCompraModal chamada - gerando modal');
+    carregarConfigBonificacaoCompra();
     itensCompraAtual = [];
     limparDraftCompra();
+    resetFinanceiroCompraModal();
     compraImportadaXml = null;
     cnpjEmitenteXmlOriginal = null;
+    origemCompraAtual = ORIGEM_COMPRA.MANUAL;
     tipoEntradaCompraAtual = TIPOS_ENTRADA_COMPRA.REVENDA;
     modoEntradaF7Compra = false;
     const hoje = new Date().toISOString().split('T')[0];
@@ -2426,6 +3831,11 @@ function showCompraModal() {
             <label class="form-check-label" for="tipo_entrada_industrializacao">Compra para Industrialização</label>
         </div>
         <div class="form-check">
+            <input class="form-check-input" type="radio" name="tipo_entrada_compra" id="tipo_entrada_bonificacao" value="BONIFICACAO" onchange="aplicarPoliticaEntradaCompra()">
+            <label class="form-check-label" for="tipo_entrada_bonificacao">Compra por Bonificação</label>
+            <small class="text-muted d-block">Padrão inicial para itens sem CFOP; cada item mantém seu CFOP do XML.</small>
+        </div>
+        <div class="form-check">
             <input class="form-check-input" type="radio" name="tipo_entrada_compra" id="tipo_entrada_uso_consumo" value="USO_CONSUMO" onchange="aplicarPoliticaEntradaCompra()">
             <label class="form-check-label" for="tipo_entrada_uso_consumo">Compra para Uso e Consumo</label>
             <small class="text-muted d-block">Registra fiscal e financeiro sem cadastrar produtos ou movimentar estoque.</small>
@@ -2476,6 +3886,12 @@ function showCompraModal() {
                                 </div>
                             </div>
 
+                            <div id="painelConteudoEmbalagensWrap" class="d-none mb-2">
+                                <div class="card border-light">
+                                    <div class="card-body py-2" id="painelConteudoEmbalagens"></div>
+                                </div>
+                            </div>
+
                             <div id="painelConversaoEmbalagem" class="d-none mb-2">
                                 <div class="card border-info">
                                     <div class="card-header bg-light py-2">
@@ -2485,26 +3901,26 @@ function showCompraModal() {
                                     <div class="card-body py-2">
                                         <div class="row g-2 align-items-end">
                                             <div class="col-md-2">
+                                                <label class="form-label" id="label_qtd_embalagens_compra">Quantidade Comprada</label>
+                                                <input type="number" step="0.001" min="0" class="form-control" id="quantidade_embalagens_item" value="1" placeholder="Ex.: 3">
+                                            </div>
+                                            <div class="col-md-3" id="embalagemCompraRow">
+                                                <label class="form-label fw-semibold">Comprar em</label>
+                                                <select class="form-control" id="embalagem_compra_item" onchange="onEmbalagemCompraSelecionada()"></select>
+                                            </div>
+                                            <div class="col-md-2 d-none" id="colCompraEmLegado">
                                                 <label class="form-label">Compra em</label>
-                                                <select class="form-control" id="compra_em_item">
+                                                <select class="form-control" id="compra_em_item" tabindex="-1" aria-hidden="true">
                                                     ${opcoesCompraEmbalagemHtml('Rolo')}
                                                 </select>
                                             </div>
-                                            <div class="col-md-2">
-                                                <label class="form-label">Quantidade Comprada</label>
-                                                <input type="number" step="0.001" min="0" class="form-control" id="quantidade_embalagens_item" value="1" placeholder="Ex.: 10">
+                                            <div class="col-md-2" id="colQtdPorEmbalagemCompra">
+                                                <label class="form-label">Quantidade por Unidade/Embalagem</label>
+                                                <input type="number" step="0.001" min="0" class="form-control" id="quantidade_por_embalagem_item" value="" placeholder="Ex.: 10">
                                             </div>
                                             <div class="col-md-2">
-                                                <label class="form-label">Quantidade por Embalagem</label>
-                                                <input type="number" step="0.001" min="0" class="form-control" id="quantidade_por_embalagem_item" value="" placeholder="Ex.: 50">
-                                            </div>
-                                            <div class="col-md-2">
-                                                <label class="form-label">Unidade de Venda</label>
+                                                <label class="form-label">Unidade de Estoque</label>
                                                 <input type="text" class="form-control" id="unidade_fracionada_item" readonly>
-                                            </div>
-                                            <div class="col-md-2">
-                                                <label class="form-label">Valor Total</label>
-                                                <input type="number" step="0.01" min="0" class="form-control" id="valor_total_fracionado_item" value="" placeholder="R$ total">
                                             </div>
                                         </div>
                                         <hr class="my-2">
@@ -2524,6 +3940,8 @@ function showCompraModal() {
                                     </div>
                                 </div>
                             </div>
+
+                            <div id="painelResumoConversaoMuc" class="d-none"></div>
 
                             <div id="painelIndicadorDistribuicaoFiscal" class="d-none mb-2">
                                 <div id="indicadorDistribuicaoFiscal" class="d-none"></div>
@@ -2546,13 +3964,10 @@ function showCompraModal() {
 
                             <div class="row g-2 align-items-end mb-2" id="linhaPrecoCompraNormal">
                                 <div class="col-md-2 campo-preco-compra-item">
-                                    <label class="form-label">Preço compra (unidade)</label>
-                                    <input type="number" step="0.0001" class="form-control" id="preco_item" oninput="calcularValorVendaItem()">
+                                    <label class="form-label" id="label_preco_compra_item">Preço compra (unidade)</label>
+                                    <input type="number" step="0.0001" class="form-control" id="preco_item" oninput="onPrecoCompraItemInput()">
                                 </div>
-                                <div class="col-md-2 d-none" id="campoCustoUnitarioFracionado">
-                                    <label class="form-label">Custo unitário (calculado)</label>
-                                    <input type="text" class="form-control" id="custo_unitario_fracionado_item" readonly>
-                                </div>
+                                <input type="hidden" id="custo_unitario_fracionado_item" value="">
                                 <div class="col-md-2">
                                     <label class="form-label">Margem %</label>
                                     <input type="number" step="0.01" class="form-control" id="margem_padrao_item" value="30" oninput="calcularValorVendaItem()">
@@ -2562,7 +3977,7 @@ function showCompraModal() {
                                     <input type="number" step="0.01" class="form-control" id="preco_venda_item" oninput="calcularMargemItem()">
                                 </div>
                                 <div class="col-md-2">
-                                    <button class="btn btn-success w-100" onclick="adicionarItemCompra()"><i class="fas fa-plus"></i> Adicionar</button>
+                                    <button type="button" class="btn btn-success w-100" id="btnAdicionarItemCompra" onclick="adicionarItemCompra()"><i class="fas fa-plus"></i> Adicionar</button>
                                 </div>
                             </div>
 
@@ -2591,6 +4006,7 @@ function showCompraModal() {
                                         <th>Produto / descrição</th>
                                         <th>Cód. barras</th>
                                         <th>Validade</th>
+                                        <th>CFOP / Fiscal</th>
                                         <th id="colunaQuantidadeCompraHeader">Qtd Fiscal</th>
                                         <th>Preço compra</th>
                                         <th>Margem %</th>
@@ -2601,7 +4017,7 @@ function showCompraModal() {
                                 </thead>
 
                                 <tbody id="itensCompraBody"></tbody>
-                                <tfoot><tr><th colspan="7" class="text-end">Total</th><th id="totalCompra">${formatCurrency(0)}</th><th></th></tr></tfoot>
+                                <tfoot><tr><th colspan="8" class="text-end">Total</th><th id="totalCompra">${formatCurrency(0)}</th><th></th></tr></tfoot>
                             </table>
                         </div>
 
@@ -2676,7 +4092,7 @@ function showCompraModal() {
                             </div>
                             <div class="col-md-2 mb-3" id="grupo_vencimento_compra">
                                 <label class="form-label">Primeiro Vencimento</label>
-                                <input type="date" class="form-control" id="data_vencimento" value="${hoje}" onchange="onParametroParcelamentoCompraAlterado()">
+                                <input type="date" class="form-control" id="data_vencimento" value="${hoje}">
                             </div>
                             <input type="hidden" id="valor_entrada" value="0">
                         </div>
@@ -2703,19 +4119,24 @@ function showCompraModal() {
     atualizarCamposQuantidadeCompra();
     atualizarCamposValidadeCompra();
     atualizarPainelConversaoUnidadesCompra();
-    $('#quantidade_embalagens_item, #quantidade_por_embalagem_item, #valor_total_fracionado_item')
+    $('#quantidade_embalagens_item, #quantidade_por_embalagem_item')
         .off('input.fracionado')
-        .on('input.fracionado', calcularConversaoEmbalagemCompra);
-    $('#compra_em_item')
+        .on('input.fracionado', () => agendarSimulacaoMucCompra());
+    $('#compra_em_item, #embalagem_compra_item')
         .off('change.fracionado')
-        .on('change.fracionado', calcularConversaoEmbalagemCompra);
+        .on('change.fracionado', () => agendarSimulacaoMucCompra());
     $('#quantidade_fiscal_item, #quantidade_nao_fiscal_item')
         .off('input.distribuicao')
-        .on('input.distribuicao', () => atualizarIndicadorDistribuicaoFiscal());
+        .on('input.distribuicao', () => {
+            if (itemDraftCompra) itemDraftCompra.distribuicao_fiscal_editada_manual = true;
+            atualizarIndicadorDistribuicaoFiscal();
+        });
     renderItensCompraTabela();
     atualizarVisibilidadePagamentoCompra();
     recalcularTotaisCompraNota();
     definirTipoEntradaCompra(TIPOS_ENTRADA_COMPRA.REVENDA, { silencioso: true });
+    vincularEventosDatasCompraModal();
+    atualizarRotuloBotaoItemCompra();
 }
 
 function saveCompra() {
@@ -2729,11 +4150,15 @@ function saveCompra() {
     }
 
     if (!entradaSimplificada) {
+        if (isOrigemCompraCentralNfe()) {
+            itensCompraAtual = itensCompraAtual.map((item) => {
+                if (!itemCompraEhFracionado(item) || item.distribuicao_fiscal_editada_manual) return item;
+                return aplicarDistribuicaoFiscalItemCentral(item, obterTipoEntradaSelecionado());
+            });
+        }
         for (const item of itensCompraAtual) {
-            if (!itemCompraEhFracionado(item)) continue;
-            const totalConvertido = Number(item.peso_total_compra || 0)
-                || (Number(item.quantidade_embalagens || 0) * Number(item.quantidade_por_embalagem || 0))
-                || Number(item.quantidade || 0);
+            if (!deveExigirValidacaoDistribuicaoFiscalItem(item)) continue;
+            const totalConvertido = obterQuantidadeConvertidaItemCompra(item);
             const validacao = validarDistribuicaoFiscalCompra(
                 item.quantidade_fiscal,
                 item.quantidade_nao_fiscal,
@@ -2778,7 +4203,7 @@ function saveCompra() {
     const diasEntre = Number.isFinite(diasEntreParcelas) ? Math.max(0, diasEntreParcelas) : 30;
 
     if (condicaoCompraUsaParcelasFlexiveis(condicaoPagamento)) {
-        if (!parcelasCompraGrade.length) {
+        if (!parcelasCompraGrade.length && !parcelasImportadasXml) {
             regenerarGradeParcelasCompra(true);
         }
         if (!$('#data_vencimento').val()) {
@@ -2867,8 +4292,10 @@ function saveCompra() {
             unidade: sincronizado.unidade,
             unidade_comercial: sincronizado.unidade_comercial || 'UN',
             ncm: sincronizado.ncm,
-            quantidade: Number(sincronizado.quantidade || 0),
-            quantidade_fiscal: Number(sincronizado.quantidade_fiscal ?? sincronizado.quantidade ?? 0),
+            quantidade: Number(sincronizado.quantidade_convertida || sincronizado.quantidade || 0),
+            quantidade_comercial: Number(sincronizado.quantidade_comercial || sincronizado.quantidade_embalagens || 0),
+            quantidade_convertida: Number(sincronizado.quantidade_convertida || sincronizado.quantidade || 0),
+            quantidade_fiscal: Number(sincronizado.quantidade_fiscal ?? sincronizado.quantidade_convertida ?? sincronizado.quantidade ?? 0),
             quantidade_nao_fiscal: Number(sincronizado.quantidade_nao_fiscal || 0),
             preco_unitario: Number(sincronizado.preco_unitario || 0),
             margem_lucro: Number(sincronizado.margem_lucro || 0),
@@ -2877,7 +4304,7 @@ function saveCompra() {
             data_validade: sincronizado.data_validade || null,
             produto_fracionado: itemCompraEhFracionado(sincronizado) ? 1 : 0,
             vendido_por_peso: itemCompraEhFracionado(sincronizado) ? 1 : 0,
-            peso_total_compra: Number(sincronizado.peso_total_compra || sincronizado.quantidade || 0),
+            peso_total_compra: Number(sincronizado.quantidade_convertida || sincronizado.peso_total_compra || sincronizado.quantidade || 0),
             custo_por_kg: Number(sincronizado.custo_por_kg || sincronizado.preco_unitario || 0),
             custo_unitario_final: Number(sincronizado.custo_unitario_final || sincronizado.preco_unitario || 0),
             compra_em: sincronizado.compra_em || '',
@@ -2885,7 +4312,17 @@ function saveCompra() {
             quantidade_por_embalagem: Number(sincronizado.quantidade_por_embalagem || 0),
             valor_total_embalagem: Number(sincronizado.valor_total_embalagem || sincronizado.subtotal || 0),
             valor_embalagem_venda: Number(sincronizado.valor_embalagem_venda || 0),
-            atualizar_preco_venda: Number(sincronizado.atualizar_preco_venda ?? 1)
+            atualizar_preco_venda: Number(sincronizado.atualizar_preco_venda ?? 1),
+            cfop: sincronizado.cfop || null,
+            tipo_fiscal_item: sincronizado.tipo_fiscal_manual ? (sincronizado.tipo_fiscal_item || null) : null,
+            bonificacao: Number(sincronizado.bonificacao || 0),
+            embalagem_id: sincronizado.embalagem_id || null,
+            produto_apresentacao_id: sincronizado.produto_apresentacao_id || sincronizado.embalagem_id || null,
+            origem_conversao: sincronizado.origem_conversao || (Number(sincronizado.quantidade_embalagens) > 0 ? 'MANUAL' : null),
+            fator_conversao: Number(sincronizado.fator_conversao || sincronizado.quantidade_por_embalagem || 0) || null,
+            tipo_conversao: sincronizado.tipo_conversao || null,
+            confianca_conversao: sincronizado.confianca_conversao != null ? Number(sincronizado.confianca_conversao) : null,
+            tipo_origem_compra: sincronizado.tipo_origem_compra || null
         };
         }),
         condicao_pagamento: condicaoPagamento,
@@ -2895,14 +4332,16 @@ function saveCompra() {
             ? (parcelasCompraGrade.length || parcelas)
             : 1,
         dias_entre_parcelas: diasEntre,
-        parcelas_detalhe: condicaoPagamento === 'prazo'
+        parcelas_detalhe: parcelasCompraGrade.length > 0
             ? parcelasCompraGrade.map((p) => ({
                 numero: p.numero,
+                documento: p.documento || null,
                 vencimento: p.vencimento,
                 valor: moedaParcelaCompra(p.valor),
                 tipo: p.tipo || 'parcela'
             }))
             : [],
+        parcelas_importadas_xml: parcelasImportadasXml ? 1 : 0,
         valor_entrada: valorEntrada,
         observacao: $('#observacao_compra').val(),
         nota_fiscal_avulsa: isNotaAvulsa ? 1 : 0,
@@ -2910,6 +4349,7 @@ function saveCompra() {
         tipo_entrada_sugerido: classificacaoEntradaAtual?.tipoEntrada || null,
         tipo_entrada_confianca: classificacaoEntradaAtual?.confianca ?? null,
         tipo_entrada_motivo: classificacaoEntradaAtual?.motivo || null,
+        origem_compra: isOrigemCompraCentralNfe() ? ORIGEM_COMPRA.CENTRAL_NFE : ORIGEM_COMPRA.MANUAL,
         xml: compraImportadaXml?.xml || null
     };
 
@@ -3075,6 +4515,7 @@ function executarGravacaoCompra(data, isUsoConsumo, isNotaAvulsa) {
     }).done(function() {
         const docCentral = centralDocumentoIdAtual;
         centralDocumentoIdAtual = null;
+        origemCompraAtual = ORIGEM_COMPRA.MANUAL;
         classificacaoEntradaAtual = null;
         $('#compraModal').modal('hide');
         showNotification(
@@ -3152,8 +4593,8 @@ function viewCompra(id) {
         `).join('') || '<tr><td colspan="4" class="text-center">Sem lançamentos financeiros.</td></tr>';
         const itensHtml = isNotaAvulsa ? '<tr><td colspan="8" class="text-center text-muted">Nota Fiscal Avulsa - sem itens</td></tr>' : (compra.itens || []).map(item => `
             <tr>
-                <td>${escapeHtml(item.produto_nome || item.descricao_produto || '-')}</td>
-                <td>${item.quantidade}</td>
+                <td>${escapeHtml(item.produto_nome || item.descricao_produto || '-')}${renderResumoConversaoItemCompraHtml(item)}</td>
+                <td>${formatarQuantidadeItemCompra(item)}</td>
                 <td>${formatCurrency(item.preco_unitario)}</td>
                 <td>${item.margem_lucro || 30}%</td>
                 <td>${formatCurrency(item.preco_venda_sugerido || 0)}</td>
@@ -3370,6 +4811,7 @@ function abrirCompraDesdeCentralEntradas(payload) {
     const payloadIsolado = clonarDadosItemCompra(payload);
     centralDocumentoIdAtual = payloadIsolado.documentoId || null;
     showCompraModal();
+    origemCompraAtual = ORIGEM_COMPRA.CENTRAL_NFE;
     finalizarImportacaoXmlCompra(payloadIsolado.dadosCompra);
 }
 
@@ -3400,6 +4842,71 @@ function consumirPendenciaCompraCentral() {
     }
 }
 
+function normalizarGradeParcelasXmlCompra(lista) {
+    if (!Array.isArray(lista)) return [];
+    return lista.map((p, idx) => ({
+        numero: Number(p.numero) || (idx + 1),
+        vencimento: String(p.vencimento || p.dVenc || '').slice(0, 10),
+        valor: moedaParcelaCompra(p.valor ?? p.vDup),
+        tipo: p.tipo || 'parcela',
+        documento: p.documento != null ? String(p.documento) : (p.nDup != null ? String(p.nDup) : null)
+    })).filter((p) => p.vencimento && p.valor >= 0);
+}
+
+/** RC4.31.14 — carrega financeiro do payload XML antes de renderizar itens */
+function aplicarFinanceiroImportadoCompra(data = {}) {
+    const condicao = data.condicao_pagamento === 'prazo' ? 'prazo' : 'avista';
+    $('#condicao_pagamento').val(condicao);
+
+    const forma = data.forma_pagamento || '';
+    if (forma) {
+        const $fp = $('#forma_pagamento');
+        if ($fp.find(`option[value="${forma}"]`).length === 0) {
+            $fp.append(`<option value="${forma}">${rotuloFormaPagamento(forma)}</option>`);
+        }
+        $fp.val(forma);
+    }
+
+    parcelasCompraEditadasManual = false;
+    parcelasImportadasXml = false;
+
+    let gradeXml = normalizarGradeParcelasXmlCompra(data.parcelas_detalhe);
+    if (!gradeXml.length && Array.isArray(data.duplicatas) && data.duplicatas.length) {
+        gradeXml = normalizarGradeParcelasXmlCompra(data.duplicatas);
+    }
+
+    if (condicao === 'prazo' && gradeXml.length > 0) {
+        $('#parcelas').val(gradeXml.length).prop('disabled', false);
+        $('#dias_entre_parcelas').prop('disabled', false);
+        if (data.data_vencimento) {
+            $('#data_vencimento').val(String(data.data_vencimento).slice(0, 10));
+        } else if (gradeXml[0]?.vencimento) {
+            $('#data_vencimento').val(String(gradeXml[0].vencimento).slice(0, 10));
+        }
+        parcelasCompraGrade = gradeXml;
+        parcelasCompraEditadasManual = true;
+        parcelasImportadasXml = true;
+    } else {
+        $('#parcelas').val(1).prop('disabled', true);
+        $('#dias_entre_parcelas').val(0).prop('disabled', true);
+        parcelasCompraGrade = [];
+        parcelasCompraEditadasManual = false;
+        parcelasImportadasXml = false;
+    }
+
+    atualizarVisibilidadePagamentoCompra();
+    if (parcelasCompraGrade.length) {
+        renderizarGradeParcelasCompra();
+    }
+}
+
+function resetFinanceiroCompraModal() {
+    parcelasCompraGrade = [];
+    parcelasCompraEditadasManual = false;
+    parcelasImportadasXml = false;
+    $('#parcelas_detalhes').html('');
+}
+
 function preencherFormularioCompra(dataBruto) {
     const data = clonarDadosItemCompra(dataBruto) || {};
     $('#data_emissao').val(data.data_emissao || $('#data_compra').val());
@@ -3423,53 +4930,18 @@ function preencherFormularioCompra(dataBruto) {
     $('#valor_ipi').val(formatNumberInput(data.valor_ipi || 0));
     $('#valor_total_nota').val(formatNumberInput(data.valor_total_nota || 0));
 
-    // Itens — cada linha com estado independente (deep clone via normalize + linha_id)
+    // RC4.31.14 — financeiro antes dos itens (evita sobrescrita no render)
+    aplicarFinanceiroImportadoCompra(data);
+
     limparDraftCompra();
-    itensCompraAtual = (data.itens || []).map((item) => normalizeItemCompra(clonarDadosItemCompra(item)));
+    const tipoEntrada = tipoEntradaCompraAtual || obterTipoEntradaSelecionado();
+    itensCompraAtual = aplicarDistribuicaoFiscalItensCentral(
+        (data.itens || []).map((item) => normalizeItemCompra(
+            enriquecerItemFiscalCompraUi(clonarDadosItemCompra(item))
+        )),
+        tipoEntrada
+    );
     renderItensCompraTabela();
-
-    // RC COMPRAS 5.4.1 — pagamento e parcelas do XML
-    const condicao = data.condicao_pagamento === 'prazo' ? 'prazo' : 'avista';
-    $('#condicao_pagamento').val(condicao);
-
-    const forma = data.forma_pagamento || '';
-    if (forma) {
-        const $fp = $('#forma_pagamento');
-        if ($fp.find(`option[value="${forma}"]`).length === 0) {
-            $fp.append(`<option value="${forma}">${rotuloFormaPagamento(forma)}</option>`);
-        }
-        $fp.val(forma);
-    }
-
-    parcelasCompraEditadasManual = false;
-    const gradeXml = Array.isArray(data.parcelas_detalhe) ? data.parcelas_detalhe : [];
-    if (condicao === 'prazo' && gradeXml.length > 0) {
-        $('#parcelas').val(gradeXml.length).prop('disabled', false);
-        $('#dias_entre_parcelas').prop('disabled', false);
-        if (data.data_vencimento) {
-            $('#data_vencimento').val(String(data.data_vencimento).slice(0, 10));
-        } else if (gradeXml[0]?.vencimento) {
-            $('#data_vencimento').val(String(gradeXml[0].vencimento).slice(0, 10));
-        }
-        parcelasCompraGrade = gradeXml.map((p, idx) => ({
-            numero: Number(p.numero) || (idx + 1),
-            vencimento: String(p.vencimento || '').slice(0, 10),
-            valor: moedaParcelaCompra(p.valor),
-            tipo: p.tipo || 'parcela',
-            documento: p.documento || null
-        }));
-        parcelasCompraEditadasManual = true;
-    } else {
-        $('#parcelas').val(1).prop('disabled', true);
-        $('#dias_entre_parcelas').val(0).prop('disabled', true);
-        parcelasCompraGrade = [];
-        parcelasCompraEditadasManual = false;
-    }
-
-    atualizarVisibilidadePagamentoCompra();
-    if (condicao === 'prazo' && parcelasCompraGrade.length) {
-        renderizarGradeParcelasCompra();
-    }
     recalcularTotaisCompraNota();
 }
 

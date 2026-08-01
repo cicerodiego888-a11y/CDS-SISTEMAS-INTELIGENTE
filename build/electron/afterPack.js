@@ -7,6 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const { compararRepoComAsar, lerManifesto } = require('../../electron-integrity');
+const { aplicarIconeExeWindows } = require('./aplicar-icone-windows');
 
 exports.default = async function afterPack(context) {
   const root = path.join(__dirname, '..', '..');
@@ -42,4 +43,15 @@ exports.default = async function afterPack(context) {
   }
 
   console.log('[RC3.16.6][afterPack] OK —', cmp.quantidadeValidada, 'arquivo(s)', cmp.porCamada);
+
+  if (context.electronPlatformName === 'win32') {
+    const productFilename = context.packager?.appInfo?.productFilename
+      || context.packager?.config?.productName
+      || 'CDS ERP';
+    try {
+      await aplicarIconeExeWindows(context.appOutDir, productFilename, root);
+    } catch (iconeErr) {
+      console.warn('[RC3.16.6][afterPack] aviso ícone exe:', iconeErr.message);
+    }
+  }
 };
