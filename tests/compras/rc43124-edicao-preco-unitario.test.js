@@ -48,19 +48,27 @@ function itemUsaModoPrecoEmbalagemCompra(item = {}, produto = null) {
   return itemCompraEhFracionado(item) || itemUsaEmbalagemComercial(item, produto);
 }
 
+function obterPrecoUnitarioComercialItemCompra(item = {}) {
+  const salvo = Number(item.preco_unitario_comercial || 0);
+  if (salvo > 0) return Number(salvo.toFixed(4));
+  let qtd = Number(item.quantidade_embalagens || item.quantidade_comercial || 0);
+  const total = Number(item.valor_total_embalagem || 0);
+  if (!(qtd > 0)) {
+    const fator = Number(item.quantidade_por_embalagem || item.fator_conversao || 0);
+    const convertida = Number(item.quantidade_convertida || item.quantidade || 0);
+    if (fator > 0 && convertida > 0) qtd = convertida / fator;
+  }
+  if (total > 0 && qtd > 0) return Number((total / qtd).toFixed(4));
+  return 0;
+}
+
 function obterPrecoCampoFormularioEdicaoItem(draft = {}, produto = null) {
   const usaModoEmb = itemUsaModoPrecoEmbalagemCompra(draft, produto);
   if (!usaModoEmb) {
     return { valor: Number(draft.preco_unitario || 0), modoEmbalagem: false };
   }
-  const totalEmb = Number(draft.valor_total_embalagem || 0);
-  if (totalEmb > 0) return { valor: totalEmb, modoEmbalagem: true };
-  const unit = Number(draft.preco_unitario || 0);
-  const convertida = Number(draft.quantidade_convertida || draft.quantidade || 0);
-  if (unit > 0 && convertida > 0) {
-    return { valor: Number((unit * convertida).toFixed(2)), modoEmbalagem: true };
-  }
-  return { valor: 0, modoEmbalagem: true };
+  // RC4.31.28 — campo = unitário comercial (não o total)
+  return { valor: obterPrecoUnitarioComercialItemCompra(draft), modoEmbalagem: true };
 }
 
 let ok = 0;
@@ -106,7 +114,8 @@ test('Produto com compra_por_embalagem entra em modo embalagem', () => {
   const item = { preco_unitario: 2, valor_total_embalagem: 48, quantidade_embalagens: 2 };
   const produto = { compra_por_embalagem: 1 };
   assert.strictEqual(itemUsaEmbalagemComercial(item, produto), true);
-  assert.strictEqual(obterPrecoCampoFormularioEdicaoItem(item, produto).valor, 48);
+  // RC4.31.28 — 48 / 2 = 24 (unitário comercial)
+  assert.strictEqual(obterPrecoCampoFormularioEdicaoItem(item, produto).valor, 24);
 });
 
 test('tipo_origem_compra EMBALAGEM_COMERCIAL ativa modo', () => {
@@ -129,12 +138,14 @@ test('embalagem_id válido ativa modo; temp-/uc- não', () => {
   assert.strictEqual(itemUsaEmbalagemComercial({ embalagem_id: 'uc-nova' }), false);
 });
 
-test('Fracionado usa modo preço embalagem (total), sem subtotal como fallback obrigatório', () => {
+test('Fracionado usa modo preço embalagem (unitário comercial), sem subtotal como fallback', () => {
   const item = {
     produto_fracionado: 1,
     preco_unitario: 2.665,
     quantidade: 6,
     quantidade_convertida: 6,
+    quantidade_embalagens: 1,
+    quantidade_por_embalagem: 6,
     valor_total_embalagem: 15.99,
     subtotal: 15.99
   };

@@ -12,7 +12,7 @@ const ROOT = path.join(__dirname, '../..');
 const comprasJs = fs.readFileSync(path.join(ROOT, 'frontend/erp/js/compras.js'), 'utf8');
 const produtosRota = fs.readFileSync(path.join(ROOT, 'backend/rotas/produtos.js'), 'utf8');
 
-const MARGEM_PADRAO_FALLBACK_COMPRA = 30;
+const MARGEM_PADRAO_FALLBACK_COMPRA = 35;
 const ORIGEM = {
   ULTIMA_COMPRA: 'ultima_compra',
   CADASTRO: 'cadastro',
@@ -41,9 +41,12 @@ function extrairMargemCadastradaProduto(produto) {
 
 function resolverDadosComerciaisProdutoCompra(produto, ultimaCompra = null) {
   const cadastro = extrairMargemCadastradaProduto(produto);
+  const margem = cadastro.margem;
+  const origemMargem = cadastro.fallback ? ORIGEM.PADRAO : ORIGEM.CADASTRO;
   const precoCadastro = Number(produto?.preco_compra || 0);
   const vendaCadastro = Number(produto?.preco_venda || 0);
-
+  let preco = precoCadastro;
+  let atualizarPreco = 1;
   if (ultimaCompra && typeof ultimaCompra === 'object') {
     const precoHist = Number(
       ultimaCompra.custo
@@ -51,55 +54,19 @@ function resolverDadosComerciaisProdutoCompra(produto, ultimaCompra = null) {
       ?? ultimaCompra.preco_unitario
       ?? 0
     );
-    const margemRaw = ultimaCompra.margem_lucro;
-    const temMargemHist = margemRaw !== undefined && margemRaw !== null && margemRaw !== ''
-      && Number.isFinite(Number(margemRaw));
-    const margem = temMargemHist ? Number(margemRaw) : cadastro.margem;
-    const vendaHist = Number(ultimaCompra.preco_venda_sugerido || 0);
-    const preco = precoHist > 0 ? precoHist : precoCadastro;
-    const venda = vendaHist > 0
-      ? vendaHist
-      : (vendaCadastro > 0
-        ? vendaCadastro
-        : (preco > 0 ? Number((preco * (1 + margem / 100)).toFixed(2)) : 0));
-    const usouHistorico = precoHist > 0 || temMargemHist || vendaHist > 0;
-    return {
-      preco_unitario: preco,
-      margem_lucro: margem,
-      preco_venda_sugerido: venda,
-      atualizar_preco_venda: Number(ultimaCompra.atualizar_preco_venda ?? 1) === 0 ? 0 : 1,
-      origem: usouHistorico
-        ? ORIGEM.ULTIMA_COMPRA
-        : (cadastro.fallback ? ORIGEM.PADRAO : ORIGEM.CADASTRO),
-      fallback: !temMargemHist && cadastro.fallback
-    };
+    if (precoHist > 0) preco = precoHist;
+    atualizarPreco = Number(ultimaCompra.atualizar_preco_venda ?? 1) === 0 ? 0 : 1;
   }
-
-  if (!cadastro.fallback) {
-    const venda = vendaCadastro > 0
-      ? vendaCadastro
-      : (precoCadastro > 0
-        ? Number((precoCadastro * (1 + cadastro.margem / 100)).toFixed(2))
-        : 0);
-    return {
-      preco_unitario: precoCadastro,
-      margem_lucro: cadastro.margem,
-      preco_venda_sugerido: venda,
-      atualizar_preco_venda: 1,
-      origem: ORIGEM.CADASTRO,
-      fallback: false
-    };
-  }
-
+  const venda = preco > 0
+    ? Number((preco * (1 + margem / 100)).toFixed(2))
+    : (vendaCadastro > 0 ? vendaCadastro : 0);
   return {
-    preco_unitario: precoCadastro,
-    margem_lucro: MARGEM_PADRAO_FALLBACK_COMPRA,
-    preco_venda_sugerido: precoCadastro > 0
-      ? Number((precoCadastro * 1.3).toFixed(2))
-      : vendaCadastro,
-    atualizar_preco_venda: 1,
-    origem: ORIGEM.PADRAO,
-    fallback: true
+    preco_unitario: preco,
+    margem_lucro: margem,
+    preco_venda_sugerido: venda,
+    atualizar_preco_venda: atualizarPreco,
+    origem: origemMargem,
+    fallback: cadastro.fallback
   };
 }
 
@@ -133,7 +100,7 @@ test('API ultimas-compras retorna margem e preço de venda', () => {
   assert.match(produtosRota, /ci\.atualizar_preco_venda AS atualizar_preco_venda/);
 });
 
-test('Prioridade 1 — última compra (margem 18%, preço 10.09)', () => {
+test('Prioridade 1 — última compra define preço; margem vem do cadastro', () => {
   const produto = { preco_compra: 9, lucro_percentual: 40, preco_venda: 12 };
   const ultima = {
     custo: 10.09,
@@ -142,10 +109,10 @@ test('Prioridade 1 — última compra (margem 18%, preço 10.09)', () => {
     atualizar_preco_venda: 1
   };
   const r = resolverDadosComerciaisProdutoCompra(produto, ultima);
-  assert.strictEqual(r.origem, ORIGEM.ULTIMA_COMPRA);
+  assert.strictEqual(r.origem, ORIGEM.CADASTRO);
   assert.strictEqual(r.preco_unitario, 10.09);
-  assert.strictEqual(r.margem_lucro, 18);
-  assert.strictEqual(r.preco_venda_sugerido, 11.91);
+  assert.strictEqual(r.margem_lucro, 40);
+  assert.strictEqual(r.preco_venda_sugerido, Number((10.09 * 1.4).toFixed(2)));
 });
 
 test('Prioridade 2 — sem histórico usa cadastro (28%)', () => {
@@ -156,15 +123,15 @@ test('Prioridade 2 — sem histórico usa cadastro (28%)', () => {
   assert.strictEqual(r.fallback, false);
 });
 
-test('Prioridade 3 — sem histórico nem cadastro → 30%', () => {
+test('Prioridade 3 — sem histórico nem cadastro → 35%', () => {
   const produto = { preco_compra: 10, nome: 'Novo' };
   const r = resolverDadosComerciaisProdutoCompra(produto, null);
   assert.strictEqual(r.origem, ORIGEM.PADRAO);
-  assert.strictEqual(r.margem_lucro, 30);
+  assert.strictEqual(r.margem_lucro, 35);
   assert.strictEqual(r.fallback, true);
 });
 
-test('Produto recém-cadastrado com margem no cadastro não usa 30%', () => {
+test('Produto recém-cadastrado com margem no cadastro não usa 35%', () => {
   const produto = { preco_compra: 5, lucro_percentual: 45 };
   const r = resolverDadosComerciaisProdutoCompra(produto, null);
   assert.strictEqual(r.margem_lucro, 45);
@@ -174,7 +141,7 @@ test('Produto recém-cadastrado com margem no cadastro não usa 30%', () => {
 test('Indicador Base: ✓ Última compra / Cadastro / Padrão', () => {
   assert.match(comprasJs, /Base: ✓ Última compra/);
   assert.match(comprasJs, /Base: ✓ Cadastro do produto/);
-  assert.match(comprasJs, /Base: ✓ Padrão \(30%\)/);
+  assert.match(comprasJs, /Base: ✓ Padrão \(35%\)/);
 });
 
 test('onProdutoSelecionado usa aplicarDadosComerciaisProdutoFormularioCompra', () => {

@@ -11,7 +11,7 @@ const path = require('path');
 const ROOT = path.join(__dirname, '../..');
 const comprasJs = fs.readFileSync(path.join(ROOT, 'frontend/erp/js/compras.js'), 'utf8');
 
-const MARGEM_PADRAO_FALLBACK_COMPRA = 30;
+const MARGEM_PADRAO_FALLBACK_COMPRA = 35;
 
 function extrairMargemCadastradaProduto(produto) {
   if (!produto || typeof produto !== 'object') {
@@ -59,7 +59,7 @@ console.log('\n=== RC4.31.22 — Margem Cadastrada do Produto ===\n');
 
 test('Helper extrairMargemCadastradaProduto existe no frontend', () => {
   assert.match(comprasJs, /function extrairMargemCadastradaProduto/);
-  assert.match(comprasJs, /MARGEM_PADRAO_FALLBACK_COMPRA = 30/);
+  assert.match(comprasJs, /MARGEM_PADRAO_FALLBACK_COMPRA = 35/);
   assert.match(comprasJs, /function aplicarDadosComerciaisProdutoFormularioCompra|function aplicarMargemProdutoFormularioCompra/);
 });
 
@@ -93,9 +93,9 @@ test('Produto com margem 0% (válida — não cai no fallback)', () => {
   assert.strictEqual(r.fallback, false);
 });
 
-test('Produto sem margem → fallback 30%', () => {
+test('Produto sem margem → fallback 35%', () => {
   const r = extrairMargemCadastradaProduto({ nome: 'Sem margem' });
-  assert.strictEqual(r.margem, 30);
+  assert.strictEqual(r.margem, 35);
   assert.strictEqual(r.fallback, true);
 });
 
@@ -126,7 +126,7 @@ test('alterarProdutoItemCompra aplica margem do cadastro', () => {
 
 test('adicionarItemCompraAsync usa form → cadastro → fallback', () => {
   assert.match(comprasJs, /resolverDadosComerciaisProdutoCompra\(produto,\s*ultima\)\.margem_lucro/);
-  assert.match(comprasJs, /RC4\.31\.25 — form → última compra\/cadastro já aplicados no form → fallback/);
+  assert.match(comprasJs, /RC4\.31\.26 — form \(manual\/cadastro\/35%\) → resolver → fallback 35%/);
 });
 
 test('onProdutoSelecionado / onProdutoInput / onProdutoKeyDown sem || 30', () => {

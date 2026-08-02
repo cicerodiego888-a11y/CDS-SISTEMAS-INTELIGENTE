@@ -195,14 +195,41 @@ function sincronizarDraftCompraDoFormulario(extras = {}) {
     draft.quantidade = Number($('#quantidade_item').val() || draft.quantidade || 0);
     draft.quantidade_fiscal = Number($('#quantidade_fiscal_item').val() || draft.quantidade_fiscal || 0);
     draft.quantidade_nao_fiscal = Number($('#quantidade_nao_fiscal_item').val() || draft.quantidade_nao_fiscal || 0);
-    draft.preco_unitario = Number($('#preco_item').val() || draft.preco_unitario || 0);
     draft.margem_lucro = Number($('#margem_padrao_item').val() || draft.margem_lucro || 0);
     draft.preco_venda_sugerido = Number($('#preco_venda_item').val() || draft.preco_venda_sugerido || 0);
     draft.data_validade = $('#data_validade_item').val() || null;
     draft.compra_em = $('#compra_em_item').val() || draft.compra_em || '';
     draft.quantidade_embalagens = Number($('#quantidade_embalagens_item').val() || draft.quantidade_embalagens || 0);
     draft.quantidade_por_embalagem = Number($('#quantidade_por_embalagem_item').val() || draft.quantidade_por_embalagem || 0);
-    draft.valor_total_embalagem = Number(obterValorTotalCompraMuc() || draft.valor_total_embalagem || 0);
+
+    // RC4.31.29 — no MUC, #preco_item é unitário comercial; não sobrescrever preco_unitario (custo/MT)
+    if (obterModoPainelEmbalagemCompra(obterProdutoSelecionadoCompra())) {
+        const comercialForm = obterPrecoUnitarioComercialFormularioMuc();
+        if (comercialForm > 0) {
+            draft.preco_unitario_comercial = comercialForm;
+        }
+        draft.valor_total_embalagem = Number(
+            obterValorTotalCompraMuc() || draft.valor_total_embalagem || 0
+        );
+        const custoMuc = numeroPositivoCompra(ultimaSimulacaoMucCompra?.custoUnitario);
+        if (custoMuc != null) {
+            draft.preco_unitario = custoMuc;
+        } else if (!(numeroPositivoCompra(draft.preco_unitario) != null)) {
+            const rawPreco = $('#preco_item').val();
+            const nPreco = rawPreco === '' || rawPreco == null ? null : Number(rawPreco);
+            if (Number.isFinite(nPreco) && nPreco > 0) {
+                draft.preco_unitario = nPreco;
+            }
+        }
+    } else {
+        const rawPreco = $('#preco_item').val();
+        if (rawPreco !== '' && rawPreco != null) {
+            const nPreco = Number(rawPreco);
+            if (Number.isFinite(nPreco) && nPreco > 0) {
+                draft.preco_unitario = nPreco;
+            }
+        }
+    }
     Object.assign(draft, extras);
     return draft;
 }
@@ -244,8 +271,8 @@ const ORIGEM_COMPRA = Object.freeze({
     CENTRAL_NFE: 'CENTRAL_NFE'
 });
 
-/** RC4.31.22/25 — fallback apenas quando não há histórico nem margem cadastrada */
-const MARGEM_PADRAO_FALLBACK_COMPRA = 30;
+/** RC4.31.26 — fallback do lançamento quando não há margem cadastrada (não usar 30%) */
+const MARGEM_PADRAO_FALLBACK_COMPRA = 35;
 
 const ORIGEM_BASE_COMERCIAL_COMPRA = Object.freeze({
     ULTIMA_COMPRA: 'ultima_compra',
@@ -254,9 +281,22 @@ const ORIGEM_BASE_COMERCIAL_COMPRA = Object.freeze({
     ITEM: 'item'
 });
 
+/** RC4.31.27 — origem do cadastro de produto aberto a partir de Compras */
+const ORIGEM_CADASTRO_PRODUTO = Object.freeze({
+    COMPRA: 'COMPRA'
+});
+
 /** Cache em memória: produtoId → última compra (ou null) */
 const cacheUltimaCompraProduto = Object.create(null);
 let seqAplicacaoComercialCompra = 0;
+/** RC4.31.26 — operador alterou Margem % manualmente no formulário */
+let margemInformadaManualCompra = false;
+/** RC4.31.26 — índice da linha destacada como próximo lançamento */
+let indiceProximoDestaqueCompra = null;
+/** RC4.31.27 — 'COMPRA' enquanto o cadastro de produto está aberto a partir do lançamento */
+let origemCadastroProduto = null;
+/** RC4.31.27 — contexto do lançamento (não clona/reseta a compra) */
+let contextoCadastroProdutoCompra = null;
 
 /**
  * RC4.31.22 — lê margem oficial do cadastro (nunca força 30 se existir valor definido, inclusive 0).
@@ -296,12 +336,17 @@ function rotuloOrigemBaseComercialCompra(origem) {
         case ORIGEM_BASE_COMERCIAL_COMPRA.CADASTRO:
             return 'Base: ✓ Cadastro do produto';
         case ORIGEM_BASE_COMERCIAL_COMPRA.PADRAO:
-            return 'Base: ✓ Padrão (30%)';
+            return 'Base: ✓ Padrão (35%)';
         case ORIGEM_BASE_COMERCIAL_COMPRA.ITEM:
             return 'Base: ✓ Valores do item';
         default:
             return '';
     }
+}
+
+function marcarMargemManualCompra() {
+    margemInformadaManualCompra = true;
+    calcularValorVendaItem();
 }
 
 function atualizarIndicadorBaseComercialCompra(origem) {
@@ -323,12 +368,21 @@ function atualizarIndicadorMargemPadraoCompra(usarFallback) {
 }
 
 /**
- * RC4.31.25 — prioridade: 1) última compra  2) cadastro  3) padrão 30%.
+ * RC4.31.26 — margem do lançamento: cadastro → padrão 35%.
+ * Preço unitário ainda pode vir da última compra (RC4.31.25); a margem não.
  */
 function resolverDadosComerciaisProdutoCompra(produto, ultimaCompra = null) {
     const cadastro = extrairMargemCadastradaProduto(produto);
+    const margem = cadastro.margem;
+    const origemMargem = cadastro.fallback
+        ? ORIGEM_BASE_COMERCIAL_COMPRA.PADRAO
+        : ORIGEM_BASE_COMERCIAL_COMPRA.CADASTRO;
     const precoCadastro = Number(produto?.preco_compra || 0);
     const vendaCadastro = Number(produto?.preco_venda || 0);
+
+    let preco = precoCadastro;
+    let atualizarPreco = 1;
+    let usouPrecoHistorico = false;
 
     if (ultimaCompra && typeof ultimaCompra === 'object') {
         const precoHist = Number(
@@ -337,58 +391,27 @@ function resolverDadosComerciaisProdutoCompra(produto, ultimaCompra = null) {
             ?? ultimaCompra.preco_unitario
             ?? 0
         );
-        const margemRaw = ultimaCompra.margem_lucro;
-        const temMargemHist = margemRaw !== undefined && margemRaw !== null && margemRaw !== ''
-            && Number.isFinite(Number(margemRaw));
-        const margem = temMargemHist ? Number(margemRaw) : cadastro.margem;
-        const vendaHist = Number(ultimaCompra.preco_venda_sugerido || 0);
-        const preco = precoHist > 0 ? precoHist : precoCadastro;
-        const venda = vendaHist > 0
-            ? vendaHist
-            : (vendaCadastro > 0
-                ? vendaCadastro
-                : (preco > 0 ? Number((preco * (1 + margem / 100)).toFixed(2)) : 0));
-        const usouHistorico = precoHist > 0 || temMargemHist || vendaHist > 0;
-        return {
-            preco_unitario: preco,
-            margem_lucro: margem,
-            preco_venda_sugerido: venda,
-            atualizar_preco_venda: Number(ultimaCompra.atualizar_preco_venda ?? 1) === 0 ? 0 : 1,
-            origem: usouHistorico
-                ? ORIGEM_BASE_COMERCIAL_COMPRA.ULTIMA_COMPRA
-                : (cadastro.fallback
-                    ? ORIGEM_BASE_COMERCIAL_COMPRA.PADRAO
-                    : ORIGEM_BASE_COMERCIAL_COMPRA.CADASTRO),
-            fallback: !temMargemHist && cadastro.fallback
-        };
+        if (precoHist > 0) {
+            preco = precoHist;
+            usouPrecoHistorico = true;
+        }
+        atualizarPreco = Number(ultimaCompra.atualizar_preco_venda ?? 1) === 0 ? 0 : 1;
     }
 
-    if (!cadastro.fallback) {
-        const venda = vendaCadastro > 0
-            ? vendaCadastro
-            : (precoCadastro > 0
-                ? Number((precoCadastro * (1 + cadastro.margem / 100)).toFixed(2))
-                : 0);
-        return {
-            preco_unitario: precoCadastro,
-            margem_lucro: cadastro.margem,
-            preco_venda_sugerido: venda,
-            atualizar_preco_venda: 1,
-            origem: ORIGEM_BASE_COMERCIAL_COMPRA.CADASTRO,
-            fallback: false
-        };
-    }
+    const venda = preco > 0
+        ? Number((preco * (1 + margem / 100)).toFixed(2))
+        : (vendaCadastro > 0 ? vendaCadastro : 0);
 
-    const vendaPadrao = precoCadastro > 0
-        ? Number((precoCadastro * (1 + MARGEM_PADRAO_FALLBACK_COMPRA / 100)).toFixed(2))
-        : vendaCadastro;
     return {
-        preco_unitario: precoCadastro,
-        margem_lucro: MARGEM_PADRAO_FALLBACK_COMPRA,
-        preco_venda_sugerido: vendaPadrao,
-        atualizar_preco_venda: 1,
-        origem: ORIGEM_BASE_COMERCIAL_COMPRA.PADRAO,
-        fallback: true
+        preco_unitario: preco,
+        margem_lucro: margem,
+        preco_venda_sugerido: venda,
+        atualizar_preco_venda: atualizarPreco,
+        origem: origemMargem,
+        origem_preco: usouPrecoHistorico
+            ? ORIGEM_BASE_COMERCIAL_COMPRA.ULTIMA_COMPRA
+            : origemMargem,
+        fallback: cadastro.fallback
     };
 }
 
@@ -444,6 +467,8 @@ async function aplicarDadosComerciaisProdutoFormularioCompra(produto, opcoes = {
 
     const dados = resolverDadosComerciaisProdutoCompra(produto, ultima);
     const modoEmb = obterModoPainelEmbalagemCompra(produto);
+    const preservarMargemManual = margemInformadaManualCompra
+        && String($('#margem_padrao_item').val() ?? '').trim() !== '';
 
     if (!modoEmb && dados.preco_unitario > 0) {
         $('#preco_item').val(formatNumberInput(
@@ -451,35 +476,33 @@ async function aplicarDadosComerciaisProdutoFormularioCompra(produto, opcoes = {
             produtoUsaConversaoUnidadesCompra(produto) ? 4 : 2
         ));
     }
-    $('#margem_padrao_item').val(formatNumberInput(dados.margem_lucro));
-    if (dados.preco_venda_sugerido > 0) {
-        $('#preco_venda_item').val(formatNumberInput(dados.preco_venda_sugerido));
+
+    if (!preservarMargemManual) {
+        $('#margem_padrao_item').val(formatNumberInput(dados.margem_lucro));
+        atualizarIndicadorBaseComercialCompra(dados.origem);
+        if (dados.preco_venda_sugerido > 0) {
+            $('#preco_venda_item').val(formatNumberInput(dados.preco_venda_sugerido));
+        }
+    } else {
+        atualizarIndicadorBaseComercialCompra(ORIGEM_BASE_COMERCIAL_COMPRA.ITEM);
     }
-    atualizarIndicadorBaseComercialCompra(dados.origem);
 
     if (itemDraftCompra) {
-        itemDraftCompra.margem_lucro = dados.margem_lucro;
-        itemDraftCompra.margem_fallback_padrao = dados.fallback ? 1 : 0;
-        itemDraftCompra.origem_base_comercial = dados.origem;
+        if (!preservarMargemManual) {
+            itemDraftCompra.margem_lucro = dados.margem_lucro;
+            itemDraftCompra.margem_fallback_padrao = dados.fallback ? 1 : 0;
+            itemDraftCompra.origem_base_comercial = dados.origem;
+            itemDraftCompra.preco_venda_sugerido = dados.preco_venda_sugerido;
+        }
         itemDraftCompra.atualizar_preco_venda = dados.atualizar_preco_venda;
         itemDraftCompra.ultimo_preco_compra = dados.preco_unitario;
-        itemDraftCompra.preco_venda_sugerido = dados.preco_venda_sugerido;
         if (!modoEmb && dados.preco_unitario > 0) {
             itemDraftCompra.preco_unitario = dados.preco_unitario;
         }
     }
 
     if (recalcular && !modoEmb && typeof calcularValorVendaItem === 'function') {
-        // Mantém preço de venda do histórico quando veio da última compra
-        if (dados.origem === ORIGEM_BASE_COMERCIAL_COMPRA.ULTIMA_COMPRA
-            && Number(dados.preco_venda_sugerido) > 0) {
-            $('#preco_venda_item').val(formatNumberInput(dados.preco_venda_sugerido));
-            if (itemDraftCompra) {
-                itemDraftCompra.preco_venda_sugerido = dados.preco_venda_sugerido;
-            }
-        } else {
-            calcularValorVendaItem();
-        }
+        calcularValorVendaItem();
     }
     return dados;
 }
@@ -696,10 +719,148 @@ function normalizarTipoApresentacaoCompra(valor) {
         .replace(/\s+/g, '');
 }
 
-/** RC4.31.12.10 — preço único no formulário; MUC usa #preco_item como valor total da compra. */
+/**
+ * RC4.31.28/29 — no MUC, #preco_item = preço unitário comercial (Vara/Caixa/Embalagem).
+ * Total da compra = preço unitário comercial × quantidade comercial.
+ */
+function obterPrecoUnitarioComercialFormularioMuc() {
+    if (!obterModoPainelEmbalagemCompra(obterProdutoSelecionadoCompra())) return 0;
+    const raw = $('#preco_item').val();
+    if (raw === undefined || raw === null || raw === '') return 0;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function obterQuantidadeComercialFormularioMuc() {
+    const raw = $('#quantidade_embalagens_item').val();
+    if (raw === undefined || raw === null || raw === '') return 0;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 function obterValorTotalCompraMuc() {
     if (!obterModoPainelEmbalagemCompra(obterProdutoSelecionadoCompra())) return 0;
-    return Number($('#preco_item').val() || 0);
+    const unit = obterPrecoUnitarioComercialFormularioMuc();
+    const qtd = obterQuantidadeComercialFormularioMuc();
+    if (unit > 0 && qtd > 0) {
+        return Number((unit * qtd).toFixed(2));
+    }
+    return 0;
+}
+
+/** Número estritamente positivo; não mascara ausência com 0. */
+function numeroPositivoCompra(raw) {
+    if (raw === undefined || raw === null || raw === '') return null;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return n;
+}
+
+function obterQuantidadeComercialResolvidaItemCompra(item = {}) {
+    let qtd = numeroPositivoCompra(item.quantidade_embalagens)
+        || numeroPositivoCompra(item.quantidade_comercial);
+    if (qtd != null) return qtd;
+
+    const fator = numeroPositivoCompra(item.quantidade_por_embalagem)
+        || numeroPositivoCompra(item.fator_conversao);
+    const convertida = numeroPositivoCompra(item.quantidade_convertida)
+        || numeroPositivoCompra(item.quantidade);
+    if (fator != null && convertida != null) {
+        return convertida / fator;
+    }
+    return null;
+}
+
+/**
+ * RC4.31.29 — resolução canônica do preço de #preco_item (formulário/edição).
+ *
+ * Produto comum: preco_unitario.
+ * MUC/UC: preco_unitario_comercial → total/qtd comercial → subtotal/qtd → preco_unitario.
+ * Nunca devolve total/subtotal crus; nunca zera um preço válido por falha de uma fonte.
+ */
+function obterPrecoUnitarioCompraFormulario(item = {}, produto = null) {
+    if (!item || typeof item !== 'object') {
+        return { valor: 0, origem: 'nenhuma', modoEmbalagem: false };
+    }
+
+    const modoEmb = itemUsaModoPrecoEmbalagemCompra(item, produto);
+    const qtdComercial = obterQuantidadeComercialResolvidaItemCompra(item);
+
+    const comercial = numeroPositivoCompra(item.preco_unitario_comercial);
+    if (comercial != null) {
+        return {
+            valor: Number(comercial.toFixed(4)),
+            origem: 'preco_unitario_comercial',
+            modoEmbalagem: modoEmb
+        };
+    }
+
+    if (!modoEmb) {
+        const unit = numeroPositivoCompra(item.preco_unitario);
+        if (unit != null) {
+            return { valor: Number(unit.toFixed(4)), origem: 'preco_unitario', modoEmbalagem: false };
+        }
+        const qtd = numeroPositivoCompra(item.quantidade) || qtdComercial;
+        const sub = numeroPositivoCompra(item.subtotal);
+        if (sub != null && qtd != null) {
+            return {
+                valor: Number((sub / qtd).toFixed(4)),
+                origem: 'subtotal_por_quantidade',
+                modoEmbalagem: false
+            };
+        }
+        return { valor: 0, origem: 'nenhuma', modoEmbalagem: false };
+    }
+
+    // MUC / UC — unitário comercial a partir do total (não usar total cru)
+    const totalEmb = numeroPositivoCompra(item.valor_total_embalagem);
+    if (totalEmb != null && qtdComercial != null) {
+        return {
+            valor: Number((totalEmb / qtdComercial).toFixed(4)),
+            origem: 'total_por_comercial',
+            modoEmbalagem: true
+        };
+    }
+
+    const sub = numeroPositivoCompra(item.subtotal);
+    if (sub != null && qtdComercial != null) {
+        return {
+            valor: Number((sub / qtdComercial).toFixed(4)),
+            origem: 'subtotal_por_comercial',
+            modoEmbalagem: true
+        };
+    }
+
+    // Fallback: nunca exibir 0 se ainda houver preço de compra válido no item
+    const unit = numeroPositivoCompra(item.preco_unitario);
+    if (unit != null) {
+        return { valor: Number(unit.toFixed(4)), origem: 'preco_unitario', modoEmbalagem: true };
+    }
+
+    return { valor: 0, origem: 'nenhuma', modoEmbalagem: true };
+}
+
+/** @deprecated RC4.31.29 — use obterPrecoUnitarioCompraFormulario */
+function obterPrecoUnitarioComercialItemCompra(item = {}) {
+    return obterPrecoUnitarioCompraFormulario(item).valor;
+}
+
+function persistirPrecoUnitarioComercialItemCompra(item = {}, produto = null) {
+    const existente = numeroPositivoCompra(item.preco_unitario_comercial);
+    if (existente != null) return Number(existente.toFixed(4));
+
+    if (!itemUsaModoPrecoEmbalagemCompra(item, produto)) return 0;
+
+    const resolvido = obterPrecoUnitarioCompraFormulario(item, produto);
+    if (
+        resolvido.valor > 0
+        && (resolvido.origem === 'total_por_comercial'
+            || resolvido.origem === 'subtotal_por_comercial'
+            || resolvido.origem === 'preco_unitario_comercial')
+    ) {
+        return resolvido.valor;
+    }
+    return 0;
 }
 
 function onPrecoCompraItemInput() {
@@ -2175,7 +2336,11 @@ function finalizarPainelEmbalagemComercialCompra(produto) {
         });
         $('#quantidade_embalagens_item').val(formatQuantidadeExibicao(r.quantidade_embalagens || 1, 3));
         $('#quantidade_por_embalagem_item').val(formatQuantidadeExibicao(r.quantidade_por_embalagem || 0, 3));
-        $('#preco_item').val(formatNumberInput(r.valor_total_embalagem || 0, 2));
+        // RC4.31.29 — #preco_item via resolver; nunca gravar 0 se houver preço válido
+        const resolvidoPreco = obterPrecoUnitarioCompraFormulario(r);
+        if (resolvidoPreco.valor > 0) {
+            $('#preco_item').val(formatNumberInput(resolvidoPreco.valor, 2));
+        }
         if (r.compra_em) {
             $('#compra_em_item').val(r.compra_em);
         }
@@ -2659,6 +2824,7 @@ function normalizeItemCompra(itemBruto = {}) {
         quantidade_embalagens: Number(item.quantidade_embalagens || 0),
         quantidade_por_embalagem: Number(item.quantidade_por_embalagem || 0),
         valor_total_embalagem: Number(item.valor_total_embalagem || 0),
+        preco_unitario_comercial: persistirPrecoUnitarioComercialItemCompra(item),
         valor_embalagem_venda: Number(item.valor_embalagem_venda || 0),
         embalagem_id: item.embalagem_id != null ? item.embalagem_id : null,
         produto_apresentacao_id: item.produto_apresentacao_id != null ? item.produto_apresentacao_id : null,
@@ -2931,15 +3097,24 @@ function renderItensCompraTabelaCore() {
     const tbody = $('#itensCompraBody');
     const optionsProdutos = '<option value="">Selecione</option>' + produtosCompraList.map(p => `<option value="${p.id}">${p.nome}</option>`).join('');
     tbody.html(itensCompraAtual.map((item, index) => {
-        const linhaBonif = Number(item.bonificacao) === 1 ? ' class="table-warning"' : '';
+        const classesLinha = [];
+        if (Number(item.bonificacao) === 1) classesLinha.push('table-warning');
+        if (indiceProximoDestaqueCompra === index) classesLinha.push('compra-item-proximo');
+        const attrsLinha = [
+            classesLinha.length ? `class="${classesLinha.join(' ')}"` : '',
+            `data-compra-item-index="${index}"`
+        ].filter(Boolean).join(' ');
+        const badgeProximo = indiceProximoDestaqueCompra === index
+            ? '<span class="badge compra-item-proximo-badge ms-1">PRÓXIMO</span>'
+            : '';
         return `
-        <tr${linhaBonif}>
+        <tr ${attrsLinha}>
             <td style="min-width:220px;">
                 <select class="form-control form-control-sm mb-1" onchange="alterarProdutoItemCompra(${index}, this.value)">
                     ${optionsProdutos.replace(`value="${item.produto_id}"`, `value="${item.produto_id}" selected`)}
                 </select>
                 ${renderMiipSugestaoCard(item, index)}
-                <div class="text-muted small">${escapeHtml(item.produto_nome || '')}</div>
+                <div class="text-muted small">${escapeHtml(item.produto_nome || '')}${badgeProximo}</div>
             </td>
             <td style="min-width:120px;">${escapeHtml(item.codigo_barras || '')}</td>
             <td style="min-width:110px;">${item.data_validade ? escapeHtml(item.data_validade) : '<span class="text-muted">-</span>'}</td>
@@ -3055,6 +3230,9 @@ function renderMiipSugestaoCard(item, index) {
             <div class="miip-acoes">
                 <button type="button" class="btn btn-sm btn-confirmar" onclick="confirmarAssociacaoMiip(${index})">
                     <i class="fas fa-link"></i> Confirmar Associação
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-primary" onclick="associarProdutoExistenteMiip(${index})">
+                    <i class="fas fa-search"></i> Associar produto existente
                 </button>
                 <button type="button" class="btn btn-sm btn-outline-primary" onclick="miipNovoProdutoItemCompra(${index})">
                     <i class="fas fa-plus"></i> Novo Produto
@@ -3196,19 +3374,30 @@ function carregarSugestoesMiipXml() {
     });
 }
 
-function confirmarAssociacaoMiip(index) {
+/**
+ * RC4.31.26 — associa item ao produto informado reutilizando o fluxo MIIP existente.
+ */
+function confirmarAssociacaoMiipComProduto(index, produtoIdInformado, opcoes = {}) {
     const itemSnap = clonarDadosItemCompra(itensCompraAtual[index]);
     if (!itemSnap) {
         showNotification('Item não encontrado para confirmar associação.', 'warning');
-        return;
+        return false;
     }
 
-    const sugestao = obterSugestaoMiipItemCompra(itemSnap);
-    const produtoId = extrairProdutoIdSugestaoMiip(sugestao, itemSnap);
-    if (!sugestao || !produtoId) {
-        showNotification('Não há sugestão de produto válida para confirmar.', 'warning');
-        return;
+    const produtoId = Number(produtoIdInformado);
+    if (!Number.isFinite(produtoId) || produtoId <= 0) {
+        showNotification('Selecione um produto válido para associar.', 'warning');
+        return false;
     }
+
+    const produto = produtosCompraList.find((p) => String(p.id) === String(produtoId));
+    if (!produto) {
+        showNotification('Produto não encontrado no cadastro carregado.', 'warning');
+        return false;
+    }
+
+    const sugestao = obterSugestaoMiipItemCompra(itemSnap) || itemSnap.miip_sugestao || {};
+    const motivo = opcoes.motivo || 'confirmacao_importacao_xml';
 
     alterarProdutoItemCompra(index, produtoId);
 
@@ -3232,7 +3421,7 @@ function confirmarAssociacaoMiip(index) {
                 unidade: itemSnap.unidade,
                 usuarioId: usuario.id || null,
                 operacaoId: sugestao.operacaoId || null,
-                motivo: 'confirmacao_importacao_xml',
+                motivo,
                 item: itemSnap
             })
         }).fail(function () {
@@ -3241,11 +3430,194 @@ function confirmarAssociacaoMiip(index) {
     }
 
     atualizarItemCompraImutavel(index, (draft) => {
-        draft.miip_sugestao = { ...clonarNestedMiipItemCompra(sugestao), status: 'confirmado', produtoId };
+        draft.miip_sugestao = {
+            ...clonarNestedMiipItemCompra(sugestao),
+            status: 'confirmado',
+            produtoId,
+            produtoNome: produto.nome || sugestao.produtoNome || '',
+            produtoCodigo: produto.codigo || sugestao.produtoCodigo || '',
+            encontrado: true
+        };
         draft.produto_id = produtoId;
+        draft.produto_nome = produto.nome || draft.produto_nome;
     });
     renderItensCompraTabela();
-    showNotification('Associação confirmada.', 'success');
+    showNotification(opcoes.mensagemSucesso || 'Associação confirmada.', 'success');
+    return true;
+}
+
+function confirmarAssociacaoMiip(index) {
+    const itemSnap = clonarDadosItemCompra(itensCompraAtual[index]);
+    if (!itemSnap) {
+        showNotification('Item não encontrado para confirmar associação.', 'warning');
+        return;
+    }
+
+    const sugestao = obterSugestaoMiipItemCompra(itemSnap);
+    const produtoId = extrairProdutoIdSugestaoMiip(sugestao, itemSnap);
+    if (!sugestao || !produtoId) {
+        showNotification('Não há sugestão de produto válida para confirmar.', 'warning');
+        return;
+    }
+
+    confirmarAssociacaoMiipComProduto(index, produtoId, {
+        motivo: 'confirmacao_importacao_xml',
+        mensagemSucesso: 'Associação confirmada.'
+    });
+}
+
+/** RC4.31.26 — pesquisa e associa produto já cadastrado à sugestão MIIP. */
+function associarProdutoExistenteMiip(index) {
+    const itemSnap = clonarDadosItemCompra(itensCompraAtual[index]);
+    if (!itemSnap) {
+        showNotification('Item não encontrado.', 'warning');
+        return;
+    }
+
+    let modalEl = document.getElementById('miipAssociarProdutoExistenteModal');
+    if (!modalEl) {
+        $('body').append(`
+            <div class="modal fade" id="miipAssociarProdutoExistenteModal" tabindex="-1" aria-hidden="true">
+              <div class="modal-dialog modal-dialog-scrollable">
+                <div class="modal-content">
+                  <div class="modal-header">
+                    <h5 class="modal-title"><i class="fas fa-link"></i> Associar produto existente</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+                  </div>
+                  <div class="modal-body">
+                    <p class="small text-muted mb-2" id="miipAssociarProdutoItemRef"></p>
+                    <input type="search" class="form-control mb-2" id="miipAssociarProdutoBusca"
+                      placeholder="Pesquisar por nome, código ou código de barras" autocomplete="off">
+                    <div id="miipAssociarProdutoLista" class="list-group" style="max-height:320px;overflow:auto;"></div>
+                  </div>
+                  <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+        `);
+        modalEl = document.getElementById('miipAssociarProdutoExistenteModal');
+    }
+
+    const $modal = $('#miipAssociarProdutoExistenteModal');
+    $modal.data('miip-item-index', index);
+    $('#miipAssociarProdutoItemRef').text(
+        `Item da nota: ${itemSnap.produto_nome || itemSnap.codigo_barras || `#${index + 1}`}`
+    );
+    $('#miipAssociarProdutoBusca').val('').off('input.miipAssoc').on('input.miipAssoc', function () {
+        renderListaAssociarProdutoExistenteMiip($(this).val());
+    });
+    renderListaAssociarProdutoExistenteMiip('');
+
+    if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+        bootstrap.Modal.getOrCreateInstance(modalEl).show();
+    } else {
+        $modal.modal('show');
+    }
+    setTimeout(() => $('#miipAssociarProdutoBusca').trigger('focus'), 200);
+}
+
+function renderListaAssociarProdutoExistenteMiip(termo) {
+    const t = String(termo || '').trim().toLowerCase();
+    const lista = (produtosCompraList || [])
+        .filter((p) => {
+            if (!t) return true;
+            const nome = String(p.nome || '').toLowerCase();
+            const cod = String(p.codigo || '').toLowerCase();
+            const barras = String(p.codigo_barras || '').toLowerCase();
+            return nome.includes(t) || cod.includes(t) || barras.includes(t);
+        })
+        .slice(0, 60);
+
+    const $lista = $('#miipAssociarProdutoLista');
+    if (!lista.length) {
+        $lista.html('<div class="list-group-item text-muted">Nenhum produto encontrado.</div>');
+        return;
+    }
+
+    $lista.html(lista.map((p) => `
+        <button type="button" class="list-group-item list-group-item-action"
+          onclick="confirmarAssociacaoProdutoExistenteMiipSelecionado(${Number(p.id)})">
+          <strong>${escapeHtml(p.nome || '-')}</strong>
+          <br><small class="text-muted">
+            Cód: ${escapeHtml(p.codigo || '-')}
+            | Barras: ${escapeHtml(p.codigo_barras || '-')}
+          </small>
+        </button>
+    `).join(''));
+}
+
+function confirmarAssociacaoProdutoExistenteMiipSelecionado(produtoId) {
+    const index = Number($('#miipAssociarProdutoExistenteModal').data('miip-item-index'));
+    if (!Number.isFinite(index) || index < 0) return;
+
+    const ok = confirmarAssociacaoMiipComProduto(index, produtoId, {
+        motivo: 'associacao_produto_existente',
+        mensagemSucesso: 'Produto existente associado com sucesso.'
+    });
+    if (!ok) return;
+
+    const modalEl = document.getElementById('miipAssociarProdutoExistenteModal');
+    if (modalEl && typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+        const inst = bootstrap.Modal.getInstance(modalEl);
+        if (inst) inst.hide();
+    } else {
+        $('#miipAssociarProdutoExistenteModal').modal('hide');
+    }
+}
+
+function limparDestaqueProximoItemCompra() {
+    if (indiceProximoDestaqueCompra == null) return;
+    indiceProximoDestaqueCompra = null;
+}
+
+function encontrarProximoIndiceLancamentoCompra(indiceAtual) {
+    if (!Array.isArray(itensCompraAtual) || !itensCompraAtual.length) return null;
+    if (indiceAtual == null || !Number.isFinite(Number(indiceAtual))) return null;
+    const next = Number(indiceAtual) + 1;
+    return next < itensCompraAtual.length ? next : null;
+}
+
+function destacarEFocarProximoItemCompra(index) {
+    if (index == null || index < 0 || index >= itensCompraAtual.length) {
+        limparDestaqueProximoItemCompra();
+        return;
+    }
+    indiceProximoDestaqueCompra = index;
+    renderItensCompraTabela();
+    const el = document.querySelector(`tr[data-compra-item-index="${index}"]`);
+    if (el && typeof el.scrollIntoView === 'function') {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    const formEl = document.getElementById('codigo_barras_item')
+        || document.getElementById('btnAdicionarItemCompra');
+    if (formEl && typeof formEl.scrollIntoView === 'function') {
+        // Mantém formulário acessível sem cobrir a linha destacada
+        requestAnimationFrame(() => {
+            const formWrap = document.getElementById('adicionarItemRow') || formEl;
+            if (formWrap && typeof formWrap.scrollIntoView === 'function') {
+                formWrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        });
+    }
+}
+
+function aposAdicionarItemNavegarProximoCompra(indiceCommitado) {
+    const proximo = encontrarProximoIndiceLancamentoCompra(indiceCommitado);
+    if (proximo == null) {
+        limparDestaqueProximoItemCompra();
+        renderItensCompraTabela();
+        const foco = document.getElementById('codigo_barras_item');
+        if (foco) {
+            foco.focus();
+            if (typeof foco.scrollIntoView === 'function') {
+                foco.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        }
+        return;
+    }
+    destacarEFocarProximoItemCompra(proximo);
 }
 
 function ignorarSugestaoMiip(index) {
@@ -3257,6 +3629,223 @@ function ignorarSugestaoMiip(index) {
         };
     });
     renderItensCompraTabela();
+}
+
+/**
+ * RC4.31.27 — abre cadastro de produto a partir do lançamento de compra,
+ * preservando o modal/estado da compra (não recria compra).
+ */
+function abrirCadastroProdutoDesdeCompra(opcoes = {}) {
+    if (typeof showProdutoModal !== 'function') {
+        showNotification('Módulo de Produtos indisponível. Atualize a página e tente novamente.', 'warning');
+        return;
+    }
+
+    const compraEl = document.getElementById('compraModal');
+    if (!compraEl || !$(compraEl).hasClass('show')) {
+        showNotification('Abra o Lançamento de Compra antes de cadastrar um produto.', 'warning');
+        return;
+    }
+
+    origemCadastroProduto = ORIGEM_CADASTRO_PRODUTO.COMPRA;
+    contextoCadastroProdutoCompra = {
+        tipo: opcoes.tipo || 'form',
+        indexItem: opcoes.indexItem != null ? Number(opcoes.indexItem) : null,
+        prefill: opcoes.prefill || null,
+        itensCount: Array.isArray(itensCompraAtual) ? itensCompraAtual.length : 0
+    };
+
+    showProdutoModal(null, { origem: ORIGEM_CADASTRO_PRODUTO.COMPRA });
+
+    const el = document.getElementById('produtoModal');
+    if (!el) {
+        origemCadastroProduto = null;
+        contextoCadastroProdutoCompra = null;
+        showNotification('Não foi possível abrir o cadastro de produto.', 'danger');
+        return;
+    }
+
+    el.style.zIndex = '21000';
+    const elevarBackdrop = () => {
+        const backdrops = document.querySelectorAll('.modal-backdrop');
+        const last = backdrops[backdrops.length - 1];
+        if (last) {
+            last.style.zIndex = '20990';
+            last.classList.add('produto-modal-sobre-compra-backdrop');
+        }
+    };
+
+    const prefill = contextoCadastroProdutoCompra.prefill;
+    const onShown = () => {
+        elevarBackdrop();
+        if (!prefill) return;
+        if (prefill.produto_nome) $('#nome').val(prefill.produto_nome);
+        if (prefill.codigo_barras && $('#codigo_barras').length) {
+            $('#codigo_barras').val(prefill.codigo_barras).trigger('input.espelhoCodigo');
+        }
+        if (prefill.ncm && $('#ncm').length) $('#ncm').val(prefill.ncm);
+        if (prefill.unidade && $('#unidade').length) $('#unidade').val(prefill.unidade).trigger('change');
+        const custo = Number(prefill.preco_unitario ?? prefill.valor_unitario ?? 0);
+        const margemInfo = itemCompraTemMargemGravada(prefill)
+            ? { margem: Number(prefill.margem_lucro) }
+            : extrairMargemCadastradaProduto(prefill);
+        const margem = margemInfo.margem;
+        const venda = Number(prefill.preco_venda_sugerido ?? (custo > 0 ? custo * (1 + margem / 100) : 0));
+        if ($('#preco_compra').length && custo > 0) $('#preco_compra').val(formatNumberInput(custo, 4));
+        if ($('#lucro_percentual').length && Number.isFinite(margem)) {
+            $('#lucro_percentual').val(formatNumberInput(margem));
+        }
+        if ($('#preco_venda').length && venda > 0) $('#preco_venda').val(formatNumberInput(venda));
+        if (typeof sincronizarFormacaoPrecoProduto === 'function') {
+            sincronizarFormacaoPrecoProduto('venda');
+        }
+        if (prefill.codigo_fornecedor && $('#codigo').length && !String($('#codigo').val() || '').trim()) {
+            $('#codigo').val(String(prefill.codigo_fornecedor).trim());
+        }
+        if (prefill.fornecedor && $('#fornecedor').length) {
+            $('#fornecedor').val(String(prefill.fornecedor).trim());
+        }
+    };
+
+    el.addEventListener('shown.bs.modal', onShown, { once: true });
+    el.addEventListener('hidden.bs.modal', function onHiddenCadastroProdutoCompra() {
+        retornarAoLancamentoCompraAposCadastroProduto();
+    }, { once: true });
+
+    if (el.classList.contains('show')) onShown();
+    else setTimeout(elevarBackdrop, 50);
+}
+
+function restaurarModalCompraAposCadastroProduto() {
+    const compraEl = document.getElementById('compraModal');
+    if (!compraEl) return;
+
+    document.querySelectorAll('.produto-modal-sobre-compra-backdrop').forEach((b) => {
+        b.classList.remove('produto-modal-sobre-compra-backdrop');
+    });
+
+    // Não recria a compra — apenas garante que o modal existente continue utilizável
+    if (!compraEl.classList.contains('show')) {
+        if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+            bootstrap.Modal.getOrCreateInstance(compraEl).show();
+        } else {
+            $('#compraModal').modal('show');
+        }
+    } else {
+        document.body.classList.add('modal-open');
+        document.body.style.overflow = 'hidden';
+        if (!document.querySelector('.modal-backdrop')) {
+            const bd = document.createElement('div');
+            bd.className = 'modal-backdrop fade show';
+            document.body.appendChild(bd);
+        }
+    }
+
+    $('#btn-restaurar-produtoModal').remove();
+    const prodEl = document.getElementById('produtoModal');
+    if (prodEl && !prodEl.classList.contains('show')) {
+        prodEl.remove();
+    }
+}
+
+function atualizarOpcoesSeletorProdutoCompra() {
+    const $sel = $('#produto_id_item');
+    if ($sel.length) {
+        const atual = $sel.val();
+        const opts = '<option value="">Selecione</option>' + produtosCompraList.map((p) =>
+            `<option value="${p.id}" data-controlar-validade="${p.controlar_validade || 0}">${escapeHtml(p.nome)}</option>`
+        ).join('');
+        $sel.html(opts);
+        if (atual) $sel.val(atual);
+    }
+
+    const $dl = $('#produtos-datalist');
+    if ($dl.length) {
+        $dl.html(produtosCompraList.map((p) =>
+            `<option value="${escapeHtml((p.codigo_barras || p.codigo || '') + ' - ' + p.nome)}"></option>`
+        ).join(''));
+    }
+}
+
+function upsertProdutoNasListasCompra(produto) {
+    if (!produto?.id) return null;
+    const normalizado = (typeof normalizarProduto === 'function')
+        ? normalizarProduto(produto, window.categoriasSistema || [])
+        : { ...produto };
+
+    const mesclar = (lista, unshiftNovo = false) => {
+        if (!Array.isArray(lista)) return;
+        const idx = lista.findIndex((p) => String(p.id) === String(normalizado.id));
+        if (idx >= 0) {
+            lista[idx] = { ...lista[idx], ...normalizado };
+        } else if (unshiftNovo) {
+            lista.unshift(normalizado);
+        } else {
+            lista.push(normalizado);
+        }
+    };
+
+    mesclar(produtosCompraList, true);
+    if (typeof window !== 'undefined') {
+        if (!Array.isArray(window.produtosCache)) window.produtosCache = [];
+        mesclar(window.produtosCache, true);
+        if (Array.isArray(window.produtosList)) mesclar(window.produtosList, true);
+        if (Array.isArray(window.produtosOriginais)) mesclar(window.produtosOriginais, true);
+    }
+    return normalizado;
+}
+
+function selecionarProdutoRecemCadastradoNoLancamento(produto, ctx) {
+    if (!produto?.id) return;
+
+    if (ctx?.tipo === 'miip_item' && ctx.indexItem != null && itensCompraAtual[ctx.indexItem]) {
+        confirmarAssociacaoMiipComProduto(ctx.indexItem, produto.id, {
+            motivo: 'cadastro_novo_produto_compra',
+            mensagemSucesso: 'Produto cadastrado e associado ao item.'
+        });
+        return;
+    }
+
+    margemInformadaManualCompra = false;
+    $('#produto_id_item').val(String(produto.id));
+    const rotuloBusca = [produto.codigo_barras || produto.codigo || '', produto.nome || '']
+        .filter(Boolean)
+        .join(' - ');
+    $('#codigo_barras_item').val(rotuloBusca || produto.nome || '');
+    onProdutoSelecionado();
+    const foco = document.getElementById('quantidade_item') || document.getElementById('preco_item');
+    if (foco) {
+        setTimeout(() => foco.focus(), 50);
+    }
+}
+
+function retornarAoLancamentoCompraAposCadastroProduto() {
+    if (origemCadastroProduto !== ORIGEM_CADASTRO_PRODUTO.COMPRA) {
+        return;
+    }
+
+    const $modal = $('#produtoModal');
+    const salvo = $modal.data('produtoRecemSalvo') || null;
+    const salvouOk = $modal.data('produtoSalvoComSucesso') === true;
+    const ctx = contextoCadastroProdutoCompra;
+
+    origemCadastroProduto = null;
+    contextoCadastroProdutoCompra = null;
+    $modal.removeData('origemCadastroProduto');
+    $modal.removeData('produtoRecemSalvo');
+    $modal.removeData('produtoSalvoComSucesso');
+
+    restaurarModalCompraAposCadastroProduto();
+
+    // Cancelar: só restaura a mesma compra — não adiciona produto nem limpa itens
+    if (!salvouOk || !salvo?.id) {
+        return;
+    }
+
+    const produto = upsertProdutoNasListasCompra(salvo);
+    atualizarOpcoesSeletorProdutoCompra();
+    renderItensCompraTabela();
+    selecionarProdutoRecemCadastradoNoLancamento(produto || salvo, ctx);
 }
 
 function miipNovoProdutoItemCompra(index) {
@@ -3275,33 +3864,22 @@ function miipNovoProdutoItemCompra(index) {
     renderItensCompraTabela();
 
     if (typeof showProdutoModal === 'function') {
-        showProdutoModal(null);
-        $('#produtoModal').one('shown.bs.modal', function preencherNovoProdutoMiip() {
-            $('#nome').val(item.produto_nome || '');
-            if ($('#codigo_barras').length) $('#codigo_barras').val(item.codigo_barras || '').trigger('input.espelhoCodigo');
-            if ($('#ncm').length) $('#ncm').val(item.ncm || '');
-            if ($('#unidade').length) $('#unidade').val(item.unidade || 'UN').trigger('change');
-            const custo = Number(item.preco_unitario ?? item.valor_unitario ?? 0);
-            const margemInfo = itemCompraTemMargemGravada(item)
-                ? { margem: Number(item.margem_lucro) }
-                : extrairMargemCadastradaProduto(item);
-            const margem = margemInfo.margem;
-            const venda = Number(item.preco_venda_sugerido ?? (custo > 0 ? custo * (1 + margem / 100) : 0));
-            if ($('#preco_compra').length) {
-                $('#preco_compra').val(formatNumberInput(custo, 4));
-            }
-            if ($('#lucro_percentual').length) $('#lucro_percentual').val(formatNumberInput(margem));
-            if ($('#preco_venda').length) $('#preco_venda').val(formatNumberInput(venda));
-            if (typeof sincronizarFormacaoPrecoProduto === 'function') {
-                sincronizarFormacaoPrecoProduto('venda');
-            } else {
-                $('#preco_compra').trigger('input').trigger('change');
-            }
-            if (item.codigo_fornecedor && $('#codigo').length && !String($('#codigo').val() || '').trim()) {
-                $('#codigo').val(String(item.codigo_fornecedor).trim());
+        abrirCadastroProdutoDesdeCompra({
+            tipo: 'miip_item',
+            indexItem: index,
+            prefill: {
+                produto_nome: item.produto_nome,
+                codigo_barras: item.codigo_barras,
+                ncm: item.ncm,
+                unidade: item.unidade,
+                preco_unitario: item.preco_unitario ?? item.valor_unitario,
+                margem_lucro: item.margem_lucro,
+                preco_venda_sugerido: item.preco_venda_sugerido,
+                codigo_fornecedor: item.codigo_fornecedor,
+                fornecedor: $('#fornecedor').val() || compraImportadaXml?.fornecedor || ''
             }
         });
-        showNotification('Preencha o cadastro do novo produto e selecione-o no item.', 'info');
+        showNotification('Cadastre o produto e, ao salvar, o lançamento será retomado automaticamente.', 'info');
         return;
     }
 
@@ -3327,6 +3905,9 @@ function alterarNumeroItemCompra(index, campo, valor, origem) {
 }
 
 function alterarProdutoItemCompra(index, produtoId) {
+    if (indiceProximoDestaqueCompra === index) {
+        limparDestaqueProximoItemCompra();
+    }
     const produto = produtosCompraList.find(p => String(p.id) === String(produtoId));
     atualizarItemCompraImutavel(index, (draft) => {
         draft.produto_id = produtoId ? Number(produtoId) : '';
@@ -3443,10 +4024,14 @@ async function adicionarItemCompraAsync() {
         $('#quantidade_nao_fiscal_item').val()
     );
     let preco = Number($('#preco_item').val());
+    // RC4.31.28 — no painel MUC, #preco_item é o preço unitário comercial (preservar antes do custo/MT)
+    const precoUnitarioComercialForm = painelEmb
+        ? obterPrecoUnitarioComercialFormularioMuc()
+        : 0;
     const margemRaw = $('#margem_padrao_item').val();
     const margemInput = Number(margemRaw);
     const precoVendaInput = Number($('#preco_venda_item').val());
-    // RC4.31.25 — form → última compra/cadastro já aplicados no form → fallback
+    // RC4.31.26 — form (manual/cadastro/35%) → resolver → fallback 35%
     let margem;
     if (margemRaw !== '' && Number.isFinite(margemInput)) {
         margem = margemInput;
@@ -3518,6 +4103,11 @@ async function adicionarItemCompraAsync() {
 
         preco = conv.custoUnitario;
         valorTotalEmbalagem = conv.valorTotal;
+        // Garante total = unitário comercial × qtd comercial (origem canônica RC4.31.28)
+        const qtdComercialConv = Number($('#quantidade_embalagens_item').val() || 0);
+        if (precoUnitarioComercialForm > 0 && qtdComercialConv > 0) {
+            valorTotalEmbalagem = Number((precoUnitarioComercialForm * qtdComercialConv).toFixed(2));
+        }
 
         const embSel = embalagensProdutoCompraAtual.find((e) => String(e.id) === String($('#embalagem_compra_item').val()))
             || embalagensProdutoCompraAtual.find((e) => !e._acao);
@@ -3568,7 +4158,12 @@ async function adicionarItemCompraAsync() {
             quantidade_embalagens: Number($('#quantidade_embalagens_item').val() || 0),
             quantidade_por_embalagem: Number($('#quantidade_por_embalagem_item').val() || 0),
             quantidade_convertida: conv.qtdTotal,
-            valor_total_embalagem: conv.valorTotal,
+            valor_total_embalagem: valorTotalEmbalagem,
+            preco_unitario_comercial: precoUnitarioComercialForm > 0
+                ? Number(precoUnitarioComercialForm.toFixed(4))
+                : (qtdComercialConv > 0
+                    ? Number((valorTotalEmbalagem / qtdComercialConv).toFixed(4))
+                    : 0),
             embalagem_id: embalagemIdSelecionada,
             produto_apresentacao_id: embalagemIdSelecionada,
             tipo_origem_compra: tipoOrigemCompra,
@@ -3665,13 +4260,17 @@ async function adicionarItemCompraAsync() {
         ...dadosEmbalagem
     });
 
-    commitItemCompraNoArray(itemDraftCompra, {
+    const indiceAntesCommit = indiceEditandoCompra;
+    const idxCommit = commitItemCompraNoArray(itemDraftCompra, {
         linhaId: linhaIdEditandoCompra || obterLinhaIdItemCompra(itemDraftCompra),
         indice: indiceEditandoCompra
     });
     limparDraftCompra();
     limparFormularioItemCompra();
-    renderItensCompraTabela();
+    // RC4.31.26 — após Adicionar/Salvar, destaca o próximo item da grade (se houver)
+    aposAdicionarItemNavegarProximoCompra(
+        indiceAntesCommit != null ? idxCommit : (itensCompraAtual.length > 1 ? idxCommit : null)
+    );
 }
 
 /** Fallback local quando o motor cliente ainda não carregou. */
@@ -3739,32 +4338,18 @@ function itemUsaModoPrecoEmbalagemCompra(item = {}, produto = null) {
 }
 
 /**
- * RC4.31.24 — valor a carregar em #preco_item na edição.
- * Modo unidade → só preco_unitario. Modo embalagem → valor_total_embalagem (nunca subtotal).
+ * RC4.31.29 — valor a carregar em #preco_item na edição (via resolver canônico).
+ * Nunca devolve total/subtotal crus; nunca zera preço válido.
  */
 function obterPrecoCampoFormularioEdicaoItem(draft = {}, produto = null) {
-    const usaModoEmb = itemUsaModoPrecoEmbalagemCompra(draft, produto);
-    if (!usaModoEmb) {
-        return {
-            valor: Number(draft.preco_unitario || 0),
-            modoEmbalagem: false,
-            casas: itemCompraEhFracionado(draft) ? 4 : 2
-        };
-    }
-
-    const totalEmb = Number(draft.valor_total_embalagem || 0);
-    if (totalEmb > 0) {
-        return { valor: totalEmb, modoEmbalagem: true, casas: 2 };
-    }
-
-    // Reconstrói total sem usar subtotal (evita contaminação)
-    const unit = Number(draft.preco_unitario || 0);
-    const convertida = Number(draft.quantidade_convertida || draft.quantidade || 0);
-    if (unit > 0 && convertida > 0) {
-        return { valor: Number((unit * convertida).toFixed(2)), modoEmbalagem: true, casas: 2 };
-    }
-
-    return { valor: 0, modoEmbalagem: true, casas: 2 };
+    const resolvido = obterPrecoUnitarioCompraFormulario(draft, produto);
+    const casas = itemCompraEhFracionado(draft) && !resolvido.modoEmbalagem ? 4 : 2;
+    return {
+        valor: resolvido.valor,
+        modoEmbalagem: resolvido.modoEmbalagem,
+        origem: resolvido.origem,
+        casas
+    };
 }
 
 function atualizarRotuloBotaoItemCompra() {
@@ -3780,6 +4365,7 @@ function atualizarRotuloBotaoItemCompra() {
 function limparFormularioItemCompra() {
     limparDraftCompra();
     modoEntradaF7Compra = false;
+    margemInformadaManualCompra = false;
     atualizarRotuloBotaoItemCompra();
     $('#codigo_barras_item').val('');
     $('#produto_id_item').val('');
@@ -3833,6 +4419,12 @@ function editarItemCompra(index) {
     const draft = iniciarDraftCompraEdicao(index);
     if (!draft) return;
 
+    // RC4.31.26 — ao iniciar edição do próximo destacado, remove o destaque
+    if (indiceProximoDestaqueCompra === index) {
+        limparDestaqueProximoItemCompra();
+        renderItensCompraTabela();
+    }
+
     atualizarRotuloBotaoItemCompra();
 
     const temSplit = Number(draft.quantidade_nao_fiscal || 0) > 0;
@@ -3851,7 +4443,10 @@ function editarItemCompra(index) {
     $('#quantidade_item').val(formatQuantidadeExibicao(draft.quantidade, 3));
     $('#quantidade_fiscal_item').val(formatQuantidadeExibicao(draft.quantidade_fiscal ?? draft.quantidade, 3));
     $('#quantidade_nao_fiscal_item').val(formatQuantidadeExibicao(draft.quantidade_nao_fiscal || 0, 3));
-    $('#preco_item').val(formatNumberInput(precoCampo.valor, precoCampo.casas));
+    // RC4.31.29 — só preenche se houver preço válido (nunca forçar 0,00)
+    if (precoCampo.valor > 0) {
+        $('#preco_item').val(formatNumberInput(precoCampo.valor, precoCampo.casas));
+    }
     $('#margem_padrao_item').val(formatNumberInput(draft.margem_lucro));
     atualizarIndicadorBaseComercialCompra(
         draft.origem_base_comercial || ORIGEM_BASE_COMERCIAL_COMPRA.ITEM
@@ -3870,24 +4465,46 @@ function editarItemCompra(index) {
                 `<option value="${escapeHtml(compraEmSalva)}" selected>${escapeHtml(compraEmSalva)}</option>`
             );
         }
-        $('#quantidade_embalagens_item').val(draft.quantidade_embalagens || 1);
+        const qtdComercialSalva = Number(
+            draft.quantidade_embalagens
+            || draft.quantidade_comercial
+            || 1
+        );
+        $('#quantidade_embalagens_item').val(formatQuantidadeExibicao(qtdComercialSalva, 3));
         $('#quantidade_por_embalagem_item').val(formatQuantidadeExibicao(draft.quantidade_por_embalagem || 0, 3));
 
-        if (usaEmbalagemComercial) {
+        if (usaEmbalagemComercial || fracionado) {
+            const comercialPersistido = persistirPrecoUnitarioComercialItemCompra(draft, produto);
             restaurandoEmbalagemCompraEdicao = {
                 embalagem_id: draft.embalagem_id,
                 compra_em: draft.compra_em || draft.unidade_comercial,
-                quantidade_embalagens: draft.quantidade_embalagens || 1,
+                quantidade_embalagens: qtdComercialSalva,
+                quantidade_comercial: Number(draft.quantidade_comercial || qtdComercialSalva),
                 quantidade_por_embalagem: draft.quantidade_por_embalagem || 0,
-                valor_total_embalagem: Number(draft.valor_total_embalagem || 0)
+                quantidade_convertida: Number(draft.quantidade_convertida || draft.quantidade || 0),
+                valor_total_embalagem: Number(draft.valor_total_embalagem || 0),
+                preco_unitario: Number(draft.preco_unitario || 0),
+                subtotal: Number(draft.subtotal || 0),
+                preco_unitario_comercial: comercialPersistido
             };
+            if (comercialPersistido > 0) {
+                draft.preco_unitario_comercial = comercialPersistido;
+            }
         }
     }
 
     onProdutoSelecionado();
     atualizarRotuloPrecoCompraItem(draft);
-    // Reaplica preço após onProdutoSelecionado (evita sobrescrita indevida)
-    $('#preco_item').val(formatNumberInput(precoCampo.valor, precoCampo.casas));
+    // Reaplica preço após onProdutoSelecionado — só se válido (RC4.31.29)
+    const precoApos = obterPrecoCampoFormularioEdicaoItem(
+        itemDraftCompra || draft,
+        produto
+    );
+    if (precoApos.valor > 0) {
+        $('#preco_item').val(formatNumberInput(precoApos.valor, precoApos.casas));
+    } else if (precoCampo.valor > 0) {
+        $('#preco_item').val(formatNumberInput(precoCampo.valor, precoCampo.casas));
+    }
     $('#data_validade_item').val(draft.data_validade || '');
     atualizarCamposQuantidadeCompra();
     $('#codigo_barras_item').focus();
@@ -3934,7 +4551,11 @@ function onProdutoSelecionado() {
         atualizarIndicadorBaseComercialCompra('');
         return;
     }
-    // RC4.31.25 — última compra → cadastro → padrão; em edição preserva item
+    // RC4.31.26 — nova seleção (não edição) reaplica margem do cadastro/35%
+    if (linhaIdEditandoCompra == null && indiceEditandoCompra == null) {
+        margemInformadaManualCompra = false;
+    }
+    // RC4.31.26 — margem: cadastro → 35%; preço pode vir da última compra; edição preserva
     aplicarDadosComerciaisProdutoFormularioCompra(produto, {
         preservarSeEdicao: true,
         recalcular: !(linhaIdEditandoCompra != null || indiceEditandoCompra != null)
@@ -4293,12 +4914,18 @@ function showCompraModal() {
 
                         <div id="adicionarItemRow">
                             <div class="row g-2 align-items-end mb-2">
-                                <div class="col-md-6">
+                                <div class="col-md-8">
                                     <label class="form-label">Produto</label>
                                     <select class="form-control" id="produto_id_item" onchange="onProdutoSelecionado()">
                                         <option value="">Selecione</option>
                                         ${produtosCompraList.map(p => `<option value="${p.id}" data-controlar-validade="${p.controlar_validade || 0}">${escapeHtml(p.nome)}</option>`).join('')}
                                     </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label d-none d-md-block">&nbsp;</label>
+                                    <button type="button" class="btn btn-outline-primary w-100" id="btnNovoProdutoDesdeCompra" onclick="abrirCadastroProdutoDesdeCompra({ tipo: 'form' })">
+                                        <i class="fas fa-plus"></i> Novo Produto
+                                    </button>
                                 </div>
                             </div>
 
@@ -4386,7 +5013,7 @@ function showCompraModal() {
                                 <input type="hidden" id="custo_unitario_fracionado_item" value="">
                                 <div class="col-md-2">
                                     <label class="form-label">Margem %</label>
-                                    <input type="number" step="0.01" class="form-control" id="margem_padrao_item" value="" placeholder="cadastro" oninput="calcularValorVendaItem()">
+                                    <input type="number" step="0.01" class="form-control" id="margem_padrao_item" value="" placeholder="cadastro / 35%" oninput="marcarMargemManualCompra()">
                                     <small id="hintMargemPadraoCompra" class="text-muted d-none"></small>
                                 </div>
                                 <div class="col-md-2">
@@ -4731,6 +5358,8 @@ function saveCompra() {
             valor_total_embalagem: itemUsaModoPrecoEmbalagemCompra(sincronizado)
                 ? Number(sincronizado.valor_total_embalagem || 0)
                 : 0,
+            // RC4.31.29 — preço da Vara/Caixa (não recalcula se já válido)
+            preco_unitario_comercial: persistirPrecoUnitarioComercialItemCompra(sincronizado),
             valor_embalagem_venda: itemUsaEmbalagemComercial(sincronizado)
                 ? Number(sincronizado.valor_embalagem_venda || 0)
                 : 0,

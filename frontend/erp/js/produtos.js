@@ -1717,7 +1717,10 @@ function renderProdutosRows(produtos) {
 
 
 // Abre modal de produto
-function showProdutoModal(produto = null) {
+// RC4.31.27 — opcoes.origem === 'COMPRA' NÃO substitui #modal-container (preserva Lançamento de Compra)
+function showProdutoModal(produto = null, opcoes = {}) {
+    const origemCadastro = opcoes && typeof opcoes === 'object' ? (opcoes.origem || null) : null;
+    const preservarOutrosModais = origemCadastro === 'COMPRA' || opcoes?.preservarOutrosModais === true;
     const isEdit = produto !== null;
     const title = isEdit ? 'Editar Produto' : 'Novo Produto';
     const lucro = (() => {
@@ -1752,7 +1755,7 @@ function showProdutoModal(produto = null) {
     $('#produtoModal').remove();
     $('#viewProdutoModal').remove();
     const modalHtml = `
-        <div class="modal fade cds-prod-cadastro" id="produtoModal" tabindex="-1" aria-hidden="true">
+        <div class="modal fade cds-prod-cadastro" id="produtoModal" tabindex="-1" aria-hidden="true"${origemCadastro ? ` data-origem-cadastro="${origemCadastro}"` : ''}>
             <div class="modal-dialog modal-xl modal-dialog-scrollable">
                 <div class="modal-content">
                     <div class="modal-header d-flex align-items-center justify-content-between">
@@ -2236,7 +2239,12 @@ function showProdutoModal(produto = null) {
         </div>
     `;
 
-    $('#modal-container').html(modalHtml);
+    // RC4.31.27 — a partir de Compras, anexa ao body e preserva #modal-container (compra aberta)
+    if (preservarOutrosModais) {
+        $('body').append(modalHtml);
+    } else {
+        $('#modal-container').html(modalHtml);
+    }
 
     const produtoModalEl = document.getElementById('produtoModal');
     if (produtoModalEl && typeof bootstrap !== 'undefined' && bootstrap.Modal) {
@@ -2250,6 +2258,11 @@ function showProdutoModal(produto = null) {
     $('#produtoModal').data('temMovimentacoes', Boolean(produto?.tem_movimentacoes));
     $('#produtoModal').removeData('produtoRecemSalvo');
     $('#produtoModal').removeData('produtoSalvoComSucesso');
+    if (origemCadastro) {
+        $('#produtoModal').data('origemCadastroProduto', origemCadastro);
+    } else {
+        $('#produtoModal').removeData('origemCadastroProduto');
+    }
     if (isEdit && produto) {
         $('#produtoModal').data('produtoSaldos', {
             saldo_fiscal: produto.saldo_fiscal,

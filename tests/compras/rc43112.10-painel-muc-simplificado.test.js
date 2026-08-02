@@ -38,12 +38,13 @@ test('Preço de Compra único no formulário', () => {
   assert.match(compras, /function obterValorTotalCompraMuc/);
   assert.match(compras, /obterValorTotalCompraMuc\(\)/);
   assert.match(compras, /id="label_preco_compra_item"/);
-  assert.match(compras, /Preço de Compra/);
+  assert.match(compras, /Preço da \$\{tipo\}|Preço compra \(unidade\)/);
   assert.match(compras, /onPrecoCompraItemInput/);
 });
 
-test('simulação MUC lê preço do formulário e não sobrescreve #preco_item', () => {
+test('simulação MUC lê total derivado do formulário e não sobrescreve #preco_item', () => {
   assert.match(compras, /const valorTotal = obterValorTotalCompraMuc\(\)/);
+  assert.match(compras, /function obterPrecoUnitarioComercialFormularioMuc/);
   assert.doesNotMatch(compras, /\$\('#preco_item'\)\.val\(formatarCustoUnitarioVenda\(custoUnitario\)\)/);
 });
 
