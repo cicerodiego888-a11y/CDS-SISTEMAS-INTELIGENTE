@@ -647,6 +647,11 @@ router.get('/:id/ultimas-compras', (req, res) => {
         NULLIF(ci.preco_unitario, 0),
         ci.preco_unitario
       ) AS custo,
+      ci.preco_unitario AS preco_unitario,
+      ci.custo_unitario_final AS custo_unitario_final,
+      ci.margem_lucro AS margem_lucro,
+      ci.preco_venda_sugerido AS preco_venda_sugerido,
+      ci.atualizar_preco_venda AS atualizar_preco_venda,
       ci.quantidade AS quantidade,
       COALESCE(c.numero_nf, '') AS nfe
     FROM compras_itens ci

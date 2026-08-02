@@ -162,7 +162,6 @@ function iniciarDraftCompraNovo() {
     itemDraftCompra = normalizeItemCompra({
         linha_id: gerarLinhaIdCompra(),
         quantidade: 1,
-        margem_lucro: 30,
         atualizar_preco_venda: 1
     });
     indiceEditandoCompra = null;
@@ -244,6 +243,251 @@ const ORIGEM_COMPRA = Object.freeze({
     MANUAL: 'MANUAL',
     CENTRAL_NFE: 'CENTRAL_NFE'
 });
+
+/** RC4.31.22/25 — fallback apenas quando não há histórico nem margem cadastrada */
+const MARGEM_PADRAO_FALLBACK_COMPRA = 30;
+
+const ORIGEM_BASE_COMERCIAL_COMPRA = Object.freeze({
+    ULTIMA_COMPRA: 'ultima_compra',
+    CADASTRO: 'cadastro',
+    PADRAO: 'padrao',
+    ITEM: 'item'
+});
+
+/** Cache em memória: produtoId → última compra (ou null) */
+const cacheUltimaCompraProduto = Object.create(null);
+let seqAplicacaoComercialCompra = 0;
+
+/**
+ * RC4.31.22 — lê margem oficial do cadastro (nunca força 30 se existir valor definido, inclusive 0).
+ * @returns {{ margem: number, fallback: boolean, origem: string }}
+ */
+function extrairMargemCadastradaProduto(produto) {
+    if (!produto || typeof produto !== 'object') {
+        return { margem: MARGEM_PADRAO_FALLBACK_COMPRA, fallback: true, origem: ORIGEM_BASE_COMERCIAL_COMPRA.PADRAO };
+    }
+    const candidatos = [
+        produto.lucro_percentual,
+        produto.margem_lucro,
+        produto.margem_padrao,
+        produto.percentual_lucro
+    ];
+    for (const raw of candidatos) {
+        if (raw === undefined || raw === null || raw === '') continue;
+        const n = Number(raw);
+        if (Number.isFinite(n)) {
+            return { margem: n, fallback: false, origem: ORIGEM_BASE_COMERCIAL_COMPRA.CADASTRO };
+        }
+    }
+    return { margem: MARGEM_PADRAO_FALLBACK_COMPRA, fallback: true, origem: ORIGEM_BASE_COMERCIAL_COMPRA.PADRAO };
+}
+
+function itemCompraTemMargemGravada(item) {
+    if (!item) return false;
+    const raw = item.margem_lucro;
+    if (raw === undefined || raw === null || raw === '') return false;
+    return Number.isFinite(Number(raw));
+}
+
+function rotuloOrigemBaseComercialCompra(origem) {
+    switch (origem) {
+        case ORIGEM_BASE_COMERCIAL_COMPRA.ULTIMA_COMPRA:
+            return 'Base: ✓ Última compra';
+        case ORIGEM_BASE_COMERCIAL_COMPRA.CADASTRO:
+            return 'Base: ✓ Cadastro do produto';
+        case ORIGEM_BASE_COMERCIAL_COMPRA.PADRAO:
+            return 'Base: ✓ Padrão (30%)';
+        case ORIGEM_BASE_COMERCIAL_COMPRA.ITEM:
+            return 'Base: ✓ Valores do item';
+        default:
+            return '';
+    }
+}
+
+function atualizarIndicadorBaseComercialCompra(origem) {
+    const $hint = $('#hintMargemPadraoCompra');
+    if (!$hint.length) return;
+    const texto = rotuloOrigemBaseComercialCompra(origem);
+    if (texto) {
+        $hint.removeClass('d-none').text(texto);
+    } else {
+        $hint.addClass('d-none').text('');
+    }
+}
+
+/** @deprecated RC4.31.25 — use atualizarIndicadorBaseComercialCompra */
+function atualizarIndicadorMargemPadraoCompra(usarFallback) {
+    atualizarIndicadorBaseComercialCompra(
+        usarFallback ? ORIGEM_BASE_COMERCIAL_COMPRA.PADRAO : ''
+    );
+}
+
+/**
+ * RC4.31.25 — prioridade: 1) última compra  2) cadastro  3) padrão 30%.
+ */
+function resolverDadosComerciaisProdutoCompra(produto, ultimaCompra = null) {
+    const cadastro = extrairMargemCadastradaProduto(produto);
+    const precoCadastro = Number(produto?.preco_compra || 0);
+    const vendaCadastro = Number(produto?.preco_venda || 0);
+
+    if (ultimaCompra && typeof ultimaCompra === 'object') {
+        const precoHist = Number(
+            ultimaCompra.custo
+            ?? ultimaCompra.custo_unitario_final
+            ?? ultimaCompra.preco_unitario
+            ?? 0
+        );
+        const margemRaw = ultimaCompra.margem_lucro;
+        const temMargemHist = margemRaw !== undefined && margemRaw !== null && margemRaw !== ''
+            && Number.isFinite(Number(margemRaw));
+        const margem = temMargemHist ? Number(margemRaw) : cadastro.margem;
+        const vendaHist = Number(ultimaCompra.preco_venda_sugerido || 0);
+        const preco = precoHist > 0 ? precoHist : precoCadastro;
+        const venda = vendaHist > 0
+            ? vendaHist
+            : (vendaCadastro > 0
+                ? vendaCadastro
+                : (preco > 0 ? Number((preco * (1 + margem / 100)).toFixed(2)) : 0));
+        const usouHistorico = precoHist > 0 || temMargemHist || vendaHist > 0;
+        return {
+            preco_unitario: preco,
+            margem_lucro: margem,
+            preco_venda_sugerido: venda,
+            atualizar_preco_venda: Number(ultimaCompra.atualizar_preco_venda ?? 1) === 0 ? 0 : 1,
+            origem: usouHistorico
+                ? ORIGEM_BASE_COMERCIAL_COMPRA.ULTIMA_COMPRA
+                : (cadastro.fallback
+                    ? ORIGEM_BASE_COMERCIAL_COMPRA.PADRAO
+                    : ORIGEM_BASE_COMERCIAL_COMPRA.CADASTRO),
+            fallback: !temMargemHist && cadastro.fallback
+        };
+    }
+
+    if (!cadastro.fallback) {
+        const venda = vendaCadastro > 0
+            ? vendaCadastro
+            : (precoCadastro > 0
+                ? Number((precoCadastro * (1 + cadastro.margem / 100)).toFixed(2))
+                : 0);
+        return {
+            preco_unitario: precoCadastro,
+            margem_lucro: cadastro.margem,
+            preco_venda_sugerido: venda,
+            atualizar_preco_venda: 1,
+            origem: ORIGEM_BASE_COMERCIAL_COMPRA.CADASTRO,
+            fallback: false
+        };
+    }
+
+    const vendaPadrao = precoCadastro > 0
+        ? Number((precoCadastro * (1 + MARGEM_PADRAO_FALLBACK_COMPRA / 100)).toFixed(2))
+        : vendaCadastro;
+    return {
+        preco_unitario: precoCadastro,
+        margem_lucro: MARGEM_PADRAO_FALLBACK_COMPRA,
+        preco_venda_sugerido: vendaPadrao,
+        atualizar_preco_venda: 1,
+        origem: ORIGEM_BASE_COMERCIAL_COMPRA.PADRAO,
+        fallback: true
+    };
+}
+
+async function buscarUltimaCompraProduto(produtoId) {
+    const id = Number(produtoId);
+    if (!Number.isFinite(id) || id <= 0) return null;
+    if (Object.prototype.hasOwnProperty.call(cacheUltimaCompraProduto, String(id))) {
+        return cacheUltimaCompraProduto[String(id)];
+    }
+    try {
+        const resp = await fetch(`${API_URL}/produtos/${id}/ultimas-compras?limite=1`, {
+            headers: { Authorization: `Bearer ${localStorage.getItem('token') || ''}` }
+        });
+        if (!resp.ok) {
+            cacheUltimaCompraProduto[String(id)] = null;
+            return null;
+        }
+        const rows = await resp.json();
+        const ultima = Array.isArray(rows) && rows.length ? rows[0] : null;
+        cacheUltimaCompraProduto[String(id)] = ultima;
+        return ultima;
+    } catch (err) {
+        console.warn('[Compras] última compra:', err);
+        cacheUltimaCompraProduto[String(id)] = null;
+        return null;
+    }
+}
+
+function invalidarCacheUltimaCompraProduto(produtoId) {
+    if (produtoId == null) {
+        Object.keys(cacheUltimaCompraProduto).forEach((k) => { delete cacheUltimaCompraProduto[k]; });
+        return;
+    }
+    delete cacheUltimaCompraProduto[String(produtoId)];
+}
+
+/**
+ * RC4.31.25 — aplica última compra → cadastro → padrão no formulário.
+ * Em edição, preserva valores do item (ETAPA 3).
+ */
+async function aplicarDadosComerciaisProdutoFormularioCompra(produto, opcoes = {}) {
+    const { preservarSeEdicao = false, recalcular = true } = opcoes;
+    if (!produto?.id) return null;
+
+    if (preservarSeEdicao && (linhaIdEditandoCompra != null || indiceEditandoCompra != null)) {
+        atualizarIndicadorBaseComercialCompra(ORIGEM_BASE_COMERCIAL_COMPRA.ITEM);
+        return null;
+    }
+
+    const seq = ++seqAplicacaoComercialCompra;
+    const ultima = await buscarUltimaCompraProduto(produto.id);
+    if (seq !== seqAplicacaoComercialCompra) return null;
+
+    const dados = resolverDadosComerciaisProdutoCompra(produto, ultima);
+    const modoEmb = obterModoPainelEmbalagemCompra(produto);
+
+    if (!modoEmb && dados.preco_unitario > 0) {
+        $('#preco_item').val(formatNumberInput(
+            dados.preco_unitario,
+            produtoUsaConversaoUnidadesCompra(produto) ? 4 : 2
+        ));
+    }
+    $('#margem_padrao_item').val(formatNumberInput(dados.margem_lucro));
+    if (dados.preco_venda_sugerido > 0) {
+        $('#preco_venda_item').val(formatNumberInput(dados.preco_venda_sugerido));
+    }
+    atualizarIndicadorBaseComercialCompra(dados.origem);
+
+    if (itemDraftCompra) {
+        itemDraftCompra.margem_lucro = dados.margem_lucro;
+        itemDraftCompra.margem_fallback_padrao = dados.fallback ? 1 : 0;
+        itemDraftCompra.origem_base_comercial = dados.origem;
+        itemDraftCompra.atualizar_preco_venda = dados.atualizar_preco_venda;
+        itemDraftCompra.ultimo_preco_compra = dados.preco_unitario;
+        itemDraftCompra.preco_venda_sugerido = dados.preco_venda_sugerido;
+        if (!modoEmb && dados.preco_unitario > 0) {
+            itemDraftCompra.preco_unitario = dados.preco_unitario;
+        }
+    }
+
+    if (recalcular && !modoEmb && typeof calcularValorVendaItem === 'function') {
+        // Mantém preço de venda do histórico quando veio da última compra
+        if (dados.origem === ORIGEM_BASE_COMERCIAL_COMPRA.ULTIMA_COMPRA
+            && Number(dados.preco_venda_sugerido) > 0) {
+            $('#preco_venda_item').val(formatNumberInput(dados.preco_venda_sugerido));
+            if (itemDraftCompra) {
+                itemDraftCompra.preco_venda_sugerido = dados.preco_venda_sugerido;
+            }
+        } else {
+            calcularValorVendaItem();
+        }
+    }
+    return dados;
+}
+
+/** @deprecated RC4.31.25 — use aplicarDadosComerciaisProdutoFormularioCompra */
+function aplicarMargemProdutoFormularioCompra(produto, opcoes = {}) {
+    return aplicarDadosComerciaisProdutoFormularioCompra(produto, opcoes);
+}
 
 let configBonificacaoCompra = {
     cfop_padrao: '5910',
@@ -466,9 +710,21 @@ function onPrecoCompraItemInput() {
     calcularValorVendaItem();
 }
 
-function atualizarRotuloPrecoCompraItem() {
-    const muc = Boolean(obterModoPainelEmbalagemCompra(obterProdutoSelecionadoCompra()));
-    $('#label_preco_compra_item').text(muc ? 'Preço de Compra' : 'Preço compra (unidade)');
+/** RC4.31.24 — rótulo alinhado ao modo real (unidade vs embalagem/MUC). */
+function atualizarRotuloPrecoCompraItem(itemRef = null) {
+    const produto = obterProdutoSelecionadoCompra();
+    const item = itemRef || itemDraftCompra || {};
+    const fracionado = produtoUsaConversaoUnidadesCompra(produto) || itemCompraEhFracionado(item);
+    const usaEmb = itemUsaEmbalagemComercial(item, produto);
+    if (fracionado || usaEmb) {
+        const rotulo = item.compra_em || item.unidade_comercial
+            || $('#compra_em_item').val()
+            || (fracionado ? 'Embalagem' : 'Embalagem');
+        const tipo = rotuloTipoEmbalagemCompra(rotulo);
+        $('#label_preco_compra_item').text(`Preço da ${tipo}`);
+        return;
+    }
+    $('#label_preco_compra_item').text('Preço compra (unidade)');
 }
 
 function aplicarEmbalagemCompraSelecionada(embalagemId, opcoes = {}) {
@@ -2348,7 +2604,19 @@ function normalizeItemCompra(itemBruto = {}) {
     const custo = fracionado
         ? resolverCustoUnitarioItemCompra(item, quantidade)
         : Number(item.preco_unitario || item.preco_compra || 0);
-    const margem = Number(item.margem_lucro ?? item.lucro_percentual ?? 30);
+    const produtoRef = item.produto_id && typeof produtosCompraList !== 'undefined'
+        ? produtosCompraList.find((p) => String(p.id) === String(item.produto_id))
+        : null;
+    const margemInfo = itemCompraTemMargemGravada(item)
+        ? { margem: Number(item.margem_lucro), fallback: false }
+        : extrairMargemCadastradaProduto({
+            ...(produtoRef || {}),
+            lucro_percentual: item.lucro_percentual ?? produtoRef?.lucro_percentual,
+            margem_lucro: item.margem_lucro,
+            margem_padrao: item.margem_padrao ?? produtoRef?.margem_padrao,
+            percentual_lucro: item.percentual_lucro ?? produtoRef?.percentual_lucro
+        });
+    const margem = margemInfo.margem;
     const ultimoPrecoCompra = Number(item.ultimo_preco_compra || custo);
     const precoVenda = Number(item.preco_venda_sugerido || item.preco_venda || (custo * (1 + margem / 100)) || 0);
     const linhaId = item.linha_id || item.linhaId || gerarLinhaIdCompra();
@@ -2367,7 +2635,8 @@ function normalizeItemCompra(itemBruto = {}) {
         quantidade_nao_fiscal: qtdNaoFiscal,
         preco_unitario: Number(custo.toFixed(casasCusto)),
         ultimo_preco_compra: Number(ultimoPrecoCompra.toFixed(casasCusto)),
-        margem_lucro: Number(margem.toFixed(2)),
+        margem_lucro: Number(Number(margem).toFixed(2)),
+        margem_fallback_padrao: margemInfo.fallback ? 1 : 0,
         preco_venda_sugerido: Number(precoVenda.toFixed(2)),
         produto_fracionado: itemCompraEhFracionado(item) ? 1 : 0,
         vendido_por_peso: itemCompraEhFracionado(item) ? 1 : 0,
@@ -2550,7 +2819,16 @@ function sincronizarPrecosCadastroItemCompra(item = {}) {
     item.preco_unitario = Number(custo.toFixed(casasCusto));
     item.custo_unitario_final = item.preco_unitario;
     item.custo_por_kg = item.preco_unitario;
-    item.margem_lucro = Number(item.margem_lucro ?? 30);
+    if (!itemCompraTemMargemGravada(item)) {
+        const produtoRef = item.produto_id && typeof produtosCompraList !== 'undefined'
+            ? produtosCompraList.find((p) => String(p.id) === String(item.produto_id))
+            : null;
+        const info = extrairMargemCadastradaProduto(produtoRef || item);
+        item.margem_lucro = info.margem;
+        item.margem_fallback_padrao = info.fallback ? 1 : 0;
+    } else {
+        item.margem_lucro = Number(item.margem_lucro);
+    }
 
     if (Number(item.atualizar_preco_venda ?? 1) === 1 && item.preco_unitario > 0) {
         item.preco_venda_sugerido = Number((item.preco_unitario * (1 + item.margem_lucro / 100)).toFixed(2));
@@ -3004,7 +3282,10 @@ function miipNovoProdutoItemCompra(index) {
             if ($('#ncm').length) $('#ncm').val(item.ncm || '');
             if ($('#unidade').length) $('#unidade').val(item.unidade || 'UN').trigger('change');
             const custo = Number(item.preco_unitario ?? item.valor_unitario ?? 0);
-            const margem = Number(item.margem_lucro ?? 30);
+            const margemInfo = itemCompraTemMargemGravada(item)
+                ? { margem: Number(item.margem_lucro) }
+                : extrairMargemCadastradaProduto(item);
+            const margem = margemInfo.margem;
             const venda = Number(item.preco_venda_sugerido ?? (custo > 0 ? custo * (1 + margem / 100) : 0));
             if ($('#preco_compra').length) {
                 $('#preco_compra').val(formatNumberInput(custo, 4));
@@ -3084,8 +3365,15 @@ function alterarProdutoItemCompra(index, produtoId) {
         if (!Number(draft.preco_venda_sugerido)) {
             draft.preco_venda_sugerido = Number(produto.preco_venda || 0);
         }
-        if (!Number(draft.margem_lucro)) {
-            draft.margem_lucro = Number(produto.lucro_percentual || 30);
+        // RC4.31.25 — cadastro imediato; histórico assíncrono abaixo
+        const margemInfo = extrairMargemCadastradaProduto(produto);
+        draft.margem_lucro = margemInfo.margem;
+        draft.margem_fallback_padrao = margemInfo.fallback ? 1 : 0;
+        draft.origem_base_comercial = margemInfo.origem;
+        if (!Number(draft.preco_venda_sugerido) && Number(draft.preco_unitario) > 0) {
+            draft.preco_venda_sugerido = Number(
+                (draft.preco_unitario * (1 + draft.margem_lucro / 100)).toFixed(2)
+            );
         }
         if (isOrigemCompraCentralNfe() && !draft.distribuicao_fiscal_editada_manual) {
             if (!Number(draft.quantidade_comercial) && Number(draft.quantidade_embalagens)) {
@@ -3106,6 +3394,25 @@ function alterarProdutoItemCompra(index, produtoId) {
     if (produto) {
         recalcularLinhaCompra(index, 'custo');
         renderItensCompraTabela();
+        // RC4.31.25 — enriquece linha com última compra (assíncrono)
+        buscarUltimaCompraProduto(produto.id).then((ultima) => {
+            const dados = resolverDadosComerciaisProdutoCompra(produto, ultima);
+            atualizarItemCompraImutavel(index, (draft) => {
+                if (dados.preco_unitario > 0 && !Number(draft.preco_unitario)) {
+                    draft.preco_unitario = dados.preco_unitario;
+                }
+                draft.ultimo_preco_compra = dados.preco_unitario;
+                draft.margem_lucro = dados.margem_lucro;
+                draft.margem_fallback_padrao = dados.fallback ? 1 : 0;
+                draft.origem_base_comercial = dados.origem;
+                draft.atualizar_preco_venda = dados.atualizar_preco_venda;
+                if (dados.preco_venda_sugerido > 0) {
+                    draft.preco_venda_sugerido = dados.preco_venda_sugerido;
+                }
+            });
+            recalcularLinhaCompra(index, 'custo');
+            renderItensCompraTabela();
+        }).catch((err) => console.warn('[Compras] última compra na grade:', err));
     }
 }
 
@@ -3121,7 +3428,13 @@ async function adicionarItemCompraAsync() {
     const descricaoLivre = ($('#codigo_barras_item').val() || '').trim();
     const produto = produtosCompraList.find(p => String(p.id) === String(produtoId));
     const fracionado = produtoUsaConversaoUnidadesCompra(produto);
-    const usaEmbalagemComercial = !fracionado && produtoUsaEmbalagemComercialCompra(produto);
+    const usaEmbalagemComercial = itemUsaEmbalagemComercial({
+        produto_fracionado: fracionado ? 1 : 0,
+        vendido_por_peso: fracionado ? 1 : 0,
+        produto_id: produto?.id,
+        embalagem_id: $('#embalagem_compra_item').val() || null,
+        tipo_origem_compra: null
+    }, produto);
     const painelEmb = fracionado || usaEmbalagemComercial;
 
     let qtds = resolverQuantidadesItemCompra(
@@ -3130,9 +3443,19 @@ async function adicionarItemCompraAsync() {
         $('#quantidade_nao_fiscal_item').val()
     );
     let preco = Number($('#preco_item').val());
-    const margemInput = Number($('#margem_padrao_item').val());
+    const margemRaw = $('#margem_padrao_item').val();
+    const margemInput = Number(margemRaw);
     const precoVendaInput = Number($('#preco_venda_item').val());
-    const margem = Number.isFinite(margemInput) ? margemInput : 30;
+    // RC4.31.25 — form → última compra/cadastro já aplicados no form → fallback
+    let margem;
+    if (margemRaw !== '' && Number.isFinite(margemInput)) {
+        margem = margemInput;
+    } else if (produto?.id) {
+        const ultima = await buscarUltimaCompraProduto(produto.id);
+        margem = resolverDadosComerciaisProdutoCompra(produto, ultima).margem_lucro;
+    } else {
+        margem = MARGEM_PADRAO_FALLBACK_COMPRA;
+    }
     let valorTotalEmbalagem = 0;
     let dadosEmbalagem = {};
     let embalagemIdSelecionada = null;
@@ -3311,9 +3634,17 @@ async function adicionarItemCompraAsync() {
         quantidade_fiscal: qtds.quantidade_fiscal,
         quantidade_nao_fiscal: qtds.quantidade_nao_fiscal,
         preco_unitario: preco,
-        ultimo_preco_compra: produto ? Number(produto.preco_compra || 0) : preco,
+        ultimo_preco_compra: Number(itemDraftCompra?.ultimo_preco_compra || produto?.preco_compra || preco || 0),
         margem_lucro: margemFinal,
         preco_venda_sugerido: precoVenda,
+        atualizar_preco_venda: Number(
+            itemDraftCompra?.atualizar_preco_venda
+            ?? itemExistente?.atualizar_preco_venda
+            ?? 1
+        ),
+        origem_base_comercial: itemDraftCompra?.origem_base_comercial
+            || itemExistente?.origem_base_comercial
+            || null,
         unidade: produto ? (produto.unidade || 'UN') : 'UN',
         unidade_comercial: produto?.unidade_comercial || dadosEmbalagem.unidade_comercial || 'UN',
         ncm: produto ? (produto.ncm || '') : '',
@@ -3362,6 +3693,80 @@ function produtoUsaEmbalagemComercialCompra(produto) {
     return Boolean(produto && Number(produto.compra_por_embalagem || 0) === 1);
 }
 
+/** RC4.31.24 — embalagem_id persistido (não sintético de UI). */
+function embalagemIdCompraEhValido(embalagemId) {
+    if (embalagemId == null || embalagemId === '') return false;
+    const id = String(embalagemId);
+    if (id.startsWith('temp-')
+        || id.startsWith('unidade-')
+        || id.startsWith('uc-')
+        || id.startsWith('legado-')
+        || id.startsWith('unidade-base-')) {
+        return false;
+    }
+    return true;
+}
+
+/**
+ * RC4.31.24 — função canônica: item usa Embalagem/UC comercial.
+ * NUNCA usa quantidade_embalagens como critério (qCom da Central não é embalagem).
+ */
+function itemUsaEmbalagemComercial(item = {}, produto = null) {
+    if (!item || typeof item !== 'object') return false;
+    if (itemCompraEhFracionado(item)) return false;
+
+    const prod = produto || (item.produto_id && typeof produtosCompraList !== 'undefined'
+        ? produtosCompraList.find((p) => String(p.id) === String(item.produto_id))
+        : null);
+
+    if (produtoUsaEmbalagemComercialCompra(prod)) return true;
+    if (Number(item.compra_por_embalagem || 0) === 1) return true;
+
+    if (embalagemIdCompraEhValido(item.embalagem_id)
+        || embalagemIdCompraEhValido(item.produto_apresentacao_id)) {
+        return true;
+    }
+
+    const origem = String(item.tipo_origem_compra || '').toUpperCase();
+    if (origem === 'EMBALAGEM_COMERCIAL' || origem === 'UNIDADE_COMERCIAL') return true;
+
+    return false;
+}
+
+/** Fracionado (MT/KG) ou embalagem/UC comercial — painel MUC de preço total. */
+function itemUsaModoPrecoEmbalagemCompra(item = {}, produto = null) {
+    return itemCompraEhFracionado(item) || itemUsaEmbalagemComercial(item, produto);
+}
+
+/**
+ * RC4.31.24 — valor a carregar em #preco_item na edição.
+ * Modo unidade → só preco_unitario. Modo embalagem → valor_total_embalagem (nunca subtotal).
+ */
+function obterPrecoCampoFormularioEdicaoItem(draft = {}, produto = null) {
+    const usaModoEmb = itemUsaModoPrecoEmbalagemCompra(draft, produto);
+    if (!usaModoEmb) {
+        return {
+            valor: Number(draft.preco_unitario || 0),
+            modoEmbalagem: false,
+            casas: itemCompraEhFracionado(draft) ? 4 : 2
+        };
+    }
+
+    const totalEmb = Number(draft.valor_total_embalagem || 0);
+    if (totalEmb > 0) {
+        return { valor: totalEmb, modoEmbalagem: true, casas: 2 };
+    }
+
+    // Reconstrói total sem usar subtotal (evita contaminação)
+    const unit = Number(draft.preco_unitario || 0);
+    const convertida = Number(draft.quantidade_convertida || draft.quantidade || 0);
+    if (unit > 0 && convertida > 0) {
+        return { valor: Number((unit * convertida).toFixed(2)), modoEmbalagem: true, casas: 2 };
+    }
+
+    return { valor: 0, modoEmbalagem: true, casas: 2 };
+}
+
 function atualizarRotuloBotaoItemCompra() {
     const $btn = $('#btnAdicionarItemCompra');
     if (!$btn.length) return;
@@ -3382,7 +3787,8 @@ function limparFormularioItemCompra() {
     $('#quantidade_fiscal_item').val('');
     $('#quantidade_nao_fiscal_item').val('');
     $('#preco_item').val('');
-    $('#margem_padrao_item').val('30');
+    $('#margem_padrao_item').val('');
+    atualizarIndicadorBaseComercialCompra('');
     $('#preco_venda_item').val('');
     $('#compra_em_item').html(opcoesCompraEmbalagemHtml('Rolo'));
     $('#quantidade_embalagens_item').val('1');
@@ -3432,27 +3838,26 @@ function editarItemCompra(index) {
     const temSplit = Number(draft.quantidade_nao_fiscal || 0) > 0;
     modoEntradaF7Compra = temSplit;
     const fracionado = itemCompraEhFracionado(draft);
-    const usaEmbalagemComercial = !fracionado && (
-        draft.embalagem_id != null
-        || Number(draft.quantidade_embalagens || 0) > 0
-        || Number(draft.quantidade_por_embalagem || 0) > 0
-        || String(draft.compra_em || '').trim() !== ''
-    );
+    const produto = draft.produto_id
+        ? produtosCompraList.find((p) => String(p.id) === String(draft.produto_id))
+        : null;
+    // RC4.31.24 — detecção canônica (nunca quantidade_embalagens / compra_em sozinhos)
+    const usaEmbalagemComercial = itemUsaEmbalagemComercial(draft, produto);
+    const painelEmb = itemUsaModoPrecoEmbalagemCompra(draft, produto);
+    const precoCampo = obterPrecoCampoFormularioEdicaoItem(draft, produto);
 
     $('#codigo_barras_item').val(draft.produto_nome || draft.codigo_barras || '');
     $('#produto_id_item').val(draft.produto_id || '');
     $('#quantidade_item').val(formatQuantidadeExibicao(draft.quantidade, 3));
     $('#quantidade_fiscal_item').val(formatQuantidadeExibicao(draft.quantidade_fiscal ?? draft.quantidade, 3));
     $('#quantidade_nao_fiscal_item').val(formatQuantidadeExibicao(draft.quantidade_nao_fiscal || 0, 3));
-    const painelEmb = fracionado || usaEmbalagemComercial;
-    $('#preco_item').val(formatNumberInput(
-        painelEmb
-            ? (draft.valor_total_embalagem || draft.subtotal || 0)
-            : draft.preco_unitario,
-        painelEmb ? 2 : (fracionado ? 4 : 2)
-    ));
+    $('#preco_item').val(formatNumberInput(precoCampo.valor, precoCampo.casas));
     $('#margem_padrao_item').val(formatNumberInput(draft.margem_lucro));
+    atualizarIndicadorBaseComercialCompra(
+        draft.origem_base_comercial || ORIGEM_BASE_COMERCIAL_COMPRA.ITEM
+    );
     $('#preco_venda_item').val(formatNumberInput(draft.preco_venda_sugerido));
+    atualizarRotuloPrecoCompraItem(draft);
 
     if (painelEmb) {
         if (fracionado) modoEntradaF7Compra = true;
@@ -3474,12 +3879,15 @@ function editarItemCompra(index) {
                 compra_em: draft.compra_em || draft.unidade_comercial,
                 quantidade_embalagens: draft.quantidade_embalagens || 1,
                 quantidade_por_embalagem: draft.quantidade_por_embalagem || 0,
-                valor_total_embalagem: draft.valor_total_embalagem || draft.subtotal || 0
+                valor_total_embalagem: Number(draft.valor_total_embalagem || 0)
             };
         }
     }
 
     onProdutoSelecionado();
+    atualizarRotuloPrecoCompraItem(draft);
+    // Reaplica preço após onProdutoSelecionado (evita sobrescrita indevida)
+    $('#preco_item').val(formatNumberInput(precoCampo.valor, precoCampo.casas));
     $('#data_validade_item').val(draft.data_validade || '');
     atualizarCamposQuantidadeCompra();
     $('#codigo_barras_item').focus();
@@ -3522,12 +3930,20 @@ function onProdutoSelecionado() {
     atualizarCamposValidadeCompra();
     atualizarPainelConversaoUnidadesCompra();
     const produto = obterProdutoSelecionadoCompra();
-    if (produto && produtoUsaConversaoUnidadesCompra(produto)) {
-        $('#margem_padrao_item').val(produto.lucro_percentual || 30);
-        if (!linhaIdEditandoCompra && indiceEditandoCompra == null) {
-            $('#quantidade_fiscal_item').val('');
-            $('#quantidade_nao_fiscal_item').val('');
-        }
+    if (!produto) {
+        atualizarIndicadorBaseComercialCompra('');
+        return;
+    }
+    // RC4.31.25 — última compra → cadastro → padrão; em edição preserva item
+    aplicarDadosComerciaisProdutoFormularioCompra(produto, {
+        preservarSeEdicao: true,
+        recalcular: !(linhaIdEditandoCompra != null || indiceEditandoCompra != null)
+    }).catch((err) => console.warn('[Compras] base comercial:', err));
+    if (produtoUsaConversaoUnidadesCompra(produto)
+        && !linhaIdEditandoCompra
+        && indiceEditandoCompra == null) {
+        $('#quantidade_fiscal_item').val('');
+        $('#quantidade_nao_fiscal_item').val('');
     }
 }
 
@@ -3554,19 +3970,17 @@ function onProdutoInput() {
     const aplicar = (produto) => {
         if (produto) {
             $('#produto_id_item').val(produto.id);
-            $('#margem_padrao_item').val(produto.lucro_percentual || 30);
-            if (!produtoUsaConversaoUnidadesCompra(produto)) {
-                $('#preco_item').val(produto.preco_compra || '');
-                calcularValorVendaItem();
-            } else {
+            if (produtoUsaConversaoUnidadesCompra(produto)) {
                 $('#preco_item').val('');
                 $('#preco_venda_item').val('');
             }
+            // RC4.31.25 — preço/margem/venda vêm de aplicarDadosComerciais (última compra)
             onProdutoSelecionado();
         } else {
             $('#produto_id_item').val('');
             atualizarCamposValidadeCompra();
             atualizarPainelConversaoUnidadesCompra();
+            atualizarIndicadorBaseComercialCompra('');
         }
     };
 
@@ -3580,24 +3994,26 @@ function onProdutoKeyDown(event) {
     const inputValue = $('#codigo_barras_item').val().trim();
     if (!inputValue) return;
 
-    findProdutoByInputAsync(inputValue).then((produto) => {
+    findProdutoByInputAsync(inputValue).then(async (produto) => {
         if (!produto) {
             showNotification('Produto não encontrado', 'warning');
             return;
         }
 
         $('#produto_id_item').val(produto.id);
-        $('#margem_padrao_item').val(produto.lucro_percentual || 30);
-        if (!produtoUsaConversaoUnidadesCompra(produto)) {
-            $('#preco_item').val(produto.preco_compra || '');
-            calcularValorVendaItem();
-        } else {
+        if (produtoUsaConversaoUnidadesCompra(produto)) {
             $('#preco_item').val('');
             $('#preco_venda_item').val('');
         }
         $('#codigo_barras_item').val(`${produto.codigo_barras || produto.codigo || ''} - ${produto.nome}`);
 
-        onProdutoSelecionado();
+        atualizarCamposValidadeCompra();
+        atualizarPainelConversaoUnidadesCompra();
+        // Aguarda última compra antes de adicionar (RC4.31.25)
+        await aplicarDadosComerciaisProdutoFormularioCompra(produto, {
+            preservarSeEdicao: true,
+            recalcular: !(linhaIdEditandoCompra != null || indiceEditandoCompra != null)
+        });
 
         if (produtoUsaConversaoUnidadesCompra(produto)) {
             $('#quantidade_embalagens_item').focus();
@@ -3970,7 +4386,8 @@ function showCompraModal() {
                                 <input type="hidden" id="custo_unitario_fracionado_item" value="">
                                 <div class="col-md-2">
                                     <label class="form-label">Margem %</label>
-                                    <input type="number" step="0.01" class="form-control" id="margem_padrao_item" value="30" oninput="calcularValorVendaItem()">
+                                    <input type="number" step="0.01" class="form-control" id="margem_padrao_item" value="" placeholder="cadastro" oninput="calcularValorVendaItem()">
+                                    <small id="hintMargemPadraoCompra" class="text-muted d-none"></small>
                                 </div>
                                 <div class="col-md-2">
                                     <label class="form-label">Valor venda</label>
@@ -4310,15 +4727,21 @@ function saveCompra() {
             compra_em: sincronizado.compra_em || '',
             quantidade_embalagens: Number(sincronizado.quantidade_embalagens || 0),
             quantidade_por_embalagem: Number(sincronizado.quantidade_por_embalagem || 0),
-            valor_total_embalagem: Number(sincronizado.valor_total_embalagem || sincronizado.subtotal || 0),
-            valor_embalagem_venda: Number(sincronizado.valor_embalagem_venda || 0),
+            // RC4.31.24 — itens comuns: nunca contaminar valor_total_embalagem com subtotal
+            valor_total_embalagem: itemUsaModoPrecoEmbalagemCompra(sincronizado)
+                ? Number(sincronizado.valor_total_embalagem || 0)
+                : 0,
+            valor_embalagem_venda: itemUsaEmbalagemComercial(sincronizado)
+                ? Number(sincronizado.valor_embalagem_venda || 0)
+                : 0,
             atualizar_preco_venda: Number(sincronizado.atualizar_preco_venda ?? 1),
             cfop: sincronizado.cfop || null,
             tipo_fiscal_item: sincronizado.tipo_fiscal_manual ? (sincronizado.tipo_fiscal_item || null) : null,
             bonificacao: Number(sincronizado.bonificacao || 0),
             embalagem_id: sincronizado.embalagem_id || null,
             produto_apresentacao_id: sincronizado.produto_apresentacao_id || sincronizado.embalagem_id || null,
-            origem_conversao: sincronizado.origem_conversao || (Number(sincronizado.quantidade_embalagens) > 0 ? 'MANUAL' : null),
+            origem_conversao: sincronizado.origem_conversao
+                || (itemUsaModoPrecoEmbalagemCompra(sincronizado) ? 'MANUAL' : null),
             fator_conversao: Number(sincronizado.fator_conversao || sincronizado.quantidade_por_embalagem || 0) || null,
             tipo_conversao: sincronizado.tipo_conversao || null,
             confianca_conversao: sincronizado.confianca_conversao != null ? Number(sincronizado.confianca_conversao) : null,
@@ -4517,6 +4940,10 @@ function executarGravacaoCompra(data, isUsoConsumo, isNotaAvulsa) {
         centralDocumentoIdAtual = null;
         origemCompraAtual = ORIGEM_COMPRA.MANUAL;
         classificacaoEntradaAtual = null;
+        // RC4.31.25 — histórico gravado em compras_itens; limpa cache para próxima seleção
+        (Array.isArray(data?.itens) ? data.itens : []).forEach((it) => {
+            if (it?.produto_id) invalidarCacheUltimaCompraProduto(it.produto_id);
+        });
         $('#compraModal').modal('hide');
         showNotification(
             isUsoConsumo ? 'Compra de Uso e Consumo registrada com sucesso!'
@@ -4596,7 +5023,7 @@ function viewCompra(id) {
                 <td>${escapeHtml(item.produto_nome || item.descricao_produto || '-')}${renderResumoConversaoItemCompraHtml(item)}</td>
                 <td>${formatarQuantidadeItemCompra(item)}</td>
                 <td>${formatCurrency(item.preco_unitario)}</td>
-                <td>${item.margem_lucro || 30}%</td>
+                <td>${formatNumberInput(item.margem_lucro != null ? item.margem_lucro : MARGEM_PADRAO_FALLBACK_COMPRA)}%</td>
                 <td>${formatCurrency(item.preco_venda_sugerido || 0)}</td>
                 <td>${formatCurrency(item.subtotal)}</td>
             </tr>
@@ -4757,7 +5184,10 @@ function abrirCadastroProdutoCentralMiip(item, callback) {
         if ($('#ncm').length) $('#ncm').val(item.ncm || '');
         if ($('#unidade').length) $('#unidade').val(item.unidade || 'UN').trigger('change');
         const custo = Number(item.preco_unitario ?? item.valor_unitario ?? 0);
-        const margem = Number(item.margem_lucro ?? 30);
+        const margemInfo = itemCompraTemMargemGravada(item)
+            ? { margem: Number(item.margem_lucro) }
+            : extrairMargemCadastradaProduto(item);
+        const margem = margemInfo.margem;
         const venda = Number(item.preco_venda_sugerido ?? (custo > 0 ? custo * (1 + margem / 100) : 0));
         if ($('#preco_compra').length) $('#preco_compra').val(formatNumberInput(custo, 4));
         if ($('#lucro_percentual').length) $('#lucro_percentual').val(formatNumberInput(margem));
