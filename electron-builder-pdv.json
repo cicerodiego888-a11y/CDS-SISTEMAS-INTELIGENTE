@@ -25,6 +25,7 @@
     "**/node_modules/sqlite3/**",
     "**/node_modules/usb/**"
   ],
+  "afterPack": "./build/electron/afterPack.js",
   "extraMetadata": {
     "main": "electron-pdv.js"
   },

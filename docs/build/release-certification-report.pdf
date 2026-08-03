@@ -27,15 +27,15 @@ BT
 0 -14 Td
 (- Vers?o: 1.0.3) Tj
 0 -14 Td
-(- Commit: 51caa1f) Tj
+(- Commit: 1ffb33d) Tj
 0 -14 Td
-(- Build: 2026-08-01T17:56:22.279Z) Tj
+(- Build: 2026-08-02T02:46:58.705Z) Tj
 0 -14 Td
-(- Hash app.asar: `79223abf8775e590645c980a97ea3d8ba8bee2b58fc1e3b2381b85c8948a1744`) Tj
+(- Hash app.asar: `dce88fa6ec7f2e136964168f55bea9f0034565842d919fc2a9f3cce662675264`) Tj
 0 -14 Td
 (- Origem: fonte) Tj
 0 -14 Td
-(- Data: 2026-08-01T18:51:32.219Z) Tj
+(- Data: 2026-08-02T16:39:47.602Z) Tj
 0 -14 Td
 () Tj
 0 -14 Td
@@ -49,11 +49,11 @@ BT
 0 -14 Td
 (? Login) Tj
 0 -14 Td
-(  - user=rc4320_1785610291637 perfil=SUPER_ADMIN) Tj
+(  - user=rc4320_1785688786928 perfil=SUPER_ADMIN) Tj
 0 -14 Td
 (? Cadastro de Produtos) Tj
 0 -14 Td
-(  - CRUD ok | embalagem CX?12 | codigo=RC4320-1785610290947-P) Tj
+(  - CRUD ok | embalagem CX?12 | codigo=RC4320-1785688786130-P) Tj
 0 -14 Td
 (? Compras) Tj
 0 -14 Td
@@ -61,7 +61,7 @@ BT
 0 -14 Td
 (? Financeiro) Tj
 0 -14 Td
-(  - parser financeiro OK | parcela R$500 | registros financeiro=49) Tj
+(  - parser financeiro OK | parcela R$500 | registros financeiro=50) Tj
 0 -14 Td
 (? Estoque) Tj
 0 -14 Td
@@ -85,11 +85,11 @@ BT
 0 -14 Td
 (? Relat?rios) Tj
 0 -14 Td
-(  - compras=1 fin=49 prod=1268) Tj
+(  - compras=1 fin=50 prod=1268) Tj
 0 -14 Td
 (? Performance) Tj
 0 -14 Td
-(  - 1.3s | mem 21.1MB | sql=16) Tj
+(  - 1.5s | mem 21.1MB | sql=16) Tj
 0 -14 Td
 () Tj
 0 -14 Td
@@ -97,11 +97,11 @@ BT
 0 -14 Td
 () Tj
 0 -14 Td
-(- Tempo total: 1.3s) Tj
+(- Tempo total: 1.5s) Tj
 0 -14 Td
 (- Mem?ria m?xima: 21.1 MB) Tj
 0 -14 Td
-(- CPU user: 688 ms) Tj
+(- CPU user: 641 ms) Tj
 0 -14 Td
 (- Testes/etapas: 12) Tj
 0 -14 Td

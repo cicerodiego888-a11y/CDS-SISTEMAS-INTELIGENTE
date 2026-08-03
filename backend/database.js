@@ -187,8 +187,11 @@ function aplicarAlteracoesPosCriacao() {
   aplicarAlteracaoSegura('caixa', `ALTER TABLE caixa ADD COLUMN aberto_em DATETIME`);
   aplicarAlteracaoSegura('caixa', `ALTER TABLE caixa ADD COLUMN fechado_em DATETIME`);
   aplicarAlteracaoSegura('caixa', `ALTER TABLE caixa ADD COLUMN fechado_por INTEGER REFERENCES usuarios(id)`);
+  aplicarAlteracaoSegura('caixa', `ALTER TABLE caixa ADD COLUMN aberto_por INTEGER REFERENCES usuarios(id)`);
   aplicarAlteracaoSegura('caixa', `ALTER TABLE caixa ADD COLUMN ja_reimpresso INTEGER DEFAULT 0`);
   aplicarAlteracaoSegura('caixa', `ALTER TABLE caixa ADD COLUMN reoperturas_count INTEGER DEFAULT 0`);
+  aplicarAlteracaoSegura('caixa_fechamentos', `ALTER TABLE caixa_fechamentos ADD COLUMN resumo_json TEXT`);
+  aplicarAlteracaoSegura('caixa_fechamentos', `ALTER TABLE caixa_fechamentos ADD COLUMN vendas_outros DECIMAL(10,2) DEFAULT 0`);
   aplicarAlteracaoSegura('caixas', `ALTER TABLE caixas ADD COLUMN created_at DATETIME`);
   aplicarAlteracaoSegura('caixas', `ALTER TABLE caixas ADD COLUMN updated_at DATETIME`);
   aplicarAlteracaoSegura('caixa_movimentacoes', `ALTER TABLE caixa_movimentacoes ADD COLUMN operador_nome TEXT`);
@@ -2570,6 +2573,7 @@ function garantirColunasCaixa() {
     ['aberto_em', `ALTER TABLE caixa ADD COLUMN aberto_em DATETIME`],
     ['fechado_em', `ALTER TABLE caixa ADD COLUMN fechado_em DATETIME`],
     ['fechado_por', `ALTER TABLE caixa ADD COLUMN fechado_por INTEGER REFERENCES usuarios(id)`],
+    ['aberto_por', `ALTER TABLE caixa ADD COLUMN aberto_por INTEGER REFERENCES usuarios(id)`],
     ['ja_reimpresso', `ALTER TABLE caixa ADD COLUMN ja_reimpresso INTEGER DEFAULT 0`],
     ['reoperturas_count', `ALTER TABLE caixa ADD COLUMN reoperturas_count INTEGER DEFAULT 0`],
     ['status', `ALTER TABLE caixa ADD COLUMN status TEXT DEFAULT 'aberto'`],
@@ -2579,7 +2583,9 @@ function garantirColunasCaixa() {
   const colunasFechamentos = [
     ['sessao_id', `ALTER TABLE caixa_fechamentos ADD COLUMN sessao_id INTEGER REFERENCES caixa_sessoes(id)`],
     ['total_sangrias', `ALTER TABLE caixa_fechamentos ADD COLUMN total_sangrias DECIMAL(10,2) DEFAULT 0`],
-    ['total_suprimentos', `ALTER TABLE caixa_fechamentos ADD COLUMN total_suprimentos DECIMAL(10,2) DEFAULT 0`]
+    ['total_suprimentos', `ALTER TABLE caixa_fechamentos ADD COLUMN total_suprimentos DECIMAL(10,2) DEFAULT 0`],
+    ['resumo_json', `ALTER TABLE caixa_fechamentos ADD COLUMN resumo_json TEXT`],
+    ['vendas_outros', `ALTER TABLE caixa_fechamentos ADD COLUMN vendas_outros DECIMAL(10,2) DEFAULT 0`]
   ];
 
   function aplicarFaltantes(tabela, definicoes) {
@@ -3029,6 +3035,8 @@ db.serialize(() => {
       vendas_credito DECIMAL(10,2) DEFAULT 0,
       vendas_prazo DECIMAL(10,2) DEFAULT 0,
       vendas_tef DECIMAL(10,2) DEFAULT 0,
+      vendas_outros DECIMAL(10,2) DEFAULT 0,
+      resumo_json TEXT,
       total_sangrias DECIMAL(10,2) DEFAULT 0,
       total_suprimentos DECIMAL(10,2) DEFAULT 0,
       total_vendido DECIMAL(10,2) DEFAULT 0,

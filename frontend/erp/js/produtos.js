@@ -4251,28 +4251,44 @@ async function abrirModalPromocoesProdutos() {
                         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
                     </div>
                     <div class="modal-body">
-                        <ul class="nav nav-tabs" id="abas-promocoes" role="tablist">
-                            <li class="nav-item" role="presentation">
-                                <button class="nav-link active" id="aba-sugestoes" data-bs-toggle="tab" data-bs-target="#painel-sugestoes" type="button" role="tab" aria-controls="painel-sugestoes" aria-selected="true">
-                                    Sugestões
+                        <div class="d-flex flex-wrap align-items-end justify-content-between gap-2">
+                            <ul class="nav nav-tabs flex-grow-1" id="abas-promocoes" role="tablist">
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link active" id="aba-sugestoes" data-bs-toggle="tab" data-bs-target="#painel-sugestoes" type="button" role="tab" aria-controls="painel-sugestoes" aria-selected="true">
+                                        Sugestões
+                                    </button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="aba-ativas" data-bs-toggle="tab" data-bs-target="#painel-ativas" type="button" role="tab" aria-controls="painel-ativas" aria-selected="false">
+                                        Ativas
+                                    </button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="aba-encerradas" data-bs-toggle="tab" data-bs-target="#painel-encerradas" type="button" role="tab" aria-controls="painel-encerradas" aria-selected="false">
+                                        Encerradas
+                                    </button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="aba-estatisticas" data-bs-toggle="tab" data-bs-target="#painel-estatisticas" type="button" role="tab" aria-controls="painel-estatisticas" aria-selected="false">
+                                        Estatísticas
+                                    </button>
+                                </li>
+                            </ul>
+                            <div class="input-group input-group-sm mb-1" id="busca-promocoes-wrap" style="max-width: 280px; min-width: 200px;">
+                                <span class="input-group-text"><i class="fas fa-search" aria-hidden="true"></i></span>
+                                <input
+                                    type="search"
+                                    class="form-control"
+                                    id="buscaPromocoesInteligentes"
+                                    placeholder="Buscar produto..."
+                                    aria-label="Buscar produto nas promoções"
+                                    autocomplete="off"
+                                >
+                                <button type="button" class="btn btn-outline-secondary" id="btnLimparBuscaPromocoes" title="Limpar busca" aria-label="Limpar busca">
+                                    <i class="fas fa-times" aria-hidden="true"></i>
                                 </button>
-                            </li>
-                            <li class="nav-item" role="presentation">
-                                <button class="nav-link" id="aba-ativas" data-bs-toggle="tab" data-bs-target="#painel-ativas" type="button" role="tab" aria-controls="painel-ativas" aria-selected="false">
-                                    Ativas
-                                </button>
-                            </li>
-                            <li class="nav-item" role="presentation">
-                                <button class="nav-link" id="aba-encerradas" data-bs-toggle="tab" data-bs-target="#painel-encerradas" type="button" role="tab" aria-controls="painel-encerradas" aria-selected="false">
-                                    Encerradas
-                                </button>
-                            </li>
-                            <li class="nav-item" role="presentation">
-                                <button class="nav-link" id="aba-estatisticas" data-bs-toggle="tab" data-bs-target="#painel-estatisticas" type="button" role="tab" aria-controls="painel-estatisticas" aria-selected="false">
-                                    Estatísticas
-                                </button>
-                            </li>
-                        </ul>
+                            </div>
+                        </div>
 
                         <div class="tab-content mt-3" id="conteudo-abas-promocoes">
                             <!-- ABA SUGESTÕES -->
@@ -4369,12 +4385,87 @@ async function abrirModalPromocoesProdutos() {
     const modal = new bootstrap.Modal(document.getElementById('modalPromocoesProdutos'));
     modal.show();
 
+    configurarBuscaPromocoesInteligentes();
+
     // Carregar dados das três abas e as estatísticas da promoção inteligente
     carregarEstatisticasPromocoes();
     carregarSugestoesPromocoes(true);
     carregarPromocoes('ativas');
     carregarPromocoes('encerradas');
 }
+
+/**
+ * Configura busca por produto nas abas Sugestões / Ativas / Encerradas.
+ */
+function configurarBuscaPromocoesInteligentes() {
+    const input = document.getElementById('buscaPromocoesInteligentes');
+    const btnLimpar = document.getElementById('btnLimparBuscaPromocoes');
+    const wrap = document.getElementById('busca-promocoes-wrap');
+    if (!input || !wrap) return;
+
+    const aplicar = () => filtrarListasPromocoesInteligentes(input.value);
+
+    input.addEventListener('input', aplicar);
+    if (btnLimpar) {
+        btnLimpar.addEventListener('click', () => {
+            input.value = '';
+            aplicar();
+            input.focus();
+        });
+    }
+
+    const abas = document.getElementById('abas-promocoes');
+    if (abas) {
+        abas.addEventListener('shown.bs.tab', (ev) => {
+            const alvo = ev.target?.getAttribute('data-bs-target') || '';
+            const esconder = alvo === '#painel-estatisticas';
+            wrap.classList.toggle('d-none', esconder);
+            if (!esconder) aplicar();
+        });
+    }
+}
+
+/**
+ * Filtra as tabelas de promoções pelo termo digitado (nome do produto / texto da linha).
+ */
+function filtrarListasPromocoesInteligentes(termo) {
+    const query = String(termo || '').trim().toLowerCase();
+    const paineis = ['#lista-sugestoes', '#lista-promocoes-ativas', '#lista-promocoes-encerradas'];
+
+    paineis.forEach((seletor) => {
+        const container = document.querySelector(seletor);
+        if (!container) return;
+
+        const rows = container.querySelectorAll('table tbody tr');
+        if (!rows.length) {
+            const vazioBusca = container.querySelector('.alerta-busca-promocoes-vazia');
+            if (vazioBusca) vazioBusca.remove();
+            return;
+        }
+
+        let visiveis = 0;
+        rows.forEach((tr) => {
+            const texto = (tr.textContent || '').toLowerCase();
+            const match = !query || texto.includes(query);
+            tr.style.display = match ? '' : 'none';
+            if (match) visiveis += 1;
+        });
+
+        let alerta = container.querySelector('.alerta-busca-promocoes-vazia');
+        if (query && visiveis === 0) {
+            if (!alerta) {
+                alerta = document.createElement('div');
+                alerta.className = 'alert alert-secondary mt-2 mb-0 alerta-busca-promocoes-vazia';
+                alerta.innerHTML = '<i class="fas fa-search"></i> Nenhum produto encontrado para esta busca.';
+                container.appendChild(alerta);
+            }
+        } else if (alerta) {
+            alerta.remove();
+        }
+    });
+}
+
+window.filtrarListasPromocoesInteligentes = filtrarListasPromocoesInteligentes;
 
 window.abrirModalPromocoesProdutos = abrirModalPromocoesProdutos;
 
@@ -4795,6 +4886,8 @@ async function carregarSugestoesPromocoes(autoGerar = false) {
 
         html += '</tbody></table></div>';
         container.html(html);
+        const termoBusca = document.getElementById('buscaPromocoesInteligentes')?.value || '';
+        if (termoBusca) filtrarListasPromocoesInteligentes(termoBusca);
     } catch (error) {
         console.error('Erro ao carregar sugestões:', error);
         container.html(`
@@ -4910,6 +5003,8 @@ async function carregarPromocoes(tipo) {
 
         html += '</tbody></table></div>';
         container.html(html);
+        const termoBusca = document.getElementById('buscaPromocoesInteligentes')?.value || '';
+        if (termoBusca) filtrarListasPromocoesInteligentes(termoBusca);
     } catch (error) {
         console.error('Erro ao carregar promoções:', error);
         container.html(`
