@@ -238,6 +238,9 @@
         if (typeof global.atualizarPreviewValorTotalEstoqueCadastro === 'function') {
             global.atualizarPreviewValorTotalEstoqueCadastro();
         }
+        if (typeof global.atualizarFormacaoPrecoMargemInfo === 'function') {
+            global.atualizarFormacaoPrecoMargemInfo();
+        }
         return true;
     }
 

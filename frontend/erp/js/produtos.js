@@ -2623,15 +2623,22 @@ function showProdutoModal(produto = null, opcoes = {}) {
                                                 <small class="text-muted">Quantidade Total × Custo Unitário</small>
                                             </div>
                                             <div class="col-md-3">
-                                                <label for="lucro_percentual" class="form-label">Lucro (%)</label>
-                                                <input
-                                                    type="number"
-                                                    step="0.01"
-                                                    class="form-control"
-                                                    id="lucro_percentual"
-                                                    placeholder="%"
-                                                    value="${lucro}"
-                                                >
+                                                <label for="lucro_percentual" class="form-label">
+                                                    Markup (%)
+                                                    <span class="cds-prod-cadastro__badge-oficial" title="Percentual aplicado sobre o custo.">OFICIAL</span>
+                                                </label>
+                                                <div class="input-group">
+                                                    <input
+                                                        type="number"
+                                                        step="0.01"
+                                                        class="form-control"
+                                                        id="lucro_percentual"
+                                                        placeholder="%"
+                                                        value="${lucro}"
+                                                        title="Percentual aplicado sobre o custo."
+                                                    >
+                                                    <span class="input-group-text">%</span>
+                                                </div>
                                             </div>
                                             <div class="col-md-3">
                                                 <label for="preco_venda" class="form-label">Preço Unitário *</label>
@@ -2659,6 +2666,47 @@ function showProdutoModal(produto = null, opcoes = {}) {
                                                     value="${formatCurrency((estoqueTotalInicial || 0) * (Number(isEdit ? produto.preco_venda : 0) || 0))}"
                                                 >
                                                 <small class="text-muted">Quantidade Total × Preço de Venda</small>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="cds-prod-cadastro__card cds-prod-cadastro__card--tempo-real" id="area_info_margem_bruta_real">
+                                    <div class="cds-prod-cadastro__card-header cds-prod-cadastro__card-header--tempo-real">
+                                        <h6 class="cds-prod-cadastro__card-title cds-prod-cadastro__card-title--tempo-real">
+                                            Informações em tempo real (não salvas)
+                                            <span
+                                                class="cds-prod-cadastro__info-icon"
+                                                title="Valores calculados automaticamente. Não são gravados no cadastro do produto."
+                                                aria-label="Valores calculados automaticamente. Não são gravados no cadastro do produto."
+                                            >ⓘ</span>
+                                        </h6>
+                                    </div>
+                                    <div class="cds-prod-cadastro__card-body cds-prod-cadastro__tempo-real-body">
+                                        <div class="cds-prod-cadastro__tempo-real-grid cds-prod-cadastro__tempo-real-grid--3">
+                                            <div class="cds-prod-cadastro__tempo-real-item cds-prod-cadastro__tempo-real-item--destaque">
+                                                <div class="cds-prod-cadastro__tempo-real-label">
+                                                    Margem Bruta
+                                                    <span class="cds-prod-cadastro__info-icon" title="Percentual do preço de venda que representa o lucro bruto.">ⓘ</span>
+                                                </div>
+                                                <div class="cds-prod-cadastro__tempo-real-valor cds-prod-cadastro__tempo-real-valor--margem" id="margem_bruta_real_preview">—</div>
+                                                <small class="cds-prod-cadastro__tempo-real-hint">Margem calculada sobre o preço atual</small>
+                                            </div>
+                                            <div class="cds-prod-cadastro__tempo-real-item">
+                                                <div class="cds-prod-cadastro__tempo-real-label">
+                                                    Lucro Bruto
+                                                    <span class="cds-prod-cadastro__info-icon" title="Preço de venda − custo unitário.">ⓘ</span>
+                                                </div>
+                                                <div class="cds-prod-cadastro__tempo-real-pill cds-prod-cadastro__tempo-real-pill--lucro" id="lucro_bruto_real_preview">—</div>
+                                                <small class="cds-prod-cadastro__tempo-real-hint">Lucro por unidade (Preço − Custo)</small>
+                                            </div>
+                                            <div class="cds-prod-cadastro__tempo-real-item">
+                                                <div class="cds-prod-cadastro__tempo-real-label">
+                                                    Valor Total Venda
+                                                    <span class="cds-prod-cadastro__info-icon" title="Quantidade total × preço de venda.">ⓘ</span>
+                                                </div>
+                                                <div class="cds-prod-cadastro__tempo-real-pill cds-prod-cadastro__tempo-real-pill--preco" id="valor_total_venda_info_preview">—</div>
+                                                <small class="cds-prod-cadastro__tempo-real-hint">Quantidade × Preço de venda</small>
                                             </div>
                                         </div>
                                     </div>
@@ -4018,9 +4066,64 @@ function produtoCadastroUsaCompraPorEmbalagem() {
     return false;
 }
 
+/**
+ * FORMACAO-PRECO-MARGEM-06 — margem/lucro reais do preço atual (não persistidos).
+ */
+function atualizarFormacaoPrecoMargemInfo() {
+    const F = window.FormacaoPrecoMargem;
+    const $margem = $('#margem_bruta_real_preview');
+    const $lucro = $('#lucro_bruto_real_preview');
+    const $totalInfo = $('#valor_total_venda_info_preview');
+    if (!$margem.length || !F) return;
+
+    const setTexto = ($el, texto) => {
+        if ($el.is('input, textarea, select')) {
+            $el.val(texto);
+        } else {
+            $el.text(texto);
+        }
+    };
+
+    const numero = (valor) => {
+        const n = parseFloat(String(valor ?? '').replace(',', '.'));
+        return Number.isFinite(n) ? n : NaN;
+    };
+    const moeda = (valor) => {
+        if (valor === null || valor === undefined || !Number.isFinite(Number(valor))) {
+            return F.PLACEHOLDER;
+        }
+        return typeof formatCurrency === 'function'
+            ? formatCurrency(valor)
+            : `R$ ${Number(valor).toFixed(2).replace('.', ',')}`;
+    };
+
+    const custo = numero($('#preco_compra').val());
+    const preco = numero($('#preco_venda').val());
+    const custoOk = Number.isFinite(custo) && custo >= 0;
+    const precoOk = Number.isFinite(preco) && preco >= 0;
+
+    let margem = null;
+    let lucro = null;
+    if (custoOk && precoOk) {
+        margem = F.calcularMargemBruta(custo, preco);
+        lucro = F.calcularLucroBruto(custo, preco);
+    }
+
+    setTexto($margem, F.formatarPercentualPreview(margem));
+    setTexto($lucro, lucro === null ? F.PLACEHOLDER : moeda(lucro));
+
+    const totalOficial = String($('#valor_total_venda_preview').val() || '').trim();
+    setTexto($totalInfo, totalOficial || F.PLACEHOLDER);
+
+    $lucro.toggleClass('is-negativo', Number.isFinite(lucro) && lucro < 0);
+    $margem.toggleClass('is-negativo', Number.isFinite(margem) && margem < 0);
+}
+window.atualizarFormacaoPrecoMargemInfo = atualizarFormacaoPrecoMargemInfo;
+
 function sincronizarFormacaoPrecoProduto(origem = 'init') {
     if (typeof ProdutoEmbalagensUI !== 'undefined'
         && ProdutoEmbalagensUI.sincronizarFormacaoPrecoApresentacaoPrincipal(origem)) {
+        atualizarFormacaoPrecoMargemInfo();
         return;
     }
 
@@ -4034,6 +4137,7 @@ function sincronizarFormacaoPrecoProduto(origem = 'init') {
     const motor = window.MotorUnidadesMedidaCliente;
 
     if (compraPorEmbalagem && motor) {
+        atualizarFormacaoPrecoMargemInfo();
         return;
     }
 
@@ -4049,6 +4153,7 @@ function sincronizarFormacaoPrecoProduto(origem = 'init') {
             $lucro.val(lucro.toFixed(2));
         }
         atualizarPreviewValorTotalEstoqueCadastro();
+        atualizarFormacaoPrecoMargemInfo();
         return;
     }
 
@@ -4056,6 +4161,7 @@ function sincronizarFormacaoPrecoProduto(origem = 'init') {
         const lucro = ((precoVenda - precoCompra) / precoCompra) * 100;
         $lucro.val(lucro.toFixed(2));
         atualizarPreviewValorTotalEstoqueCadastro();
+        atualizarFormacaoPrecoMargemInfo();
         return;
     }
 
@@ -4066,6 +4172,7 @@ function sincronizarFormacaoPrecoProduto(origem = 'init') {
     }
 
     atualizarPreviewValorTotalEstoqueCadastro();
+    atualizarFormacaoPrecoMargemInfo();
 }
 
 function atualizarVisibilidadeEmbalagemComercialCadastro() {
@@ -4102,6 +4209,7 @@ function inicializarCalculoPreco(produto, isEdit) {
             if (typeof ProdutoEmbalagensUI !== 'undefined') {
                 ProdutoEmbalagensUI.sincronizarFormacaoPrecoApresentacaoPrincipal('init');
             }
+            atualizarFormacaoPrecoMargemInfo();
         });
 
     atualizarVisibilidadeEmbalagemComercialCadastro();

@@ -11,9 +11,9 @@ const CDS_ERP_PAGE_SCRIPTS = Object.freeze({
         '/erp/js/dashboard.js'
     ],
     monitoring: ['/erp/js/cds-monitoring-engine.js'],
-    produtos: ['/shared/js/SearchSDK.js', '/erp/js/categorias.js', '/erp/js/subcategorias.js', '/erp/js/motor-unidades-medida.js', '/erp/js/produto-apresentacao-resolver.js', '/erp/js/produto-embalagens.js', '/shared/js/motor-preco-atacado.js', '/erp/js/produtos.js'],
+    produtos: ['/shared/js/SearchSDK.js', '/erp/js/categorias.js', '/erp/js/subcategorias.js', '/erp/js/motor-unidades-medida.js', '/erp/js/produto-apresentacao-resolver.js', '/erp/js/produto-embalagens.js', '/shared/js/motor-preco-atacado.js', '/erp/js/formacao-preco-margem.js', '/erp/js/produtos.js'],
     clientes: ['/erp/js/clientes.js'],
-    compras: ['/erp/js/categorias.js', '/erp/js/subcategorias.js', '/erp/js/produto-apresentacao-resolver.js', '/erp/js/produto-embalagens.js', '/shared/js/motor-preco-atacado.js', '/erp/js/produtos.js', '/erp/js/motor-unidades-medida.js', '/shared/js/motor-quantidade-compra.js', '/erp/js/compra-muc-client.js', '/erp/js/tratamento-fiscal-item-compra.js', '/erp/js/miip-central-revisao.js', '/erp/js/compras-fornecedor-cnpj-rc831.js', '/erp/js/compras.js'],
+    compras: ['/erp/js/categorias.js', '/erp/js/subcategorias.js', '/erp/js/produto-apresentacao-resolver.js', '/erp/js/produto-embalagens.js', '/shared/js/motor-preco-atacado.js', '/erp/js/formacao-preco-margem.js', '/erp/js/produtos.js', '/erp/js/motor-unidades-medida.js', '/shared/js/motor-quantidade-compra.js', '/erp/js/compra-muc-client.js', '/erp/js/tratamento-fiscal-item-compra.js', '/erp/js/miip-central-revisao.js', '/erp/js/compras-fornecedor-cnpj-rc831.js', '/erp/js/compras.js'],
     'central-entradas': [
         '/erp/js/central-entradas-ux.js',
         '/erp/js/categorias.js',
@@ -22,6 +22,7 @@ const CDS_ERP_PAGE_SCRIPTS = Object.freeze({
         '/erp/js/produto-apresentacao-resolver.js',
         '/erp/js/produto-embalagens.js',
         '/shared/js/motor-preco-atacado.js',
+        '/erp/js/formacao-preco-margem.js',
         '/erp/js/produtos.js',
         '/erp/js/tratamento-fiscal-item-compra.js',
         '/erp/js/miip-central-revisao.js',

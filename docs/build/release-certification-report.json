@@ -2,29 +2,29 @@
   "schema": "cds-release-certification/v1",
   "sprint": "RC4.32.0",
   "status": "APROVADA",
-  "geradoEm": "2026-08-11T16:36:15.388Z",
+  "geradoEm": "2026-08-11T18:45:14.436Z",
   "ambiente": {
     "versao": "1.0.3",
     "commit": "e5bc961",
-    "build": "2026-08-11T15:20:33.025Z",
-    "hashAppAsar": "a3964261ae5f4ae677d1356d746b29e182f384ea39956ec72b30afa242276453",
+    "build": "2026-08-11T16:36:15.665Z",
+    "hashAppAsar": "22ee91c50b62fd0a4f304d4363a474061df2243fd96e5561ad8815ae9d0cb73a",
     "origem": "instalador-desatualizado"
   },
   "modulos": {
     "inicializacao": {
       "ok": true,
       "titulo": "Inicialização do ERP",
-      "detalhe": "DB ok | pacote: instalador-desatualizado | asar: a3964261ae5f…"
+      "detalhe": "DB ok | pacote: instalador-desatualizado | asar: 22ee91c50b62…"
     },
     "login": {
       "ok": true,
       "titulo": "Login",
-      "detalhe": "user=rc4320_1786466174857 perfil=SUPER_ADMIN"
+      "detalhe": "user=rc4320_1786473913892 perfil=SUPER_ADMIN"
     },
     "produtos": {
       "ok": true,
       "titulo": "Cadastro de Produtos",
-      "detalhe": "CRUD ok | embalagem CX×12 | codigo=RC4320-1786466173781-P"
+      "detalhe": "CRUD ok | embalagem CX×12 | codigo=RC4320-1786473912803-P"
     },
     "compras": {
       "ok": true,
@@ -69,16 +69,16 @@
     "performance": {
       "ok": true,
       "titulo": "Performance",
-      "detalhe": "1.6s | mem 29.4MB | sql=16"
+      "detalhe": "1.6s | mem 29.1MB | sql=16"
     }
   },
   "estatisticas": {
-    "tempoTotalMs": 1609,
+    "tempoTotalMs": 1634,
     "tempoTotalSeg": 1.6,
-    "memoriaMaxMb": 29.4,
-    "memoriaAtualMb": 29.5,
-    "cpuUserMs": 1015,
-    "cpuSystemMs": 468,
+    "memoriaMaxMb": 29.1,
+    "memoriaAtualMb": 29.2,
+    "cpuUserMs": 985,
+    "cpuSystemMs": 453,
     "quantidadeEtapas": 12,
     "quantidadeExcecoes": 0,
     "quantidadeConsultasSql": 16,
@@ -90,96 +90,96 @@
       {
         "nome": "inicializacao",
         "resultado": "OK",
-        "tempoMs": 945,
-        "memoriaMb": 12.2,
-        "detalhe": "DB ok | pacote: instalador-desatualizado | asar: a3964261ae5f…"
+        "tempoMs": 964,
+        "memoriaMb": 12.3,
+        "detalhe": "DB ok | pacote: instalador-desatualizado | asar: 22ee91c50b62…"
       },
       {
         "nome": "login",
         "resultado": "OK",
-        "tempoMs": 303,
-        "memoriaMb": 26.2,
-        "detalhe": "user=rc4320_1786466174857 perfil=SUPER_ADMIN"
+        "tempoMs": 302,
+        "memoriaMb": 26.1,
+        "detalhe": "user=rc4320_1786473913892 perfil=SUPER_ADMIN"
       },
       {
         "nome": "produtos",
         "resultado": "OK",
-        "tempoMs": 36,
-        "memoriaMb": 27.2,
-        "detalhe": "CRUD ok | embalagem CX×12 | codigo=RC4320-1786466173781-P"
+        "tempoMs": 39,
+        "memoriaMb": 27.1,
+        "detalhe": "CRUD ok | embalagem CX×12 | codigo=RC4320-1786473912803-P"
       },
       {
         "nome": "compras",
         "resultado": "OK",
-        "tempoMs": 282,
-        "memoriaMb": 27.1,
+        "tempoMs": 293,
+        "memoriaMb": 26.8,
         "detalhe": "NF-e …00000064 | status=EM_REVISAO"
       },
       {
         "nome": "miip",
         "resultado": "OK",
-        "tempoMs": 11,
-        "memoriaMb": 28.6,
+        "tempoMs": 10,
+        "memoriaMb": 28.1,
         "detalhe": "MUC 10×12 → 120 UN (MULTIPLICADOR)"
       },
       {
         "nome": "central",
         "resultado": "OK",
         "tempoMs": 0,
-        "memoriaMb": 28.6,
+        "memoriaMb": 28.1,
         "detalhe": "documento 000064 processado"
       },
       {
         "nome": "financeiro",
         "resultado": "OK",
         "tempoMs": 1,
-        "memoriaMb": 28.6,
+        "memoriaMb": 28.1,
         "detalhe": "parser financeiro OK | parcela R$500 | registros financeiro=43"
       },
       {
         "nome": "estoque",
         "resultado": "OK",
-        "tempoMs": 12,
-        "memoriaMb": 28.7,
+        "tempoMs": 10,
+        "memoriaMb": 28.3,
         "detalhe": "fiscal=6+3 | total=15 UN"
       },
       {
         "nome": "nfce",
         "resultado": "OK",
         "tempoMs": 1,
-        "memoriaMb": 28.8,
+        "memoriaMb": 28.4,
         "detalhe": "homologação dest.xNome + módulo emissor presente"
       },
       {
         "nome": "nfe",
         "resultado": "OK",
-        "tempoMs": 5,
-        "memoriaMb": 28.9,
+        "tempoMs": 4,
+        "memoriaMb": 28.6,
         "detalhe": "autorização cStat=100 | protocolo=123"
       },
       {
         "nome": "relatorios",
         "resultado": "OK",
         "tempoMs": 2,
-        "memoriaMb": 29.4,
+        "memoriaMb": 29.1,
         "detalhe": "compras=1 fin=43 prod=22"
       },
       {
         "nome": "performance",
         "resultado": "OK",
         "tempoMs": 0,
-        "memoriaMb": 29.4,
-        "detalhe": "1.6s | mem 29.4MB | sql=16"
+        "memoriaMb": 29.1,
+        "detalhe": "1.6s | mem 29.1MB | sql=16"
       }
     ],
     "excecoes": [],
     "resumo": {
-      "tempoTotalMs": 1609,
+      "tempoTotalMs": 1634,
       "tempoTotalSeg": 1.6,
-      "memoriaMaxMb": 29.4,
-      "memoriaAtualMb": 29.5,
-      "cpuUserMs": 1015,
-      "cpuSystemMs": 468,
+      "memoriaMaxMb": 29.1,
+      "memoriaAtualMb": 29.2,
+      "cpuUserMs": 985,
+      "cpuSystemMs": 453,
       "quantidadeEtapas": 12,
       "quantidadeExcecoes": 0,
       "quantidadeConsultasSql": 16,
