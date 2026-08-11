@@ -169,7 +169,7 @@ function resolverCustoUnitarioProdutoCadastro(produto = {}) {
 
 function resolverPrecosCadastroAposCompra(item = {}) {
   const atualizarVenda = Number(item.atualizar_preco_venda ?? 1) === 1;
-  const margem = Number(item.margem_lucro ?? 30);
+  const margem = Number(item.margem_lucro ?? 35);
   const precoCompra = resolverCustoUnitarioCadastro(item);
   const precoVenda = atualizarVenda && precoCompra > 0
     ? moeda(precoCompra * (1 + margem / 100))

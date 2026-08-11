@@ -1,7 +1,8 @@
 /**
- * Sprint 15.7 — Device Profile SDK
+ * Sprint 15.7 / RC14.14.3 — Device Profile SDK
  *
  * Plataforma extensível para novos fabricantes sem alterar o núcleo.
+ * Identidade Toledo: DriverIdentityResolver → TOLEDO_PRIX4_UNO
  */
 
 'use strict';
@@ -11,29 +12,33 @@ const DriverCapabilities = require('./DriverCapabilities');
 const DriverManifest = require('./DriverManifest');
 const DriverCompatibility = require('./DriverCompatibility');
 const DriverValidator = require('./DriverValidator');
+const DriverAdapter = require('./DriverAdapter');
+const DriverIdentityResolver = require('./DriverIdentityResolver');
 const registry = require('./DriverRegistry');
 const loader = require('./DriverLoader');
+const officialLoader = require('./OfficialDriverLoader');
 const DriverTemplateGenerator = require('./DriverTemplateGenerator');
 
 function ensureLoaded(opcoes = {}) {
-  if (!loader.estaCarregado() || opcoes.forcar) {
-    return loader.carregarTodos(opcoes);
-  }
-  return loader.obterRelatorio();
+  return officialLoader.ensureLoaded(opcoes);
 }
 
 function reload() {
-  return loader.reload();
+  return officialLoader.reload();
 }
 
 function listarDrivers(filtros = {}) {
   ensureLoaded();
-  return registry.listar(filtros);
+  return DriverAdapter.paraContratoErpLista(registry.listar(filtros));
 }
 
 function obterDriver(id) {
   ensureLoaded();
-  return registry.buscar(id);
+  const resolved = DriverIdentityResolver.resolve(id);
+  const p = registry.buscar(resolved.codigo)
+    || registry.buscar(resolved.codigo_sdk)
+    || registry.buscar(id);
+  return p ? DriverAdapter.paraContratoErp(p) : null;
 }
 
 module.exports = {
@@ -42,8 +47,12 @@ module.exports = {
   DriverManifest,
   DriverCompatibility,
   DriverValidator,
+  DriverAdapter,
+  DriverIdentityResolver,
+  OfficialDriverLoader: officialLoader,
   registry,
   loader,
+  officialLoader,
   DriverTemplateGenerator,
   get DriverSdkRoutes() {
     return require('./DriverSdkRoutes');
@@ -54,5 +63,7 @@ module.exports = {
   ensureLoaded,
   reload,
   listarDrivers,
-  obterDriver
+  obterDriver,
+  paraContratoErp: DriverAdapter.paraContratoErp,
+  paraContratoErpLista: DriverAdapter.paraContratoErpLista
 };

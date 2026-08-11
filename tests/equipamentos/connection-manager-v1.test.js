@@ -180,7 +180,8 @@ describe('Connection V1.0 — ConnectionManager', () => {
     const a = await manager.connect({ host: svc.host, porta: svc.port, persistir: false });
     const b = await manager.connect({ host: svc.host, porta: svc.port, persistir: false });
     assert.equal(a.status, 'CONNECTED');
-    assert.equal(b.status, 'CONNECTED');
+    assert.equal(b.status, 'CONNECTED_ALREADY');
+    assert.equal(b.reutilizada, true);
     assert.equal(manager.pool.size(), 1);
   });
 

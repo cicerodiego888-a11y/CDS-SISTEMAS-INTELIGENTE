@@ -205,7 +205,6 @@ class DiscoveryEngineV1 {
 
 const discoveryEngineV1 = new DiscoveryEngineV1();
 
+/** RC14.12.3 — exportar instância + classe; nunca sobrescrever métodos da instância. */
 module.exports = discoveryEngineV1;
 module.exports.DiscoveryEngineV1 = DiscoveryEngineV1;
-module.exports.executar = (...args) => discoveryEngineV1.executar(...args);
-module.exports.listarEquipamentos = (...args) => discoveryEngineV1.listarEquipamentos(...args);

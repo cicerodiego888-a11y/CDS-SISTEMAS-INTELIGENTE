@@ -159,6 +159,8 @@ function aplicarAlteracoesPosCriacao() {
 
   // Adicionar colunas faltantes na tabela vendas_itens (para suportar promoções e desconto atacado)
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN desconto_percentual DECIMAL(5,2) DEFAULT 0`);
+  aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN desconto_valor DECIMAL(10,2) DEFAULT 0`);
+  aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN desconto_manual INTEGER DEFAULT 0`);
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN promocao_id INTEGER`);
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN desconto_atacado DECIMAL(10,2) DEFAULT 0`);
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN tipo_preco TEXT DEFAULT 'varejo'`);
@@ -1550,6 +1552,28 @@ function criarTabelas() {
       console.error('Erro ao carregar schema produto_identificadores:', requireErr.message);
     }
 
+    // MIB-RC1.0 — Motor Inteligente de Busca (nome_busca + índices)
+    try {
+      const { garantirSchemaMib, obterMib } = require('./motores/mib');
+      garantirSchemaMib(db, (mibErr) => {
+        if (mibErr) {
+          console.error('Erro ao garantir schema MIB:', mibErr.message);
+          return;
+        }
+        try {
+          obterMib(db).iniciar().then((info) => {
+            console.log('[MIB] iniciado', info?.catalogo?.produtos ?? 0, 'produtos em memória');
+          }).catch((iniErr) => {
+            console.warn('[MIB] init lazy falhou:', iniErr.message);
+          });
+        } catch (iniReqErr) {
+          console.warn('[MIB] obterMib:', iniReqErr.message);
+        }
+      });
+    } catch (requireErr) {
+      console.error('Erro ao carregar schema MIB:', requireErr.message);
+    }
+
     // Sprint INFRA 02 — galeria produto_imagens (complementar a imagem_principal)
     try {
       const { garantirSchemaProdutoImagens } = require('./services/produto-imagem/produtoImagensSchema');
@@ -1595,7 +1619,9 @@ function criarTabelas() {
       "ALTER TABLE produtos ADD COLUMN unidade_comercial TEXT DEFAULT 'UN'",
       "ALTER TABLE produtos ADD COLUMN quantidade_por_embalagem REAL DEFAULT 0",
       "ALTER TABLE produtos ADD COLUMN compra_por_embalagem INTEGER DEFAULT 0",
-      "ALTER TABLE produtos ADD COLUMN valor_compra_embalagem REAL DEFAULT 0"
+      "ALTER TABLE produtos ADD COLUMN valor_compra_embalagem REAL DEFAULT 0",
+      // RC14.15.7 — equivalente operacional a "Integrar com Balança" (legado)
+      "ALTER TABLE produtos ADD COLUMN integrar_balanca INTEGER DEFAULT NULL"
     ];
 
     let migracaoConversaoUnidadesPendente = colunasProdutoPeso.length;
@@ -1802,6 +1828,8 @@ function criarTabelas() {
         quantidade DECIMAL(10,2) NOT NULL,
         preco_unitario DECIMAL(10,2) NOT NULL,
         desconto_percentual DECIMAL(5,2) DEFAULT 0,
+        desconto_valor DECIMAL(10,2) DEFAULT 0,
+        desconto_manual INTEGER DEFAULT 0,
         promocao_id INTEGER,
         desconto_atacado DECIMAL(10,2) DEFAULT 0,
         tipo_preco TEXT DEFAULT 'varejo',
@@ -3235,6 +3263,52 @@ db.serialize(() => {
     db.run(`
       CREATE INDEX IF NOT EXISTS idx_equipamentos_fila_prioridade ON equipamentos_fila(prioridade, created_at)
     `);
+
+    // RC15.4 — Histórico de sincronização produto ↔ balança (auditoria)
+    db.run(`
+      CREATE TABLE IF NOT EXISTS produto_balanca_sync_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        produto_id INTEGER,
+        equipamento_id INTEGER,
+        plu TEXT,
+        operacao TEXT,
+        resultado TEXT,
+        mensagem TEXT,
+        tempo_ms INTEGER,
+        usuario_id INTEGER,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `, (err) => {
+      if (err) console.error('Erro ao criar tabela produto_balanca_sync_log:', err);
+      else console.log('Tabela produto_balanca_sync_log criada/verificada');
+    });
+    db.run(`CREATE INDEX IF NOT EXISTS idx_pbs_log_produto ON produto_balanca_sync_log(produto_id)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_pbs_log_equipamento ON produto_balanca_sync_log(equipamento_id)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_pbs_log_created ON produto_balanca_sync_log(created_at)`);
+
+    // Sprint 14.15.1 — Histórico de exportação Bridge MGV6 (compatibilidade; sem conteúdo do arquivo)
+    db.run(`
+      CREATE TABLE IF NOT EXISTS equipamentos_mgv6_exports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        equipamento_id INTEGER,
+        arquivo TEXT,
+        pasta TEXT,
+        quantidade_produtos INTEGER,
+        status TEXT,
+        criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+        finalizado_em DATETIME,
+        erro TEXT,
+        tamanho_bytes INTEGER,
+        hash_arquivo TEXT,
+        mgv6_iniciado INTEGER DEFAULT 0,
+        mgv6_pid INTEGER
+      )
+    `, (err) => {
+      if (err) console.error('Erro ao criar tabela equipamentos_mgv6_exports:', err);
+      else console.log('Tabela equipamentos_mgv6_exports criada/verificada');
+    });
+    db.run(`CREATE INDEX IF NOT EXISTS idx_mgv6_exp_equip ON equipamentos_mgv6_exports(equipamento_id)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_mgv6_exp_criado ON equipamentos_mgv6_exports(criado_em)`);
 
     const catalogoDriversEquipamentos = [
       ['TOLEDO_PRIX4_UNO', 'Toledo', 'Prix 4 Uno', 'Toledo Prix 4 Uno', '["serial","ethernet"]', 'Balança Toledo Prix 4 Uno (driver pendente)'],

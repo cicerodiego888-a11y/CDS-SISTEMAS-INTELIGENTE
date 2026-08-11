@@ -8,6 +8,7 @@
 
 const { EventEmitter } = require('events');
 const TcpConnection = require('../TcpConnection');
+const { logDisconnectCall } = require('../SocketCloseAudit');
 
 class EthernetTransport extends EventEmitter {
   constructor(opcoes = {}) {
@@ -48,6 +49,11 @@ class EthernetTransport extends EventEmitter {
   }
 
   async disconnect() {
+    logDisconnectCall('EthernetTransport', 'disconnect()', {
+      socket: this._tcp?.socket || null,
+      host: this.host,
+      porta: this.porta
+    });
     await this._tcp.close();
     this.emit('disconnect');
   }
@@ -79,6 +85,11 @@ class EthernetTransport extends EventEmitter {
   }
 
   destroy() {
+    logDisconnectCall('EthernetTransport', 'destroy()', {
+      socket: this._tcp?.socket || null,
+      host: this.host,
+      porta: this.porta
+    });
     this._tcp.destroy();
   }
 }

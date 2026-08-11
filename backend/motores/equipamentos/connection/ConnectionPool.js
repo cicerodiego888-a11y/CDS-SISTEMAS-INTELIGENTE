@@ -56,7 +56,10 @@ class ConnectionPool {
   get(hostOrRef, porta) {
     if (typeof hostOrRef === 'object' && hostOrRef !== null) {
       const k = this._resolverChave(hostOrRef);
-      return (k && this._mapa.get(k)) || null;
+      if (!k) return null;
+      // RC15.6 — resolve alias (eq:N → hp:… e vice-versa); nunca buscar só a chave lógica
+      const primary = this._aliases.get(k) || k;
+      return this._mapa.get(primary) || this._mapa.get(k) || null;
     }
     if (porta != null) {
       const k = chaveHostPorta(hostOrRef, porta);

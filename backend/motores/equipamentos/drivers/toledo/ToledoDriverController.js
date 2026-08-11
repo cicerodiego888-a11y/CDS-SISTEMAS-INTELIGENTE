@@ -92,6 +92,38 @@ async function disconnect(req, res) {
   }
 }
 
+/**
+ * RC14.14.1 — POST /api/equipamentos/driver/toledo/reconnect
+ * TCP + Handshake + Health (nunca só socket).
+ */
+async function reconnect(req, res) {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const { PORTA_PADRAO } = require('./ToledoProtocol');
+    const host = body.host || body.ip;
+    const porta = body.porta != null ? body.porta : (body.porta_tcp != null ? body.porta_tcp : PORTA_PADRAO);
+    const driver = getOrCreateDriver(host, porta);
+    const result = await driver.reconnect({
+      host,
+      porta,
+      timeoutMs: body.timeoutMs,
+      handshakeTimeoutMs: body.handshakeTimeoutMs,
+      persistir: body.persistir !== false
+    });
+    return res.json({
+      success: true,
+      driver: result.driver || DRIVER,
+      status: result.status,
+      handshake: result.handshake === true,
+      latencia: result.latencia,
+      reconectado: true,
+      etapas: result.etapas || null
+    });
+  } catch (error) {
+    return responderErro(res, error, 'Erro ao reconectar driver Toledo.');
+  }
+}
+
 /** Apenas para testes */
 function _resetSessions() {
   sessions.clear();
@@ -101,6 +133,7 @@ module.exports = {
   connect,
   capabilities,
   disconnect,
+  reconnect,
   _resetSessions,
   getOrCreateDriver
 };

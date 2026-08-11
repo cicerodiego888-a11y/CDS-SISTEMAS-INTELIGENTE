@@ -6,17 +6,16 @@
 'use strict';
 
 const registry = require('./DriverRegistry');
-const loader = require('./DriverLoader');
+const officialLoader = require('./OfficialDriverLoader');
+const { paraContratoErp, paraContratoErpLista } = require('./DriverAdapter');
+const identity = require('./DriverIdentityResolver');
 
 function ensureLoaded(opcoes = {}) {
-  if (!loader.estaCarregado() || opcoes.forcar) {
-    return loader.carregarTodos(opcoes);
-  }
-  return loader.obterRelatorio();
+  return officialLoader.ensureLoaded(opcoes);
 }
 
 function reloadSdk() {
-  return loader.reload();
+  return officialLoader.reload();
 }
 
 function ok(res, data) {
@@ -76,10 +75,13 @@ const DriverSdkController = {
         capability: req.query.capability
       });
       drivers = await enriquecerContagem(drivers);
+      // RC14.13.2 — contrato oficial ERP (snake_case + codigo legado)
+      const contrato = paraContratoErpLista(drivers);
       return ok(res, {
-        drivers,
-        total: drivers.length,
-        relatorio: loader.obterRelatorio()
+        drivers: contrato,
+        total: contrato.length,
+        contrato: 'erp-oficial-v1',
+        relatorio: officialLoader.obterRelatorio()
       });
     } catch (error) {
       return fail(res, error);
@@ -89,12 +91,15 @@ const DriverSdkController = {
   async obter(req, res) {
     try {
       ensureLoaded();
-      const profile = registry.buscar(req.params.id);
+      const id = req.params.id;
+      const profile = registry.buscar(id)
+        || registry.buscar(identity.canonical(id))
+        || registry.buscar(identity.codigoSdk(id));
       if (!profile) {
         return fail(res, new Error(`Driver não encontrado: ${req.params.id}`), 404);
       }
       const [enriquecido] = await enriquecerContagem([profile.toJSON()]);
-      return ok(res, { driver: enriquecido });
+      return ok(res, { driver: paraContratoErp(enriquecido), contrato: 'erp-oficial-v1' });
     } catch (error) {
       return fail(res, error);
     }
@@ -128,11 +133,11 @@ const DriverSdkController = {
   async laboratorio(req, res) {
     try {
       ensureLoaded();
-      const rel = loader.obterRelatorio() || {};
+      const rel = officialLoader.obterRelatorio() || {};
       return ok(res, {
         laboratorio: {
           drivers: registry.listar(),
-          manifests: (rel.carregados || []).map((c) => ({
+          manifests: (rel.sdk?.carregados || rel.carregados || []).map((c) => ({
             id: c.id,
             arquivo: c.arquivo,
             tempoCargaMs: c.tempoCargaMs,

@@ -48,15 +48,24 @@ function novoManager(extras = {}) {
 }
 
 describe('Connection V2 — StateMachine', () => {
-  it('transita DISCONNECTED → CONNECTING → CONNECTED → IDLE → BUSY → IDLE', () => {
+  it('transita DISCONNECTED → CONNECTING → CONNECTED → BUSY → CONNECTED', () => {
     const fsm = new ConnectionStateMachine();
     assert.equal(fsm.estado, STATES.DISCONNECTED);
     fsm.transitar(STATES.CONNECTING);
     fsm.transitar(STATES.CONNECTED);
-    fsm.transitar(STATES.IDLE);
     fsm.transitar(STATES.BUSY);
-    fsm.transitar(STATES.IDLE);
+    fsm.transitar(STATES.CONNECTED);
     assert.equal(fsm.ativo, true);
+    assert.equal(fsm.estado, STATES.CONNECTED);
+  });
+
+  it('proíbe CONNECTING → IDLE (RC14.14.7)', () => {
+    const fsm = new ConnectionStateMachine();
+    fsm.transitar(STATES.CONNECTING);
+    assert.throws(
+      () => fsm.transitar(STATES.IDLE),
+      /proibida|inválida/i
+    );
   });
 
   it('rejeita transição inválida', () => {

@@ -27,7 +27,7 @@ function mockDriver() {
     isOnline() { return this._online; },
     async connect() {
       this._online = true;
-      return { status: 'CONNECTED', handshake: true, latencia: 1, driver: 'TOLEDO_PRIX4' };
+      return { status: 'CONNECTED', handshake: true, latencia: 1, driver: 'TOLEDO_PRIX4_UNO' };
     },
     async disconnect() { this._online = false; },
     async handshake() {
@@ -111,7 +111,7 @@ describe('Operations V1 — Ping / Handshake / Identify', () => {
     const r = await op.execute(ctx);
     assert.equal(r.success, true);
     assert.equal(r.data.identify, 'TOLEDO PRIX IV UNO');
-    assert.equal(r.data.driver, 'TOLEDO_PRIX4');
+    assert.equal(r.data.driver, 'TOLEDO_PRIX4_UNO');
   });
 });
 

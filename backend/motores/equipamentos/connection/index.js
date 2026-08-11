@@ -34,6 +34,10 @@ module.exports = {
   ConnectionEvents,
   ConnectionMetrics,
   ConnectionHeartbeat,
+  EquipmentSession: require('./EquipmentSession').EquipmentSession,
+  SESSION_STATE: require('./EquipmentSession').SESSION_STATE,
+  CONNECTION_MODE: require('./EquipmentSession').CONNECTION_MODE,
+  equipmentSessionRegistry: require('./EquipmentSessionRegistry'),
   EthernetTransport,
   SerialTransport,
   UsbTransport,
@@ -49,6 +53,8 @@ module.exports = {
   health: (...args) => connectionManager.health(...args),
   latency: (...args) => connectionManager.latency(...args),
   getConnection: (...args) => connectionManager.getConnection(...args),
+  getSessionSnapshot: (...args) => connectionManager.getSessionSnapshot(...args),
+  getSession: (...args) => connectionManager.getSession(...args),
   closeAll: (...args) => connectionManager.closeAll(...args),
   listConnections: (...args) => connectionManager.listConnections(...args)
 };

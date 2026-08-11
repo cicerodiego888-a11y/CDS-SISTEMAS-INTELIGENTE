@@ -64,6 +64,27 @@ ConnectionManager → TcpConnection → Balança
 
 ## 4. APIs principais
 
+### Capabilities homologadas (`ToledoCapabilities`)
+
+Fonte de verdade: `backend/motores/equipamentos/drivers/toledo/ToledoCapabilities.js`
+
+| Capability | Homologado |
+|------------|------------|
+| `handshake` | ✔ |
+| `ping` | ✔ |
+| `uploadPLU` | ✔ |
+| `downloadPLU` | ✔ |
+| `syncPLU` | ✔ |
+| `readWeight` | ✔ |
+| `monitor` | ✔ |
+| `downloadConfig` | ✔ |
+| `writeConfig` | ✔ |
+| `writeLabel` | ✖ |
+| `firmwareUpdate` | ✖ |
+| `autoReconnect` | ✖ |
+
+API: `GET /api/equipamentos/driver/toledo/capabilities`
+
 ### Driver / Diagnóstico (14.12)
 
 | Método | Rota |

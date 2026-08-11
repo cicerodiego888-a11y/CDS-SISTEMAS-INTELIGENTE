@@ -36,6 +36,8 @@ module.exports = {
   nomeExibicao: 'Toledo Prix IV Uno',
   meta: {
     catalogoLegado: 'TOLEDO_PRIX4_UNO',
-    fingerprintDriver: 'TOLEDO_PRIX4'
+    fingerprintDriver: 'TOLEDO_PRIX4_UNO',
+    runtimeModule: 'toledo/ToledoPrixIVDriver',
+    codigoOficial: 'TOLEDO_PRIX4_UNO'
   }
 };

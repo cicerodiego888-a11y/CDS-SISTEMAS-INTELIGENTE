@@ -322,8 +322,8 @@ class EthernetDiscovery {
 
 const ethernetDiscovery = new EthernetDiscovery();
 
+/** RC14.12.3 — exportar instância + classe/helpers; nunca sobrescrever métodos da instância. */
 module.exports = ethernetDiscovery;
 module.exports.EthernetDiscovery = EthernetDiscovery;
 module.exports.coletarDriversEthernet = coletarDriversEthernet;
 module.exports.DEFAULT_CONFIG = DEFAULT_CONFIG;
-module.exports.executar = (...args) => ethernetDiscovery.executar(...args);

@@ -36,6 +36,15 @@ class DriverRegistry {
     if (!id) return null;
     const key = String(id);
     if (this._byId.has(key)) return this._byId.get(key);
+    // RC14.14.3 — aliases Toledo
+    try {
+      const identity = require('./DriverIdentityResolver');
+      if (identity.ehToledo(key)) {
+        for (const alias of [identity.CODIGO_OFICIAL, identity.CODIGO_SDK, 'TOLEDO_PRIX4']) {
+          if (this._byId.has(alias)) return this._byId.get(alias);
+        }
+      }
+    } catch (_) { /* ignore */ }
     const lower = key.toLowerCase();
     for (const p of this._unique()) {
       if (String(p.id).toLowerCase() === lower || String(p.codigo || '').toLowerCase() === lower) {
@@ -43,6 +52,14 @@ class DriverRegistry {
       }
     }
     return null;
+  }
+
+  /** RC14.14.3 — alias → mesmo profile */
+  registrarAlias(idCanonico, alias) {
+    const p = this.buscar(idCanonico);
+    if (!p || !alias) return false;
+    this._byId.set(String(alias), p);
+    return true;
   }
 
   _unique() {

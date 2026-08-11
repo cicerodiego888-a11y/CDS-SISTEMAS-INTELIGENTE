@@ -39,17 +39,26 @@ async function processarFluxoPagamentoVenda({
   modoConfirmacaoFiscal,
   valorFiscalMaximo,
   preservacaoAplicada,
-  midpAtivo: midpAtivoEntrada
+  midpAtivo: midpAtivoEntrada,
+  desconto,
+  acrescimo,
+  subtotalBruto,
+  debugDescontoFiscal
 }) {
-  // Validações básicas
+  // Validações básicas — totalFiscal/totalNaoFiscal DEVEM ser líquidos (RC7.10.1 / FISCAL-4.0.2)
   totalFiscal = Number(totalFiscal || 0);
   totalNaoFiscal = Number(totalNaoFiscal || 0);
   const fiscalMaximo = Number(
     valorFiscalMaximo != null ? valorFiscalMaximo : totalFiscal
   );
+  const totalLiquidoEsperado = Math.round((totalFiscal + totalNaoFiscal) * 100) / 100;
   
-  // Normalizar pagamentos de entrada
-  const pagamentosEntrada = normalizarPagamentosEntrada(pagamentos, formaPagamento);
+  // Normalizar pagamentos de entrada (fallback cobre o líquido F+NF)
+  const pagamentosEntrada = normalizarPagamentosEntrada(
+    pagamentos,
+    formaPagamento,
+    totalLiquidoEsperado
+  );
   
   // RC8.2.2 — midpAtivo vem exclusivamente da política MPFC (núcleo).
   // Migração: omitido → false (não consulta configuracaoService).
@@ -74,9 +83,49 @@ async function processarFluxoPagamentoVenda({
       auditoria: resultadoMidp.auditoria
     }
   };
+
+  const totalPagamentos = pagamentosEntrada.reduce(
+    (s, p) => s + Number(p.valor || 0),
+    0
+  );
+  const pagamentoFiscalRecebido = (distribuicao.recebimentosFiscal || []).reduce(
+    (s, p) => s + Number(p.valor || 0),
+    0
+  );
+
+  logDebugDescontoFiscal({
+    ativo: debugDescontoFiscal,
+    subtotal: subtotalBruto,
+    desconto,
+    acrescimo,
+    total: totalLiquidoEsperado,
+    valorFiscal: totalFiscal,
+    valorNaoFiscal: totalNaoFiscal,
+    pagamentoFiscal: pagamentoFiscalRecebido,
+    pagamentoNaoFiscal: (distribuicao.recebimentosNaoFiscal || []).reduce(
+      (s, p) => s + Number(p.valor || 0),
+      0
+    ),
+    valorEsperado: totalFiscal,
+    valorRecebido: totalPagamentos,
+    saldoFiscal: distribuicao.saldoFiscal,
+    saldoNaoFiscal: distribuicao.saldoNaoFiscal
+  });
   
-  // Validar se o pagamento fiscal é suficiente
-  if (distribuicao.saldoFiscal > 0) {
+  // Validar se o pagamento fiscal é suficiente (tolerância de centavos)
+  if (Number(distribuicao.saldoFiscal || 0) > 0.009) {
+    logDebugDescontoFiscal({
+      ativo: debugDescontoFiscal,
+      motivoRejeicao: 'Pagamento fiscal insuficiente.',
+      subtotal: subtotalBruto,
+      desconto,
+      total: totalLiquidoEsperado,
+      valorFiscal: totalFiscal,
+      valorNaoFiscal: totalNaoFiscal,
+      valorEsperado: totalFiscal,
+      valorRecebido: totalPagamentos,
+      saldoFiscal: distribuicao.saldoFiscal
+    });
     return {
       sucesso: false,
       erro: 'Pagamento fiscal insuficiente.',
@@ -399,14 +448,14 @@ function determinarProximaAcao(statusPagamento, totalNaoFiscal) {
 }
 
 /**
- * Normaliza os pagamentos de entrada
+ * Normaliza os pagamentos de entrada.
+ * HOTFIX FISCAL-4.0.2: fallback usa o total líquido F+NF (nunca 0).
  */
-function normalizarPagamentosEntrada(pagamentos, formaPagamentoPadrao) {
+function normalizarPagamentosEntrada(pagamentos, formaPagamentoPadrao, totalLiquidoEsperado = 0) {
   if (!Array.isArray(pagamentos) || pagamentos.length === 0) {
-    // Se não informou pagamentos, cria um com a forma padrão
     return [{
       forma_pagamento: formaPagamentoPadrao || 'dinheiro',
-      valor: 0 // Será ajustado pelo distribuidor
+      valor: Number(totalLiquidoEsperado || 0)
     }];
   }
   
@@ -416,6 +465,33 @@ function normalizarPagamentosEntrada(pagamentos, formaPagamentoPadrao) {
     tef_transacao_id: p.tef_transacao_id || null,
     nsu: p.nsu || null,
     autorizacao: p.autorizacao || null
+  }));
+}
+
+/**
+ * Log temporário de auditoria desconto × pagamento (só com CDS_DEBUG_DESCONTO_FISCAL=1).
+ */
+function logDebugDescontoFiscal(payload = {}) {
+  const ativoEnv = process.env.CDS_DEBUG_DESCONTO_FISCAL === '1';
+  if (!ativoEnv && !payload.ativo) return;
+  const {
+    ativo,
+    ...resto
+  } = payload;
+  console.log('[DEBUG_DESCONTO_FISCAL]', JSON.stringify({
+    subtotal: resto.subtotal != null ? Number(resto.subtotal) : null,
+    desconto: resto.desconto != null ? Number(resto.desconto) : null,
+    acrescimo: resto.acrescimo != null ? Number(resto.acrescimo) : null,
+    total: resto.total != null ? Number(resto.total) : null,
+    valorFiscal: resto.valorFiscal != null ? Number(resto.valorFiscal) : null,
+    valorNaoFiscal: resto.valorNaoFiscal != null ? Number(resto.valorNaoFiscal) : null,
+    pagamentoFiscal: resto.pagamentoFiscal != null ? Number(resto.pagamentoFiscal) : null,
+    pagamentoNaoFiscal: resto.pagamentoNaoFiscal != null ? Number(resto.pagamentoNaoFiscal) : null,
+    valorEsperado: resto.valorEsperado != null ? Number(resto.valorEsperado) : null,
+    valorRecebido: resto.valorRecebido != null ? Number(resto.valorRecebido) : null,
+    saldoFiscal: resto.saldoFiscal != null ? Number(resto.saldoFiscal) : null,
+    saldoNaoFiscal: resto.saldoNaoFiscal != null ? Number(resto.saldoNaoFiscal) : null,
+    motivoRejeicao: resto.motivoRejeicao || null
   }));
 }
 
@@ -461,5 +537,7 @@ module.exports = {
   processarFluxoPagamentoVenda,
   processarPagamentoNaoFiscal,
   determinarStatusPagamento,
-  montarRecebimentosParaGravar
+  montarRecebimentosParaGravar,
+  normalizarPagamentosEntrada,
+  logDebugDescontoFiscal
 };

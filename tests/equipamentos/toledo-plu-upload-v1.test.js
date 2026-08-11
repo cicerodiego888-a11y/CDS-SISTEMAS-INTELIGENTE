@@ -45,6 +45,7 @@ describe('PLU V1 — Mapper', () => {
       preco_venda: 89.9,
       tara: 0.01,
       departamento_id: 3,
+      unidade: 'kg',
       ean: '789123'
     });
     assert.equal(plu.produto_id, 7);
@@ -59,12 +60,36 @@ describe('PLU V1 — Mapper', () => {
 describe('PLU V1 — Validator', () => {
   it('aceita PLU válido e rejeita inválido', () => {
     assert.equal(validator.validate({
-      plu: '1001', descricao: 'Picanha', preco: 10
+      plu: '1001', descricao: 'Picanha', preco: 10, departamento: 1, unidade: 'kg'
     }).ok, true);
-    assert.equal(validator.validate({ plu: '', descricao: 'X', preco: 1 }).ok, false);
-    assert.equal(validator.validate({ plu: '1', descricao: '', preco: 1 }).ok, false);
-    assert.equal(validator.validate({ plu: '1', descricao: 'X', preco: NaN }).ok, false);
-    assert.throws(() => validator.assertValid({ plu: '', descricao: 'A', preco: 1 }));
+    assert.equal(validator.validate({ plu: '', descricao: 'X', preco: 1, departamento: 1, unidade: 'kg' }).ok, false);
+    assert.equal(validator.validate({ plu: '1', descricao: '', preco: 1, departamento: 1, unidade: 'kg' }).ok, false);
+    assert.equal(validator.validate({ plu: '1', descricao: 'X', preco: NaN, departamento: 1, unidade: 'kg' }).ok, false);
+    assert.throws(() => validator.assertValid({ plu: '', descricao: 'A', preco: 1, departamento: 1, unidade: 'kg' }));
+  });
+
+  it('RC15.5 — ValidationReport com campo/valor/motivo', () => {
+    const report = validator.buildReport({
+      plu: '9999',
+      descricao: 'CDS TESTE',
+      preco: 0,
+      departamento: null,
+      unidade: 'kg'
+    });
+    assert.equal(report.success, false);
+    assert.ok(Array.isArray(report.errors));
+    assert.ok(report.errors.some((e) => e.campo === 'departamento'));
+    assert.ok(report.errors.some((e) => e.campo === 'preco' && /maior que zero/i.test(e.motivo)));
+    assert.ok(report.errors.every((e) => e.campo && e.motivo));
+    try {
+      validator.assertValid({ plu: '9999', descricao: 'X', preco: 0, departamento: null, unidade: 'kg' });
+      assert.fail('deveria lançar');
+    } catch (err) {
+      assert.equal(err.code, CODES.VALIDATION_ERROR);
+      assert.ok(err.validationReport);
+      assert.notEqual(err.message, 'VALIDATION_ERROR');
+      assert.match(err.message, /Departamento|Preço/i);
+    }
   });
 });
 
@@ -140,7 +165,9 @@ describe('PLU V1 — Engine upload / lote / retry / NACK', () => {
     const r = await engine.upload({
       plu: '1001',
       descricao: 'Picanha',
-      preco: 12.5
+      preco: 12.5,
+      departamento: 1,
+      unidade: 'kg'
     }, { host: '10.0.0.170', porta: 9000, persistir: false });
     assert.equal(r.success, true);
     assert.equal(r.plu, '1001');
@@ -149,8 +176,8 @@ describe('PLU V1 — Engine upload / lote / retry / NACK', () => {
   it('uploadMany com progresso', async () => {
     const progressos = [];
     const r = await engine.uploadMany([
-      { plu: '1', descricao: 'A', preco: 1 },
-      { plu: '2', descricao: 'B', preco: 2 }
+      { plu: '1', descricao: 'A', preco: 1, departamento: 1, unidade: 'kg' },
+      { plu: '2', descricao: 'B', preco: 2, departamento: 1, unidade: 'kg' }
     ], {
       host: '10.0.0.170',
       porta: 9000,
@@ -173,7 +200,7 @@ describe('PLU V1 — Engine upload / lote / retry / NACK', () => {
       }
     });
     await assert.rejects(
-      () => eng.upload({ plu: '1', descricao: 'A', preco: 1 }, {
+      () => eng.upload({ plu: '1', descricao: 'A', preco: 1, departamento: 1, unidade: 'kg' }, {
         host: '10.0.0.170', porta: 9000, persistir: false
       }),
       (err) => err.code === CODES.NACK || err.code === CODES.UPLOAD_ERROR
@@ -188,7 +215,7 @@ describe('PLU V1 — Engine upload / lote / retry / NACK', () => {
     const r = await engine.retry(99, {
       host: '10.0.0.170',
       porta: 9000,
-      produto: { plu: '1001', descricao: 'Picanha', preco: 10 }
+      produto: { plu: '1001', descricao: 'Picanha', preco: 10, departamento: 1, unidade: 'kg' }
     });
     assert.equal(r.success, true);
   });

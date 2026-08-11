@@ -36,13 +36,20 @@ async function connect(req, res) {
   try {
     const alvo = extrairAlvo(req);
     const result = await connectionManager.connect(alvo);
+    // RC14.14.9 — JSON espelha exatamente a EquipmentSession oficial
+    const session = result.session || null;
     return res.json({
       status: result.status,
-      estado: result.estado,
-      latencia: result.latencia,
+      estado: session?.state || result.estado,
+      latencia: session?.latency != null ? session.latency : result.latencia,
       reutilizada: result.reutilizada || false,
-      equipamentoId: result.equipamentoId || null,
-      transporte: result.transporte || null
+      equipamentoId: result.equipamentoId || session?.equipamentoId || null,
+      transporte: result.transporte || null,
+      connectionMode: session?.connectionMode || result.connectionMode || null,
+      connected: session?.connected === true,
+      persistent: session?.persistent === true,
+      session,
+      mensagem: result.status === 'CONNECTED_ALREADY' ? 'Já conectado' : null
     });
   } catch (error) {
     return responderErro(res, error, 'Erro ao conectar.');
@@ -58,30 +65,32 @@ async function status(req, res) {
       err.statusCode = 400;
       throw err;
     }
-    // host/porta sync path
-    if (alvo.host && alvo.porta && !alvo.equipamentoId) {
-      const h = connectionManager.health({ host: alvo.host, porta: alvo.porta });
-      return res.json({
-        status: h.status,
-        estado: h.estado,
-        latencia: h.latencia,
-        uptime: h.uptime,
-        metricas: h.metricas,
-        socket: h.socket,
-        heartbeat: h.heartbeat
-      });
-    }
-    const opts = await Promise.resolve(alvo);
+    const opts = {
+      host: alvo.host,
+      porta: alvo.porta != null ? Number(alvo.porta) : undefined,
+      equipamentoId: alvo.equipamentoId || alvo.id || undefined
+    };
     const h = connectionManager.health(opts);
+    const blocos = typeof connectionManager.getSessionSnapshot === 'function'
+      ? connectionManager.getSessionSnapshot(opts)
+      : { session: h.session, conexao: h.conexao, monitor: h.monitor };
+
+    // RC14.14.6 — Conexão e Monitor sempre idênticos (EquipmentSession)
     return res.json({
-      status: h.status,
-      estado: h.estado,
-      latencia: h.latencia,
+      status: blocos.session?.state || h.status,
+      estado: blocos.session?.state || h.estado,
+      connected: blocos.session?.connected === true,
+      conectado: blocos.session?.connected === true,
+      latencia: blocos.session?.latency != null ? blocos.session.latency : h.latencia,
       uptime: h.uptime,
       metricas: h.metricas,
       socket: h.socket,
       heartbeat: h.heartbeat,
-      equipamentoId: h.equipamentoId
+      connectionMode: blocos.session?.connectionMode || null,
+      session: blocos.session,
+      conexao: blocos.conexao,
+      monitor: blocos.monitor,
+      equipamentoId: h.equipamentoId || opts.equipamentoId || null
     });
   } catch (error) {
     return responderErro(res, error, 'Erro ao consultar status.');
@@ -103,16 +112,36 @@ async function disconnect(req, res) {
   }
 }
 
-/** POST /api/equipamentos/reconnect */
+/** POST /api/equipamentos/reconnect — RC14.14.1: TCP + Handshake (Driver Toledo) */
 async function reconnect(req, res) {
   try {
     const alvo = extrairAlvo(req);
-    const result = await connectionManager.reconnect(alvo);
+    const { PORTA_PADRAO } = require('../drivers/toledo/ToledoProtocol');
+    const host = alvo.host;
+    const porta = Number(alvo.porta) || PORTA_PADRAO;
+    if (!host) {
+      const err = new Error('host é obrigatório para reconnect.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const { getOrCreateDriver } = require('../drivers/toledo/ToledoDriverController');
+    const driver = getOrCreateDriver(host, porta);
+    const result = await driver.reconnect({
+      host,
+      porta,
+      timeoutMs: alvo.timeoutMs,
+      persistir: alvo.persistir
+    });
+
     return res.json({
-      status: result.status,
-      estado: result.estado,
+      success: true,
+      status: result.status || 'CONNECTED',
+      handshake: result.handshake === true,
       latencia: result.latencia,
-      reconexoes: result.reconexoes
+      reconectado: true,
+      etapas: result.etapas || null,
+      equipamentoId: alvo.equipamentoId || null
     });
   } catch (error) {
     return responderErro(res, error, 'Erro ao reconectar.');

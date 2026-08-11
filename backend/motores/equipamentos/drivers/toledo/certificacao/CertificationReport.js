@@ -1,5 +1,5 @@
 /**
- * Sprint 14.12 — Relatório consolidado de certificação
+ * Sprint 14.12 / RC15.0.1 — Relatório consolidado de certificação
  */
 
 'use strict';
@@ -7,8 +7,12 @@
 const { diagnostics } = require('./ToledoDiagnostics');
 const { getVersion } = require('./ToledoVersion');
 
-function buildCertificationReport(opcoes = {}) {
-  const diag = diagnostics(opcoes);
+async function buildCertificationReport(opcoes = {}) {
+  // Certificação estrutural não precisa abrir socket por padrão
+  const diag = await diagnostics({
+    ...opcoes,
+    probe: opcoes.probe === true
+  });
   const version = getVersion();
 
   return {
@@ -28,6 +32,7 @@ function buildCertificationReport(opcoes = {}) {
       status: r.status
     })),
     capacidades: diag.capabilities,
+    etapas_conexao: diag.etapas_conexao,
     geradoEm: new Date().toISOString()
   };
 }

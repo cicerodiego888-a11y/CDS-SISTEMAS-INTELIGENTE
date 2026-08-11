@@ -64,7 +64,7 @@ function gerarDriver(opcoes = {}) {
     versao: '0.1.0',
     prioridade: Number(opcoes.prioridade) || 100,
     discovery: {
-      ports: Array.isArray(opcoes.ports) ? opcoes.ports : [9100],
+      ports: Array.isArray(opcoes.ports) ? opcoes.ports : [9000],
       timeout: 500
     },
     capabilities: {

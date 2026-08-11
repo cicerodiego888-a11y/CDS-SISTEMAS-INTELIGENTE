@@ -13,6 +13,8 @@ const UploadPluOperation = require('./UploadPluOperation');
 const { PluError, CODES } = require('./ToledoPluErrors');
 const { ToledoOperationEngine } = require('../operations/ToledoOperationEngine');
 const OperationContext = require('../operations/OperationContext');
+const SessionOriginAudit = require('../../../connection/SessionOriginAudit');
+const UploadPipelineAudit = require('./UploadPipelineAudit');
 
 let logger = null;
 function getLogger() {
@@ -80,6 +82,13 @@ class ToledoPluEngine {
   }
 
   /**
+   * RC15.3 — alias oficial de upload de um produto (sem lógica extra).
+   */
+  async uploadOne(produtoOuPlu, opcoes = {}) {
+    return this.upload(produtoOuPlu, opcoes);
+  }
+
+  /**
    * Upload de um produto/PLU.
    */
   async upload(produtoOuPlu, opcoes = {}) {
@@ -93,118 +102,180 @@ class ToledoPluEngine {
     }
 
     const plu = mapper.map(produtoOuPlu);
+    const equipamentoId = opcoes.equipamentoId ?? opcoes.equipamento_id ?? opcoes.id ?? null;
+    const alvoSessao = {
+      host,
+      porta,
+      equipamentoId: equipamentoId != null ? Number(equipamentoId) : undefined
+    };
 
     await log.info('Produto iniciado', {
       operacao: 'plu_upload_v1',
-      contexto: { plu: plu.plu, host, porta }
+      contexto: { plu: plu.plu, host, porta, equipamentoId }
     });
 
-    validator.assertValid(plu);
-
-    const frame = builder.build(plu);
-    await log.info('Frame criado', {
-      operacao: 'plu_upload_v1',
-      contexto: { plu: plu.plu, bytes: frame.length }
-    });
-
-    let syncId = null;
-    if (opcoes.persistir !== false) {
-      syncId = await this.repository.registrarInicio({
-        produto_id: plu.produto_id,
-        plu: plu.plu,
-        host,
-        porta
-      });
-    }
-
-    if (!opcoes._batch) {
-      this._status = {
-        running: true,
-        total: 1,
-        done: 0,
-        ok: 0,
-        erro: 0,
-        current: plu.plu
-      };
-    } else {
-      this._status.current = plu.plu;
-    }
-
-    try {
-      if (this._cancelled) {
-        throw PluError.fromCode(CODES.UPLOAD_CANCELLED, 'Upload cancelado');
+    // RC15.7 — audita CONNECT → HANDSHAKE → UPLOAD → ACK (sem alterar fluxo)
+    const requireHandshakeBeforeUpload = UploadPipelineAudit.resolverRequireHandshake(opcoes);
+    return UploadPipelineAudit.run({
+      plu: plu.plu,
+      host,
+      porta,
+      equipamentoId: alvoSessao.equipamentoId,
+      requireHandshakeBeforeUpload
+    }, async () => {
+      // RC15.6 — mesma EquipmentSession do Diagnóstico
+      let sessionAudit;
+      try {
+        sessionAudit = SessionOriginAudit.assertMesmaSessaoQueDiagnostico(alvoSessao);
+      } catch (sessErr) {
+        if (sessErr.code === 'UPLOAD_USANDO_SESSAO_DIFERENTE') {
+          throw PluError.fromCode(
+            'UPLOAD_USANDO_SESSAO_DIFERENTE',
+            sessErr.message,
+            {
+              statusCode: 409,
+              diagnostico: sessErr.diagnostico,
+              upload: sessErr.upload,
+              divergencias: sessErr.divergencias
+            }
+          );
+        }
+        throw sessErr;
       }
 
-      const engine = this._engine();
-      await log.info('Operação enviada', {
+      // RC15.5 — ValidationReport (campo/valor/motivo); log no terminal
+      const validationReport = validator.assertValid(plu, produtoOuPlu);
+      await log.info('Validação PLU', {
         operacao: 'plu_upload_v1',
-        contexto: { plu: plu.plu }
+        contexto: {
+          plu: plu.plu,
+          produto_id: plu.produto_id,
+          checklist: validator.formatChecklist(validationReport),
+          success: true
+        }
       });
 
-      const chave = `${host}:${porta}`;
-      const result = await engine.queue.enqueue(chave, async () => {
-        const driver = await engine._ensureDriver(host, porta, opcoes);
-        const op = new UploadPluOperation({
-          plu,
-          frame,
-          timeout: opcoes.timeout
-        });
-        const ctx = new OperationContext({
+      const frame = builder.build(plu);
+      await log.info('Frame criado', {
+        operacao: 'plu_upload_v1',
+        contexto: { plu: plu.plu, bytes: frame.length }
+      });
+
+      let syncId = null;
+      if (opcoes.persistir !== false) {
+        syncId = await this.repository.registrarInicio({
+          produto_id: plu.produto_id,
+          plu: plu.plu,
           host,
-          porta,
-          driver,
-          connection: { host, porta, via: 'ConnectionManager' }
+          porta
         });
-        return op.execute(ctx);
-      });
-
-      if (!result.success) {
-        throw PluError.fromCode(
-          result.error === 'NACK' || String(result.error).includes('NACK')
-            ? CODES.NACK
-            : CODES.UPLOAD_ERROR,
-          result.error || 'Falha no upload',
-          { statusCode: 502 }
-        );
       }
-
-      await log.info('ACK', {
-        operacao: 'plu_upload_v1',
-        contexto: { plu: plu.plu }
-      });
-
-      if (syncId != null) await this.repository.confirmar(syncId);
-
-      await log.info('Produto sincronizado', {
-        operacao: 'plu_upload_v1',
-        contexto: { plu: plu.plu, syncId }
-      });
 
       if (!opcoes._batch) {
-        this._status.done = 1;
-        this._status.ok = 1;
-        this._status.running = false;
+        this._status = {
+          running: true,
+          total: 1,
+          done: 0,
+          ok: 0,
+          erro: 0,
+          current: plu.plu
+        };
+      } else {
+        this._status.current = plu.plu;
       }
 
-      return {
-        success: true,
-        plu: plu.plu,
-        syncId,
-        duration: result.duration,
-        bytesSent: result.bytesSent,
-        bytesReceived: result.bytesReceived
-      };
-    } catch (err) {
-      if (!opcoes._batch) {
-        this._status.done = 1;
-        this._status.erro = 1;
-        this._status.running = false;
+      try {
+        if (this._cancelled) {
+          throw PluError.fromCode(CODES.UPLOAD_CANCELLED, 'Upload cancelado');
+        }
+
+        const engine = this._engine();
+        await log.info('Operação enviada', {
+          operacao: 'plu_upload_v1',
+          contexto: { plu: plu.plu }
+        });
+
+        const chave = `${host}:${porta}`;
+        const { withBusy, OP_BUSY } = require('../../../connection/SessionBusy');
+        const result = await withBusy(alvoSessao, OP_BUSY.UPLOAD, () => engine.queue.enqueue(chave, async () => {
+          const driver = await engine._ensureDriver(host, porta, {
+            ...opcoes,
+            equipamentoId: alvoSessao.equipamentoId
+          });
+          const op = new UploadPluOperation({
+            plu,
+            frame,
+            produto: produtoOuPlu,
+            timeout: opcoes.timeout
+          });
+          const ctx = new OperationContext({
+            host,
+            porta,
+            equipamentoId: alvoSessao.equipamentoId,
+            driver,
+            connection: {
+              host,
+              porta,
+              equipamentoId: alvoSessao.equipamentoId,
+              via: 'ConnectionManager',
+              sessionKey: sessionAudit?.upload?.sessionKey || null
+            }
+          });
+          return op.execute(ctx);
+        }));
+
+        if (!result.success) {
+          UploadPipelineAudit.marcar('ACK', 'FALHOU', { motivo: result.error || 'Falha no upload' });
+          throw PluError.fromCode(
+            result.error === 'NACK' || String(result.error).includes('NACK')
+              ? CODES.NACK
+              : CODES.UPLOAD_ERROR,
+            result.error || 'Falha no upload',
+            { statusCode: 502 }
+          );
+        }
+
+        UploadPipelineAudit.marcar('ACK', 'OK');
+        await log.info('ACK', {
+          operacao: 'plu_upload_v1',
+          contexto: { plu: plu.plu }
+        });
+
+        if (syncId != null) await this.repository.confirmar(syncId);
+
+        await log.info('Produto sincronizado', {
+          operacao: 'plu_upload_v1',
+          contexto: { plu: plu.plu, syncId }
+        });
+
+        if (!opcoes._batch) {
+          this._status.done = 1;
+          this._status.ok = 1;
+          this._status.running = false;
+        }
+
+        return {
+          success: true,
+          plu: plu.plu,
+          syncId,
+          duration: result.duration,
+          bytesSent: result.bytesSent,
+          bytesReceived: result.bytesReceived,
+          sessionOrigin: sessionAudit?.upload || null,
+          pipelineAudit: UploadPipelineAudit.snapshot()
+        };
+      } catch (err) {
+        if (!opcoes._batch) {
+          this._status.done = 1;
+          this._status.erro = 1;
+          this._status.running = false;
+        }
+        if (syncId != null) {
+          try { await this.repository.falhar(syncId, err.message || err.code); } catch (_) { /* ignore */ }
+        }
+        throw err;
       }
-      if (syncId != null) {
-        try { await this.repository.falhar(syncId, err.message || err.code); } catch (_) { /* ignore */ }
-      }
-      throw err;
-    }
+    });
   }
 
   /**
@@ -233,10 +304,17 @@ class ToledoPluEngine {
         resultados.push(r);
         this._status.ok += 1;
       } catch (err) {
+        const report = err.validationReport || err.meta?.validationReport || null;
+        const motivos = report?.errors?.map((e) => e.motivo) || [];
         resultados.push({
           success: false,
           plu: item.plu || item.codigo || null,
-          error: err.code || err.message
+          error: motivos.length ? motivos.join(' ') : (err.message || err.code),
+          code: err.code || null,
+          mensagem: 'Produto não enviado',
+          motivos,
+          validationReport: report,
+          errors: report?.errors || null
         });
         this._status.erro += 1;
       }

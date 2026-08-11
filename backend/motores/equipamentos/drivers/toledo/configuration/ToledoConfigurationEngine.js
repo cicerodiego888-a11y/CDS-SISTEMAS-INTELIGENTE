@@ -60,7 +60,8 @@ class ToledoConfigurationEngine {
   async _enqueue(mode, { host, porta, parametros, timeout, persistir }) {
     const engine = this._engine();
     const chave = `${host}:${porta}`;
-    return engine.queue.enqueue(chave, async () => {
+    const { withBusy, OP_BUSY } = require('../../../connection/SessionBusy');
+    return withBusy({ host, porta }, OP_BUSY.CONFIG, () => engine.queue.enqueue(chave, async () => {
       const driver = await engine._ensureDriver(host, porta, { persistir });
       const op = new ToledoConfigurationOperation({
         mode,
@@ -74,7 +75,7 @@ class ToledoConfigurationEngine {
         connection: { host, porta, via: 'ConnectionManager' }
       });
       return op.execute(ctx);
-    });
+    }));
   }
 
   /**

@@ -9,11 +9,20 @@ const engine = require('./Toledo90AXEngine');
 const connectionManager = require('../../../connection/ConnectionManager');
 
 function responderErro(res, error, mensagemPadrao = 'Erro de protocolo', statusPadrao = 500) {
-  const status = error.statusCode || statusPadrao;
+  const msg = error?.message || mensagemPadrao;
+  const semRx = error?.code === 'RX_TIMEOUT'
+    || error?.code === 'TIMEOUT'
+    || error?.name === 'TimeoutError'
+    || /timeout|nenhuma resposta|aguardando resposta/i.test(String(msg));
+  const status = semRx ? (error.statusCode || 408) : (error.statusCode || statusPadrao);
   return res.status(status).json({
     success: false,
-    error: error.message || mensagemPadrao,
-    code: error.code || null
+    sucesso: false,
+    error: semRx ? 'Nenhuma resposta recebida da balança.' : msg,
+    mensagem: semRx ? 'Nenhuma resposta recebida da balança.' : msg,
+    code: error?.code || (semRx ? 'RX_TIMEOUT' : null),
+    timeout: semRx === true,
+    txHex: error?.hex_enviado || error?.txHex || null
   });
 }
 

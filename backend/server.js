@@ -94,6 +94,11 @@ app.get(['/erp', '/erp/'], verificarToken, (req, res) => {
 
 // Rotas protegidas (API)
 const produtosRoutes = require('./rotas/produtos');
+const searchRoutes = require('./rotas/search');
+const intelligenceRoutes = require('./rotas/intelligence');
+const agentRoutes = require('./rotas/agent');
+const pluginsRoutes = require('./rotas/plugins');
+const businessMonitorRoutes = require('./rotas/business-monitor');
 const clientesRoutes = require('./rotas/clientes');
 const comprasRoutes = require('./rotas/compras');
 const categoriasRoutes = require('./rotas/categorias');
@@ -160,6 +165,11 @@ app.use('/api', apiAuthLicencaGate);
 app.use('/api/licenca', licencaRoutes);
 
 app.use('/api/produtos', verificarToken, produtosRoutes);
+app.use('/api/search', verificarToken, searchRoutes);
+app.use('/api/intelligence', verificarToken, intelligenceRoutes);
+app.use('/api/agent', verificarToken, agentRoutes);
+app.use('/api/plugins', verificarToken, pluginsRoutes);
+app.use('/api/business-monitor', verificarToken, businessMonitorRoutes);
 app.use('/api/clientes', verificarToken, clientesRoutes);
 app.use('/api/compras', verificarToken, comprasRoutes);
 app.use('/api/miip', verificarToken, miipRoutes);
@@ -373,6 +383,13 @@ function registrarEncerramentoBackground() {
             const health = require('./motores/central-entradas/health');
             health.parar();
         } catch { /* ignore */ }
+        // RC14.14.8 — fecha sockets de equipamentos ao encerrar ERP/servidor
+        try {
+            const cm = require('./motores/equipamentos/connection/ConnectionManager');
+            if (cm && typeof cm.closeAll === 'function') {
+                cm.closeAll().catch(() => {});
+            }
+        } catch { /* ignore */ }
     };
     process.on('SIGTERM', encerrarBackground);
     process.on('SIGINT', encerrarBackground);
@@ -412,6 +429,14 @@ db.whenReady(async (readyErr) => {
             // RC12.1 — Observability Bus adapters (observe-only)
             try {
                 require('./observabilidade').iniciar();
+            } catch (_) { /* ignore */ }
+            // CIA-APPS — plugins opcionais (falha nunca derruba boot)
+            try {
+                const { bootstrapPlugins } = require('./plugins');
+                void bootstrapPlugins({ db }).then((r) => {
+                    if (r && r.ok) bootLog('CIA-APPS READY', { plugins: (r.results || []).length });
+                    else bootLog('CIA-APPS SKIP', { erro: r && r.error });
+                }).catch(() => { /* ignore */ });
             } catch (_) { /* ignore */ }
             void iniciarServicosBackgroundGrupoB();
         });

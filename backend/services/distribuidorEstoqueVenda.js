@@ -9,7 +9,9 @@
  * (unidades não fracionáveis nunca ficam fracionadas na composição).
  *
  * O Motor NUNCA altera total da venda, preços, descontos ou produtos.
- * RC7.10.1: desconto/acréscimo comercial são aplicados depois, via valorFiscalLiquido.
+ * RC7.10.1 / HOTFIX FISCAL-4.0.2: desconto/acréscimo comercial (Valor Fiscal Líquido)
+ * são aplicados na faixa F×NF máxima ANTES do efetivo/MIDP, para a validação de
+ * pagamento operar sempre sobre o líquido (nunca sobre o subtotal bruto).
  */
 
 const {
@@ -520,14 +522,18 @@ function somarPagamentosNaoDinheiro(pagamentos = [], totalVenda = 0) {
     }
   }
   dinheiro = round2(dinheiro);
-  const total = round2(totalVenda);
+  informado = round2(informado);
+  // HOTFIX FISCAL-4.0.2: quando há pagamentos informados, a capacidade comercial
+  // é a soma paga (líquida), não o subtotal bruto — evita tratar desconto como
+  // "pagamento eletrônico fantasma" (totalBruto - dinheiro).
+  const totalReferencia = informado > 0.009 ? informado : round2(totalVenda);
   // Se não há detalhe de pagamentos, não há preservação a aplicar.
   if (lista.length === 0 || informado <= 0) {
-    return { valorDinheiro: 0, valorNaoDinheiro: total };
+    return { valorDinheiro: 0, valorNaoDinheiro: round2(totalVenda) };
   }
   return {
     valorDinheiro: dinheiro,
-    valorNaoDinheiro: round2(Math.max(0, total - dinheiro))
+    valorNaoDinheiro: round2(Math.max(0, totalReferencia - dinheiro))
   };
 }
 
@@ -750,46 +756,86 @@ function distribuirItensVendaComValorFiscalEfetivo(entradas = [], vendaFiscal = 
     itensMax.reduce((s, i) => s + Number(i.valor_nao_fiscal || 0), 0)
   );
   const totalVendaBruto = round2(valorFiscalMaximoBruto + valorNaoFiscalMaximoBruto);
+  const valorFiscalMinimoBruto = valorFiscalMinimo;
+
+  // HOTFIX FISCAL-4.0.2 — rateio comercial (líquido) ANTES do efetivo/MIDP.
+  // Antes: efetivo rodava no bruto com pagamentos já líquidos → desconto virava
+  // "falso eletrônico" em somarPagamentosNaoDinheiro e a validação podia
+  // exigir valor fiscal bruto enquanto o operador pagava o líquido.
+  const liquidoMax = calcularValorFiscalLiquido({
+    valorFiscalBruto: valorFiscalMaximoBruto,
+    valorNaoFiscalBruto: valorNaoFiscalMaximoBruto,
+    desconto,
+    acrescimo
+  });
+
+  const fatorComercial = liquidoMax.ajustado ? Number(liquidoMax.fator) : 1;
+  let itensLiquidosMax = aplicarValorFiscalLiquidoNosItens(itensMax, liquidoMax).map((item, idx) => {
+    const src = itensMax[idx] || item;
+    return {
+      ...item,
+      valor_fiscal_minimo: round2(Number(src.valor_fiscal_minimo || 0) * fatorComercial),
+      valor_nao_fiscal_maximo: round2(Number(src.valor_nao_fiscal_maximo || 0) * fatorComercial),
+      valor_fiscal_maximo: round2(Number(src.valor_fiscal_maximo || 0) * fatorComercial)
+    };
+  });
+
+  const valorFiscalMaximoLiquido = round2(
+    itensLiquidosMax.reduce((s, i) => s + Number(i.valor_fiscal || 0), 0)
+  );
+  const valorFiscalMinimoLiquido = calcularValorFiscalMaximoLiquido(
+    valorFiscalMinimoBruto,
+    liquidoMax
+  );
+  const totalVendaLiquido = round2(
+    Number(liquidoMax.totalLiquido != null ? liquidoMax.totalLiquido : (
+      valorFiscalMaximoLiquido
+      + itensLiquidosMax.reduce((s, i) => s + Number(i.valor_nao_fiscal || 0), 0)
+    ))
+  );
 
   const efetivo = calcularValorFiscalEfetivo({
-    valorFiscalMaximo: valorFiscalMaximoBruto,
-    valorFiscalMinimo,
-    totalVenda: totalVendaBruto,
+    valorFiscalMaximo: valorFiscalMaximoLiquido,
+    valorFiscalMinimo: valorFiscalMinimoLiquido,
+    totalVenda: totalVendaLiquido,
     pagamentos,
     midpAtivo,
     politicaFiscalComercial
   });
 
   let itens = efetivo.preservacaoAplicada
-    ? ajustarItensParaValorFiscalEfetivo(itensMax, efetivo.valorFiscalEfetivo)
-    : itensMax.map((i) => ({ ...i }));
+    ? ajustarItensParaValorFiscalEfetivo(itensLiquidosMax, efetivo.valorFiscalEfetivo)
+    : itensLiquidosMax.map((i) => ({ ...i }));
 
   // Sprint 3.12 — Regra nº 3: integridade (só age se houver qtd inválida em UN etc.)
   const integridade = corrigirIntegridadeQuantidadesFiscais(itens, {
     valorFiscalEfetivoMeta: efetivo.valorFiscalEfetivo,
-    valorFiscalMinimo,
-    valorFiscalMaximo: valorFiscalMaximoBruto
+    valorFiscalMinimo: valorFiscalMinimoLiquido,
+    valorFiscalMaximo: valorFiscalMaximoLiquido
   });
   itens = integridade.itens;
 
-  const totalFiscalBruto = round2(itens.reduce((s, i) => s + Number(i.valor_fiscal || 0), 0));
-  const totalNaoFiscalBruto = round2(itens.reduce((s, i) => s + Number(i.valor_nao_fiscal || 0), 0));
-
-  // RC7.10.1 — Valor Fiscal Líquido (desconto/acréscimo comercial)
-  const liquido = calcularValorFiscalLiquido({
-    valorFiscalBruto: totalFiscalBruto,
-    valorNaoFiscalBruto: totalNaoFiscalBruto,
-    desconto,
-    acrescimo
-  });
-
-  itens = aplicarValorFiscalLiquidoNosItens(itens, liquido);
-
-  const valorFiscalMaximo = calcularValorFiscalMaximoLiquido(valorFiscalMaximoBruto, liquido);
-  const valorFiscalMinimoLiquido = calcularValorFiscalMaximoLiquido(valorFiscalMinimo, liquido);
   const totalFiscal = round2(itens.reduce((s, i) => s + Number(i.valor_fiscal || 0), 0));
   const totalNaoFiscal = round2(itens.reduce((s, i) => s + Number(i.valor_nao_fiscal || 0), 0));
   const totalVenda = round2(totalFiscal + totalNaoFiscal);
+  const valorFiscalMaximo = valorFiscalMaximoLiquido;
+  const liquido = {
+    ...liquidoMax,
+    valorFiscalLiquido: totalFiscal,
+    valorNaoFiscalLiquido: totalNaoFiscal,
+    totalLiquido: totalVenda
+  };
+  // Espelho bruto da partilha final (antes do desconto comercial), p/ auditoria RC7.10.1
+  const totalFiscalBruto = liquidoMax.ajustado
+    ? (fatorComercial > 0.0000001
+      ? round2(totalFiscal / fatorComercial)
+      : valorFiscalMaximoBruto)
+    : totalFiscal;
+  const totalNaoFiscalBruto = liquidoMax.ajustado
+    ? (fatorComercial > 0.0000001
+      ? round2(totalNaoFiscal / fatorComercial)
+      : valorNaoFiscalMaximoBruto)
+    : totalNaoFiscal;
 
   // Limpa campos auxiliares internos antes de retornar (mantém espelho útil mínimo).
   const itensLimpos = itens.map((i) => {

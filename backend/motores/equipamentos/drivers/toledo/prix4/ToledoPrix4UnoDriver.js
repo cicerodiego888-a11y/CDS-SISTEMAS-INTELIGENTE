@@ -38,7 +38,7 @@ class ToledoPrix4UnoDriver extends BaseDriver {
   static get discovery() {
     return {
       transport: 'ethernet',
-      ports: [9000, Number(PORTAS_PADRAO.ethernet) || 9100, Number(PORTAS_PADRAO.alternativa) || 4001],
+      ports: [Number(PORTAS_PADRAO.ethernet) || 9000, 9100, Number(PORTAS_PADRAO.alternativa) || 4001],
       timeout: 500,
       priority: 1,
       driver: CODIGO_DRIVER
@@ -422,7 +422,7 @@ class ToledoPrix4UnoDriver extends BaseDriver {
       driver: this.informacoes(),
       metodo: 'desconectar',
       conexao: resultado,
-      monitor: connectionMonitor.obterStatus(`${this.config.host || this.config.ip}:${this.config.porta || 9100}`)
+      monitor: connectionMonitor.obterStatus(`${this.config.host || this.config.ip}:${this.config.porta || PORTAS_PADRAO.ethernet || 9000}`)
     };
   }
 

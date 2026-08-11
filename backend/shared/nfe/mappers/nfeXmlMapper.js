@@ -57,8 +57,10 @@ function mapearInfNFe(infNFe) {
       preco_unitario: precoUnitario,
       preco_unitario_trib: parseNumero(prod.vUnTrib),
       subtotal: parseNumero(prod.vProd),
-      margem_lucro: 30,
-      preco_venda_sugerido: precoUnitario * 1.3,
+      // CORREÇÃO-NF-MARGEM-01 — sem default comercial artificial (30%).
+      // Margem vem do cadastro do produto quando houver vínculo.
+      margem_lucro: null,
+      preco_venda_sugerido: null,
       csosn: trib.csosn,
       cst: trib.cst,
       cst_pis: trib.cst_pis,

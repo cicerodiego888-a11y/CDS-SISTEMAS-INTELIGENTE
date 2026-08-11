@@ -40,9 +40,19 @@ async function healthHandler(req, res) {
 
 async function diagnosticsHandler(req, res) {
   try {
-    const result = diagnostics({
-      host: req.query.host,
-      porta: req.query.porta != null ? Number(req.query.porta) : undefined
+    const result = await diagnostics({
+      host: req.query.host || req.query.ip || undefined,
+      porta: req.query.porta != null
+        ? Number(req.query.porta)
+        : (req.query.porta_tcp != null ? Number(req.query.porta_tcp) : undefined),
+      // RC14.14.5 — probe ativo por padrão (só desliga com probe=0)
+      probe: req.query.probe !== '0',
+      INTERFACE: req.query.INTERFACE || req.query.interface || undefined,
+      equipamento: {
+        ip: req.query.host || req.query.ip || null,
+        porta_tcp: req.query.porta != null ? Number(req.query.porta) : null,
+        ultimo_ip: req.query.host || req.query.ip || null
+      }
     });
     return res.json(result);
   } catch (error) {
@@ -54,7 +64,7 @@ async function certification(req, res) {
   try {
     return res.json({
       success: true,
-      report: buildCertificationReport({
+      report: await buildCertificationReport({
         host: req.query.host,
         porta: req.query.porta != null ? Number(req.query.porta) : undefined
       })

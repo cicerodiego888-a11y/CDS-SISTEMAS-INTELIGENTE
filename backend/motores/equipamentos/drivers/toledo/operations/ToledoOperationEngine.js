@@ -77,14 +77,50 @@ class ToledoOperationEngine {
    */
   async _ensureDriver(host, porta, opcoes = {}) {
     const driver = this._getDriver(host, porta);
+    const equipamentoId = opcoes.equipamentoId ?? opcoes.equipamento_id ?? null;
+    if (equipamentoId != null && driver) {
+      driver.equipamentoId = Number(equipamentoId);
+    }
+    // RC15.7 — auditoria (sem alterar fluxo)
+    let pipelineAudit = null;
+    try { pipelineAudit = require('../plu/UploadPipelineAudit'); } catch (_) { /* ignore */ }
+
     if (!driver.isOnline || !driver.isOnline()) {
-      await driver.connect({
-        host,
-        porta,
-        persistir: opcoes.persistir !== false,
-        timeoutMs: opcoes.timeoutMs,
-        handshakeTimeoutMs: opcoes.handshakeTimeoutMs
-      });
+      if (pipelineAudit && pipelineAudit.atual()) {
+        pipelineAudit.marcar('CONNECT', 'EXECUTANDO', { solicitante: pipelineAudit.SOLICITANTES.OPERATION_ENGINE });
+        // Driver.connect sempre dispara handshake após TCP
+        pipelineAudit.handshakeSolicitado(pipelineAudit.SOLICITANTES.OPERATION_ENGINE, {
+          via: 'ToledoOperationEngine._ensureDriver → driver.connect'
+        });
+      }
+      try {
+        await driver.connect({
+          host,
+          porta,
+          equipamentoId: equipamentoId != null ? Number(equipamentoId) : undefined,
+          persistir: opcoes.persistir !== false,
+          timeoutMs: opcoes.timeoutMs,
+          handshakeTimeoutMs: opcoes.handshakeTimeoutMs
+        });
+        if (pipelineAudit && pipelineAudit.atual() && pipelineAudit.atual().connect === 'EXECUTANDO') {
+          pipelineAudit.marcar('CONNECT', 'OK');
+        }
+      } catch (err) {
+        if (pipelineAudit && pipelineAudit.atual()) {
+          const ctx = pipelineAudit.atual();
+          // Não sobrescrever CONNECT=OK se a falha foi no handshake pós-TCP
+          if (ctx.connect === 'EXECUTANDO') {
+            pipelineAudit.marcar('CONNECT', 'FALHOU', { motivo: err.message || err.code });
+          }
+          if (/handshake|timeout/i.test(String(err.message || err.code || ''))) {
+            pipelineAudit.handshakeResultado(false, err.message || err.code);
+          }
+        }
+        throw err;
+      }
+    } else if (pipelineAudit && pipelineAudit.atual()) {
+      pipelineAudit.marcar('CONNECT', 'REUTILIZADO');
+      pipelineAudit.marcar('HANDSHAKE', 'NÃO EXECUTADO');
     }
     return driver;
   }
@@ -135,58 +171,74 @@ class ToledoOperationEngine {
       contexto: { id: operation.id, queueSize: this.queue.size(chave) }
     });
 
-    const result = await this.queue.enqueue(chave, async () => {
-      this._running.set(operation.id, operation);
-      try {
-        await log.info('Executando', {
-          operacao: 'toledo_operations_v1',
-          contexto: { id: operation.id, operation: operation.operation }
-        });
+    const { mapOperacaoParaBusy, withBusy } = require('../../../connection/SessionBusy');
+    const busyReason = mapOperacaoParaBusy(nome);
+    const alvoBusy = {
+      host,
+      porta,
+      equipamentoId: opcoes.equipamentoId ?? opcoes.equipamento_id ?? null
+    };
 
-        const driver = await this._ensureDriver(host, porta, opcoes);
-        const ctx = new OperationContext({
-          host,
-          porta,
-          driver,
-          driverCode: DRIVER,
-          session: opcoes.session || null,
-          connection: { host, porta, via: 'ConnectionManager' }
-        });
+    const runOp = async () => {
+      const result = await this.queue.enqueue(chave, async () => {
+        this._running.set(operation.id, operation);
+        try {
+          await log.info('Executando', {
+            operacao: 'toledo_operations_v1',
+            contexto: { id: operation.id, operation: operation.operation }
+          });
 
-        const opResult = await operation.execute(ctx);
+          const driver = await this._ensureDriver(host, porta, opcoes);
+          const ctx = new OperationContext({
+            host,
+            porta,
+            driver,
+            driverCode: DRIVER,
+            session: opcoes.session || null,
+            connection: { host, porta, via: 'ConnectionManager' }
+          });
 
-        await log.info('Resposta', {
-          operacao: 'toledo_operations_v1',
-          contexto: {
-            id: operation.id,
-            success: opResult.success,
-            duration: opResult.duration
-          }
-        });
+          const opResult = await operation.execute(ctx);
 
-        if (this._persistir && opcoes.persistir !== false) {
-          try {
-            await this.repository.salvar(opResult, {
+          await log.info('Resposta', {
+            operacao: 'toledo_operations_v1',
+            contexto: {
               id: operation.id,
-              operation: operation.operation,
-              startedAt: operation.startedAt,
-              finishedAt: operation.finishedAt,
-              host,
-              porta
-            });
-          } catch (_) { /* não bloqueia */ }
+              success: opResult.success,
+              duration: opResult.duration
+            }
+          });
+
+          if (this._persistir && opcoes.persistir !== false) {
+            try {
+              await this.repository.salvar(opResult, {
+                id: operation.id,
+                operation: operation.operation,
+                startedAt: operation.startedAt,
+                finishedAt: operation.finishedAt,
+                host,
+                porta
+              });
+            } catch (_) { /* não bloqueia */ }
+          }
+
+          await log.info('Finalizada', {
+            operacao: 'toledo_operations_v1',
+            contexto: { id: operation.id, status: opResult.status }
+          });
+
+          return opResult;
+        } finally {
+          this._running.delete(operation.id);
         }
+      }, { operation });
+      return result;
+    };
 
-        await log.info('Finalizada', {
-          operacao: 'toledo_operations_v1',
-          contexto: { id: operation.id, status: opResult.status }
-        });
-
-        return opResult;
-      } finally {
-        this._running.delete(operation.id);
-      }
-    }, { operation });
+    // RC15.10 — UPLOAD/DOWNLOAD/CONFIG suspendem heartbeat
+    const result = busyReason
+      ? await withBusy(alvoBusy, busyReason, runOp)
+      : await runOp();
 
     return result instanceof OperationResult ? result : new OperationResult(result);
   }

@@ -34,7 +34,7 @@ class EquipmentMonitor {
     this.operationEngine = deps.operationEngine || null;
     this._driverFactory = deps.driverFactory || null;
     this._engineFactory = deps.engineFactory || (() => new ToledoOperationEngine({
-      persistir: false,
+      persistir: true,
       driverFactory: this._driverFactory,
       drivers: deps.drivers
     }));
@@ -52,13 +52,41 @@ class EquipmentMonitor {
   }
 
   status() {
+    const mon = this.session;
+    let sessionSnap = mon ? mon.snapshot() : null;
+    // RC14.14.6 — estado de conexão vem só da EquipmentSession (CM)
+    let conexaoMonitor = null;
+    try {
+      const cm = require('../connection/ConnectionManager');
+      const alvo = mon?.equipamento
+        ? { host: mon.equipamento.host, porta: mon.equipamento.porta }
+        : null;
+      if (alvo && alvo.host && alvo.porta && typeof cm.getSessionSnapshot === 'function') {
+        conexaoMonitor = cm.getSessionSnapshot(alvo);
+        // Espelha na MonitorSession para não divergir em snapshots legados
+        if (mon && conexaoMonitor.session) {
+          mon.online = conexaoMonitor.session.connected === true;
+          mon.latencia = conexaoMonitor.session.latency;
+          if (conexaoMonitor.session.heartbeatAt) {
+            mon.ultimaVerificacao = conexaoMonitor.session.heartbeatAt;
+          }
+        }
+        sessionSnap = mon ? mon.snapshot() : null;
+      }
+    } catch (_) { /* CM opcional */ }
+
     return {
-      active: !!(this.session && this.session.status === SESSION_STATUS.ACTIVE),
-      paused: !!(this.session && this.session.status === SESSION_STATUS.PAUSED),
-      session: this.session ? this.session.snapshot() : null,
+      active: !!(mon && mon.status === SESSION_STATUS.ACTIVE),
+      paused: !!(mon && mon.status === SESSION_STATUS.PAUSED),
+      session: sessionSnap,
       scheduler: this.scheduler.config,
       last: this._lastResult,
-      checking: this._checking
+      checking: this._checking,
+      // Fonte única — idêntico à Conexão
+      conexao: conexaoMonitor?.conexao || null,
+      monitor: conexaoMonitor?.monitor || null,
+      connectionSession: conexaoMonitor?.session || null,
+      fonte: 'EquipmentSession'
     };
   }
 
@@ -256,7 +284,7 @@ class EquipmentMonitor {
         host,
         porta,
         timeout: timeoutMs,
-        persistir: false
+        persistir: true
       });
 
       const ok = result.success === true;

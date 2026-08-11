@@ -329,6 +329,58 @@ function itemCompraTemMargemGravada(item) {
     return Number.isFinite(Number(raw));
 }
 
+/**
+ * CORREÇÃO-NF-MARGEM-01 — decide se deve sobrescrever margem do item pelo cadastro.
+ * Não sobrescreve edição manual do operador; sobrescreve default XML / ausência.
+ */
+function deveReaplicarMargemCadastroItemCompra(item) {
+    if (!item || !item.produto_id) return false;
+    if (Number(item.margem_editada_manual) === 1) return false;
+    if (item.margem_origem === 'manual') return false;
+    if (!itemCompraTemMargemGravada(item)) return true;
+    if (item.margem_origem === 'xml_default') return true;
+    // Importação XML: 30 artificial legado ou margem sem origem oficial → cadastro prevalece
+    if (typeof compraImportadaXml !== 'undefined' && compraImportadaXml) {
+        if (item.margem_origem !== 'cadastro' && item.margem_origem !== 'fallback') {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * CORREÇÃO-NF-MARGEM-01 — aplica produtos.lucro_percentual (ou fallback 35%) no item.
+ */
+function aplicarMargemDoProdutoNoItemCompra(draft, produto, opcoes = {}) {
+    if (!draft) return draft;
+    if (Number(draft.margem_editada_manual) === 1 && !opcoes.forcar) {
+        return draft;
+    }
+    const info = extrairMargemCadastradaProduto(produto);
+    draft.margem_lucro = Number(Number(info.margem).toFixed(2));
+    draft.margem_fallback_padrao = info.fallback ? 1 : 0;
+    draft.margem_origem = info.fallback ? 'fallback' : 'cadastro';
+    draft.origem_base_comercial = info.origem;
+    if (opcoes.forcar) {
+        draft.margem_editada_manual = 0;
+    }
+    if (Number(draft.atualizar_preco_venda ?? 1) === 1 && Number(draft.preco_unitario) > 0) {
+        draft.preco_venda_sugerido = Number(
+            (Number(draft.preco_unitario) * (1 + draft.margem_lucro / 100)).toFixed(2)
+        );
+    }
+    return draft;
+}
+
+function resolverProdutoRefItemCompra(item) {
+    if (!item?.produto_id) return null;
+    if (typeof produtosCompraList !== 'undefined' && Array.isArray(produtosCompraList)) {
+        const found = produtosCompraList.find((p) => String(p.id) === String(item.produto_id));
+        if (found) return found;
+    }
+    return null;
+}
+
 function rotuloOrigemBaseComercialCompra(origem) {
     switch (origem) {
         case ORIGEM_BASE_COMERCIAL_COMPRA.ULTIMA_COMPRA:
@@ -346,6 +398,10 @@ function rotuloOrigemBaseComercialCompra(origem) {
 
 function marcarMargemManualCompra() {
     margemInformadaManualCompra = true;
+    if (itemDraftCompra) {
+        itemDraftCompra.margem_editada_manual = 1;
+        itemDraftCompra.margem_origem = 'manual';
+    }
     calcularValorVendaItem();
 }
 
@@ -2772,18 +2828,45 @@ function normalizeItemCompra(itemBruto = {}) {
     const produtoRef = item.produto_id && typeof produtosCompraList !== 'undefined'
         ? produtosCompraList.find((p) => String(p.id) === String(item.produto_id))
         : null;
-    const margemInfo = itemCompraTemMargemGravada(item)
-        ? { margem: Number(item.margem_lucro), fallback: false }
-        : extrairMargemCadastradaProduto({
+    const reaplicarMargemCadastro = deveReaplicarMargemCadastroItemCompra(item);
+    let margemInfo;
+    if (reaplicarMargemCadastro) {
+        margemInfo = extrairMargemCadastradaProduto({
+            ...(produtoRef || {}),
+            lucro_percentual: produtoRef?.lucro_percentual ?? item.lucro_percentual,
+            margem_lucro: produtoRef?.margem_lucro,
+            margem_padrao: produtoRef?.margem_padrao ?? item.margem_padrao,
+            percentual_lucro: produtoRef?.percentual_lucro ?? item.percentual_lucro
+        });
+    } else if (itemCompraTemMargemGravada(item)) {
+        margemInfo = { margem: Number(item.margem_lucro), fallback: Number(item.margem_fallback_padrao || 0) === 1 };
+    } else {
+        margemInfo = extrairMargemCadastradaProduto({
             ...(produtoRef || {}),
             lucro_percentual: item.lucro_percentual ?? produtoRef?.lucro_percentual,
             margem_lucro: item.margem_lucro,
             margem_padrao: item.margem_padrao ?? produtoRef?.margem_padrao,
             percentual_lucro: item.percentual_lucro ?? produtoRef?.percentual_lucro
         });
+    }
     const margem = margemInfo.margem;
     const ultimoPrecoCompra = Number(item.ultimo_preco_compra || custo);
-    const precoVenda = Number(item.preco_venda_sugerido || item.preco_venda || (custo * (1 + margem / 100)) || 0);
+    const precoVendaBase = Number(item.preco_venda_sugerido || item.preco_venda || 0);
+    let precoVenda = precoVendaBase > 0
+        ? precoVendaBase
+        : Number((custo * (1 + margem / 100)) || 0);
+    // Ao reaplicar % do cadastro, recalcula venda sugerida com a fórmula já existente (markup).
+    if (reaplicarMargemCadastro
+        && Number(item.atualizar_preco_venda ?? 1) === 1
+        && custo > 0) {
+        precoVenda = Number((custo * (1 + margem / 100)).toFixed(2));
+    }
+    const margemOrigemNormalizada = Number(item.margem_editada_manual || 0) === 1
+        ? 'manual'
+        : (reaplicarMargemCadastro
+            ? (margemInfo.fallback ? 'fallback' : 'cadastro')
+            : (item.margem_origem
+                || (itemCompraTemMargemGravada(item) ? 'item' : (margemInfo.fallback ? 'fallback' : 'cadastro'))));
     const linhaId = item.linha_id || item.linhaId || gerarLinhaIdCompra();
     const normalizado = {
         linha_id: linhaId,
@@ -2802,6 +2885,8 @@ function normalizeItemCompra(itemBruto = {}) {
         ultimo_preco_compra: Number(ultimoPrecoCompra.toFixed(casasCusto)),
         margem_lucro: Number(Number(margem).toFixed(2)),
         margem_fallback_padrao: margemInfo.fallback ? 1 : 0,
+        margem_origem: margemOrigemNormalizada,
+        margem_editada_manual: Number(item.margem_editada_manual || 0) === 1 ? 1 : 0,
         preco_venda_sugerido: Number(precoVenda.toFixed(2)),
         produto_fracionado: itemCompraEhFracionado(item) ? 1 : 0,
         vendido_por_peso: itemCompraEhFracionado(item) ? 1 : 0,
@@ -2985,13 +3070,18 @@ function sincronizarPrecosCadastroItemCompra(item = {}) {
     item.preco_unitario = Number(custo.toFixed(casasCusto));
     item.custo_unitario_final = item.preco_unitario;
     item.custo_por_kg = item.preco_unitario;
-    if (!itemCompraTemMargemGravada(item)) {
-        const produtoRef = item.produto_id && typeof produtosCompraList !== 'undefined'
-            ? produtosCompraList.find((p) => String(p.id) === String(item.produto_id))
-            : null;
+    if (deveReaplicarMargemCadastroItemCompra(item)) {
+        const produtoRef = resolverProdutoRefItemCompra(item);
         const info = extrairMargemCadastradaProduto(produtoRef || item);
         item.margem_lucro = info.margem;
         item.margem_fallback_padrao = info.fallback ? 1 : 0;
+        item.margem_origem = info.fallback ? 'fallback' : 'cadastro';
+    } else if (!itemCompraTemMargemGravada(item)) {
+        const produtoRef = resolverProdutoRefItemCompra(item);
+        const info = extrairMargemCadastradaProduto(produtoRef || item);
+        item.margem_lucro = info.margem;
+        item.margem_fallback_padrao = info.fallback ? 1 : 0;
+        item.margem_origem = info.fallback ? 'fallback' : 'cadastro';
     } else {
         item.margem_lucro = Number(item.margem_lucro);
     }
@@ -3299,6 +3389,8 @@ function aplicarMiipImportacaoXml(data) {
             draft.miip_resultado = clonarDadosItemCompra(resultado);
             if (resultado.associadoAutomaticamente && resultado.produtoEncontrado?.id) {
                 draft.produto_id = resultado.produtoEncontrado.id;
+                // CORREÇÃO-NF-MARGEM-01 — MIIP automático reaplica lucro_percentual do cadastro
+                aplicarMargemDoProdutoNoItemCompra(draft, resultado.produtoEncontrado, { forcar: true });
             }
             if (resultado.precisaConfirmacao) {
                 const sugestaoUi = montarSugestaoMiipCompraFromResultado(resultado)
@@ -3440,6 +3532,8 @@ function confirmarAssociacaoMiipComProduto(index, produtoIdInformado, opcoes = {
         };
         draft.produto_id = produtoId;
         draft.produto_nome = produto.nome || draft.produto_nome;
+        // CORREÇÃO-NF-MARGEM-01 — associação MIIP aplica percentual cadastrado
+        aplicarMargemDoProdutoNoItemCompra(draft, produto, { forcar: true });
     });
     renderItensCompraTabela();
     showNotification(opcoes.mensagemSucesso || 'Associação confirmada.', 'success');
@@ -3950,6 +4044,8 @@ function alterarProdutoItemCompra(index, produtoId) {
         const margemInfo = extrairMargemCadastradaProduto(produto);
         draft.margem_lucro = margemInfo.margem;
         draft.margem_fallback_padrao = margemInfo.fallback ? 1 : 0;
+        draft.margem_origem = margemInfo.fallback ? 'fallback' : 'cadastro';
+        draft.margem_editada_manual = 0;
         draft.origem_base_comercial = margemInfo.origem;
         if (!Number(draft.preco_venda_sugerido) && Number(draft.preco_unitario) > 0) {
             draft.preco_venda_sugerido = Number(

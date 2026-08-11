@@ -52,8 +52,14 @@ function build(command, payload) {
   ]);
 }
 
+/** Alias lab (FrameStudio) — mesmo framing oficial com CHK */
+function buildFrame(comando, payload) {
+  return build(comando, payload);
+}
+
 module.exports = {
   build,
+  buildFrame,
   encodePayload,
   STX,
   ETX,

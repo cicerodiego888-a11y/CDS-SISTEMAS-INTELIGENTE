@@ -1,6 +1,6 @@
 /**
- * Sprint 15.1 — ConnectionStateMachine
- * Estados unificados para Ethernet, Serial e USB.
+ * Sprint 15.1 / RC14.14.7 — ConnectionStateMachine
+ * Estados unificados. CONNECTING nunca vai para IDLE sem CONNECTED.
  */
 
 'use strict';
@@ -15,14 +15,45 @@ const STATES = Object.freeze({
   ERROR: 'ERROR'
 });
 
-/** Transições permitidas: from → Set(to) */
+/**
+ * Transições permitidas.
+ * RC14.14.7 — PROIBIDO: CONNECTING → IDLE e RECONNECTING → IDLE
+ * (sucesso de socket deve passar por CONNECTED).
+ */
 const TRANSICOES = Object.freeze({
   [STATES.DISCONNECTED]: new Set([STATES.CONNECTING, STATES.ERROR]),
-  [STATES.CONNECTING]: new Set([STATES.CONNECTED, STATES.IDLE, STATES.DISCONNECTED, STATES.ERROR]),
-  [STATES.CONNECTED]: new Set([STATES.IDLE, STATES.BUSY, STATES.RECONNECTING, STATES.DISCONNECTED, STATES.ERROR]),
-  [STATES.IDLE]: new Set([STATES.BUSY, STATES.CONNECTED, STATES.RECONNECTING, STATES.DISCONNECTED, STATES.ERROR]),
-  [STATES.BUSY]: new Set([STATES.IDLE, STATES.CONNECTED, STATES.RECONNECTING, STATES.DISCONNECTED, STATES.ERROR]),
-  [STATES.RECONNECTING]: new Set([STATES.CONNECTING, STATES.CONNECTED, STATES.IDLE, STATES.DISCONNECTED, STATES.ERROR]),
+  [STATES.CONNECTING]: new Set([
+    STATES.CONNECTED,
+    STATES.DISCONNECTED,
+    STATES.ERROR
+  ]),
+  [STATES.CONNECTED]: new Set([
+    STATES.BUSY,
+    STATES.IDLE,
+    STATES.RECONNECTING,
+    STATES.DISCONNECTED,
+    STATES.ERROR
+  ]),
+  [STATES.IDLE]: new Set([
+    STATES.BUSY,
+    STATES.CONNECTED,
+    STATES.RECONNECTING,
+    STATES.DISCONNECTED,
+    STATES.ERROR
+  ]),
+  [STATES.BUSY]: new Set([
+    STATES.CONNECTED,
+    STATES.IDLE,
+    STATES.RECONNECTING,
+    STATES.DISCONNECTED,
+    STATES.ERROR
+  ]),
+  [STATES.RECONNECTING]: new Set([
+    STATES.CONNECTING,
+    STATES.CONNECTED,
+    STATES.DISCONNECTED,
+    STATES.ERROR
+  ]),
   [STATES.ERROR]: new Set([STATES.DISCONNECTED, STATES.CONNECTING, STATES.RECONNECTING])
 });
 
@@ -69,6 +100,21 @@ class ConnectionStateMachine {
       err.code = 'STATE_INVALIDO';
       throw err;
     }
+
+    // RC14.14.7 — bloqueio explícito (mesmo se alguém reintroduzir na tabela)
+    if (
+      (this._estado === STATES.CONNECTING || this._estado === STATES.RECONNECTING)
+      && dest === STATES.IDLE
+    ) {
+      const err = new Error(
+        `Transição proibida RC14.14.7: ${this._estado} → IDLE (obrigatório passar por CONNECTED)`
+      );
+      err.code = 'STATE_TRANSITION_PROIBIDA';
+      err.from = this._estado;
+      err.to = dest;
+      throw err;
+    }
+
     if (this._estado === dest) {
       return { from: this._estado, to: dest, em: new Date().toISOString(), meta, noop: true };
     }

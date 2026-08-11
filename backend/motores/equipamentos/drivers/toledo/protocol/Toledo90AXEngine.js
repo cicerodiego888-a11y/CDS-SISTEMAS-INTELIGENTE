@@ -1,7 +1,7 @@
 /**
- * Sprint 15.2 — Toledo90AXEngine
- * Motor oficial do protocolo. Toda comunicação lógica passa por aqui.
- * Transporte: apenas Connection Manager (send/receive ou getTcp).
+ * Sprint 15.2 / RC14.14.2 — Toledo90AXEngine
+ * Pipeline oficial: FrameBuilder → TX → RxBuffer → Parser → Checksum → ACK → Result
+ * Uma operação por host:porta; ACK vinculado a Operation ID.
  */
 
 'use strict';
@@ -11,6 +11,9 @@ const frameParser = require('./ToledoFrameParser');
 const checksum = require('./ToledoChecksum');
 const commandRegistry = require('./ToledoCommandRegistry');
 const ToledoSession = require('./ToledoSession');
+const ToledoRxBuffer = require('./ToledoRxBuffer');
+const ToledoAckRouter = require('./ToledoAckRouter');
+const OperationQueue = require('../operations/OperationQueue');
 const {
   TimeoutError,
   ConnectionLostError,
@@ -18,7 +21,7 @@ const {
 } = require('./ToledoProtocolErrors');
 
 const FIRMWARE = '90AX';
-const DRIVER = 'TOLEDO_PRIX4';
+const DRIVER = 'TOLEDO_PRIX4_UNO';
 
 let logger = null;
 function getLogger() {
@@ -28,7 +31,8 @@ function getLogger() {
   } catch (_) {
     logger = {
       info: async (msg, ctx) => console.log('[toledo-90ax]', msg, ctx || ''),
-      error: async (msg, ctx) => console.error('[toledo-90ax]', msg, ctx || '')
+      error: async (msg, ctx) => console.error('[toledo-90ax]', msg, ctx || ''),
+      warn: async (msg, ctx) => console.warn('[toledo-90ax]', msg, ctx || '')
     };
   }
   return logger;
@@ -39,10 +43,16 @@ class Toledo90AXEngine {
    * @param {object} [deps]
    * @param {object} [deps.connectionManager]
    * @param {object} [deps.registry]
+   * @param {OperationQueue} [deps.queue]
+   * @param {ToledoAckRouter} [deps.ackRouter]
    */
   constructor(deps = {}) {
     this.cm = deps.connectionManager || require('../../../connection/ConnectionManager');
     this.registry = deps.registry || commandRegistry;
+    this.queue = deps.queue || new OperationQueue();
+    this.ackRouter = deps.ackRouter || new ToledoAckRouter();
+    /** @type {Map<string, ToledoRxBuffer>} */
+    this._rxBuffers = new Map();
     this.host = null;
     this.porta = null;
     this.equipamentoId = null;
@@ -51,9 +61,6 @@ class Toledo90AXEngine {
     this._ultimo = null;
   }
 
-  /**
-   * Vincula alvo de transporte (sem abrir socket — ConnectionManager já conectou).
-   */
   bind(alvo = {}) {
     this.host = alvo.host || alvo.ip || this.host;
     this.porta = alvo.porta != null ? Number(alvo.porta) : this.porta;
@@ -69,13 +76,31 @@ class Toledo90AXEngine {
     };
   }
 
+  _chave() {
+    return `${this.host || ''}:${this.porta || 0}`;
+  }
+
+  _rxBuffer() {
+    const key = this._chave();
+    if (!this._rxBuffers.has(key)) {
+      this._rxBuffers.set(key, new ToledoRxBuffer({
+        onInvalid: (info) => {
+          getLogger().warn?.('Frame RX descartado', {
+            operacao: 'toledo_90ax',
+            contexto: { ...info, host: this.host, porta: this.porta }
+          }).catch?.(() => {});
+        }
+      }));
+    }
+    return this._rxBuffers.get(key);
+  }
+
   async _enviar(buf) {
     const alvo = this._alvo();
     if (typeof this.cm.send === 'function') {
       try {
         return await this.cm.send(alvo, buf);
       } catch (err) {
-        // Fallback V1 getTcp
         if (err.code !== 'NOT_CONNECTED') throw err;
       }
     }
@@ -86,7 +111,7 @@ class Toledo90AXEngine {
     return tcp.write(buf);
   }
 
-  async _receber(timeoutMs) {
+  async _receberChunk(timeoutMs) {
     const alvo = this._alvo();
     if (typeof this.cm.receive === 'function') {
       try {
@@ -100,6 +125,17 @@ class Toledo90AXEngine {
       throw new ConnectionLostError('Connection Manager: não conectado');
     }
     return tcp.read({ timeoutMs });
+  }
+
+  /**
+   * RX frame-aware: acumula chunks até STX…ETX + checksum válido.
+   */
+  async _receberFrame(timeoutMs) {
+    const buffer = this._rxBuffer();
+    return buffer.waitFrame({
+      timeoutMs,
+      readChunk: (restante) => this._receberChunk(restante)
+    });
   }
 
   async _labObserve(direction, bytes, meta = {}) {
@@ -116,21 +152,33 @@ class Toledo90AXEngine {
     this._ultimo = entrada;
   }
 
+  _novoOperationId(comando) {
+    return `op-${comando}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
   /**
    * API principal — Driver chama engine.execute(command).
-   * @param {string} command — nome lógico (ping, identify, handshake…)
-   * @param {object} [payload]
-   * @param {object} [opcoes]
+   * Serializado por host:porta; ACK amarrado ao operationId.
    */
   async execute(command, payload = null, opcoes = {}) {
     if (opcoes.host || opcoes.porta || opcoes.equipamentoId) {
       this.bind(opcoes);
     }
+    const chave = this._chave();
+    const operationId = opcoes.operationId || this._novoOperationId(command);
 
+    return this.queue.enqueue(chave, () => this._executeOnce(command, payload, {
+      ...opcoes,
+      operationId
+    }), { operation: { id: operationId } });
+  }
+
+  async _executeOnce(command, payload, opcoes = {}) {
     const def = this.registry.obter(command);
     const timeoutMs = opcoes.timeoutMs != null ? opcoes.timeoutMs : def.timeoutMs;
     const retries = opcoes.retries != null ? opcoes.retries : def.retries;
-    const session = new ToledoSession({ comando: def.name });
+    const operationId = opcoes.operationId || this._novoOperationId(def.name);
+    const session = new ToledoSession({ id: operationId, comando: def.name });
     this._sessaoAtual = session;
 
     const inicioTotal = Date.now();
@@ -155,6 +203,7 @@ class Toledo90AXEngine {
           host: this.host,
           porta: this.porta,
           comando: def.wireCommand,
+          operationId,
           driver: DRIVER,
           firmware: FIRMWARE
         });
@@ -165,18 +214,31 @@ class Toledo90AXEngine {
           contexto: {
             comando: def.name,
             wire: def.wireCommand,
+            operationId,
             checksum: chkTx,
             bytes: tx.length,
             tentativa: tentativa + 1
           }
         });
 
-        const rx = await this._receber(timeoutMs);
+        // ACK exclusivo desta operação
+        this.ackRouter.begin(this._chave(), {
+          operationId,
+          wireCommand: def.wireCommand
+        });
+
+        const rx = await this._receberFrame(timeoutMs);
         if (!rx || !rx.length) {
+          this.ackRouter.fail(this._chave(), new TimeoutError(`Timeout aguardando resposta de ${def.name}`, {
+            comando: def.name,
+            timeoutMs,
+            operationId
+          }));
           session.marcarTimeout();
           throw new TimeoutError(`Timeout aguardando resposta de ${def.name}`, {
             comando: def.name,
-            timeoutMs
+            timeoutMs,
+            operationId
           });
         }
 
@@ -185,6 +247,7 @@ class Toledo90AXEngine {
           host: this.host,
           porta: this.porta,
           comando: def.name,
+          operationId,
           driver: DRIVER,
           firmware: FIRMWARE
         });
@@ -193,13 +256,20 @@ class Toledo90AXEngine {
         try {
           parsed = frameParser.parse(rx);
         } catch (err) {
+          this.ackRouter.fail(this._chave(), err);
           session.marcarErro(err);
           throw err;
         }
 
+        const ackResult = this.ackRouter.complete(this._chave(), parsed, rx);
+        if (!ackResult || ackResult.operationId !== operationId) {
+          throw new InvalidFrameError('ACK não associado à operação', { operationId });
+        }
+
         const match = def.matcher.match(parsed, {
           requestCommand: def.wireCommand,
-          payload: bodyPayload
+          payload: bodyPayload,
+          operationId
         });
         session.marcarSucesso(parsed);
 
@@ -207,6 +277,7 @@ class Toledo90AXEngine {
           sucesso: true,
           command: def.name,
           wireCommand: def.wireCommand,
+          operationId,
           responseCommand: match.command,
           payload: match.payload,
           checksum: parsed.checksum,
@@ -214,8 +285,8 @@ class Toledo90AXEngine {
           tentativa: tentativa + 1,
           txHex: tx.toString('hex'),
           rxHex: rx.toString('hex'),
-          tx: tx,
-          rx: rx,
+          tx,
+          rx,
           parsed,
           session: session.snapshot(),
           firmware: FIRMWARE,
@@ -230,7 +301,7 @@ class Toledo90AXEngine {
           tx: undefined,
           rx: undefined,
           parsed: {
-            command: parsed.command,
+            command: parsed.command || parsed.comando,
             payload: parsed.payload,
             checksum: parsed.checksum,
             valid: parsed.valid
@@ -242,6 +313,7 @@ class Toledo90AXEngine {
           contexto: {
             comando: def.name,
             response: match.command,
+            operationId,
             checksum: parsed.checksum,
             latenciaMs: session.latenciaMs
           }
@@ -250,6 +322,7 @@ class Toledo90AXEngine {
         return resultado;
       } catch (err) {
         ultimoErro = err;
+        this.ackRouter.clear(this._chave());
         if (err instanceof TimeoutError) {
           session.marcarTimeout();
         } else if (session.estado !== 'ERROR' && session.estado !== 'TIMEOUT') {
@@ -260,6 +333,7 @@ class Toledo90AXEngine {
           sucesso: false,
           command: def.name,
           wireCommand: def.wireCommand,
+          operationId,
           erro: { mensagem: err.message, codigo: err.code },
           session: session.snapshot(),
           tentativa: tentativa + 1,
@@ -276,42 +350,54 @@ class Toledo90AXEngine {
   /** Envia frame bruto já montado (lab / engenharia reversa). */
   async executeRaw(buffer, opcoes = {}) {
     if (opcoes.host || opcoes.porta) this.bind(opcoes);
-    const tx = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || [], 'hex');
-    const session = new ToledoSession({ comando: 'raw' });
-    this._sessaoAtual = session;
-    session.iniciar('raw');
-    session.marcarEnviado(tx);
-    await this._labObserve('TX', tx, { host: this.host, porta: this.porta, comando: 'RAW' });
-    await this._enviar(tx);
-    const timeoutMs = opcoes.timeoutMs != null ? opcoes.timeoutMs : 1500;
-    const rx = await this._receber(timeoutMs);
-    if (!rx || !rx.length) {
-      session.marcarTimeout();
-      throw new TimeoutError('Timeout em raw');
-    }
-    session.marcarRecebido(rx);
-    await this._labObserve('RX', rx, { host: this.host, porta: this.porta, comando: 'RAW' });
-    let parsed = null;
-    try {
-      parsed = frameParser.parse(rx);
-      session.marcarSucesso(parsed);
-    } catch (err) {
-      session.marcarErro(err);
-    }
-    const out = {
-      sucesso: Boolean(parsed?.valid),
-      command: 'raw',
-      checksum: parsed?.checksum || null,
-      latenciaMs: session.latenciaMs,
-      txHex: tx.toString('hex'),
-      rxHex: rx.toString('hex'),
-      parsed,
-      session: session.snapshot(),
-      firmware: FIRMWARE,
-      driver: DRIVER
-    };
-    this._registrarHistorico({ em: new Date().toISOString(), ...out });
-    return out;
+    const chave = this._chave();
+    const operationId = opcoes.operationId || this._novoOperationId('raw');
+    return this.queue.enqueue(chave, async () => {
+      const tx = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || [], 'hex');
+      const session = new ToledoSession({ id: operationId, comando: 'raw' });
+      this._sessaoAtual = session;
+      session.iniciar('raw');
+      session.marcarEnviado(tx);
+      await this._labObserve('TX', tx, { host: this.host, porta: this.porta, comando: 'RAW', operationId });
+      await this._enviar(tx);
+      const timeoutMs = opcoes.timeoutMs != null ? opcoes.timeoutMs : 1500;
+      this.ackRouter.begin(chave, { operationId, wireCommand: 'RAW' });
+      const rx = await this._receberFrame(timeoutMs);
+      if (!rx || !rx.length) {
+        this.ackRouter.fail(chave, new TimeoutError('Timeout em raw', { operationId }));
+        session.marcarTimeout();
+        throw new TimeoutError('Timeout em raw', { operationId });
+      }
+      session.marcarRecebido(rx);
+      await this._labObserve('RX', rx, { host: this.host, porta: this.porta, comando: 'RAW', operationId });
+      let parsed = null;
+      try {
+        parsed = frameParser.parse(rx);
+        const ackResult = this.ackRouter.complete(chave, parsed, rx);
+        if (!ackResult || ackResult.operationId !== operationId) {
+          throw new InvalidFrameError('ACK raw sem operação', { operationId });
+        }
+        session.marcarSucesso(parsed);
+      } catch (err) {
+        this.ackRouter.fail(chave, err);
+        session.marcarErro(err);
+      }
+      const out = {
+        sucesso: Boolean(parsed?.valid !== false && parsed),
+        command: 'raw',
+        operationId,
+        checksum: parsed?.checksum || null,
+        latenciaMs: session.latenciaMs,
+        txHex: tx.toString('hex'),
+        rxHex: rx.toString('hex'),
+        parsed,
+        session: session.snapshot(),
+        firmware: FIRMWARE,
+        driver: DRIVER
+      };
+      this._registrarHistorico({ em: new Date().toISOString(), ...out });
+      return out;
+    }, { operation: { id: operationId } });
   }
 
   history({ limite = 50 } = {}) {
@@ -326,6 +412,9 @@ class Toledo90AXEngine {
       sessao: this._sessaoAtual ? this._sessaoAtual.snapshot() : null,
       ultimo: this._ultimo,
       comandos: this.registry.listar(),
+      fila: this.queue.size(this._chave()),
+      ackPendente: this.ackRouter.pendingId(this._chave()),
+      rxPendingBytes: this._rxBuffers.get(this._chave())?.pendingBytes || 0,
       firmware: FIRMWARE,
       driver: DRIVER
     };
@@ -336,6 +425,11 @@ class Toledo90AXEngine {
   handshake(payload, opcoes) { return this.execute('handshake', payload, opcoes); }
   ping(payload, opcoes) { return this.execute('ping', payload, opcoes); }
   getStatus(payload, opcoes) { return this.execute('status', payload, opcoes); }
+  uploadPlu(payload, opcoes) { return this.execute('uploadPlu', payload, opcoes); }
+  downloadPlu(payload, opcoes) { return this.execute('downloadPlu', payload, opcoes); }
+  readWeight(payload, opcoes) { return this.execute('readWeight', payload, opcoes); }
+  configRead(payload, opcoes) { return this.execute('configRead', payload, opcoes); }
+  configWrite(payload, opcoes) { return this.execute('configWrite', payload, opcoes); }
 }
 
 const engineSingleton = new Toledo90AXEngine();

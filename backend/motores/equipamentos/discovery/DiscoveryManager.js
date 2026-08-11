@@ -203,7 +203,6 @@ class DiscoveryManager {
 
 const discoveryManager = new DiscoveryManager();
 
+/** RC14.12.3 — exportar instância + classe; nunca sobrescrever métodos da instância. */
 module.exports = discoveryManager;
 module.exports.DiscoveryManager = DiscoveryManager;
-module.exports.descobrir = (...args) => discoveryManager.descobrir(...args);
-module.exports.descobrirEthernet = (...args) => discoveryManager.descobrirEthernet(...args);

@@ -84,6 +84,16 @@ const PARAMETROS_META = Object.freeze({
     editavel: false,
     padrao: ''
   },
+  /** RC15.0.2 — interface física da balança (ETHERNET | WLAN) */
+  INTERFACE: {
+    nome: 'INTERFACE',
+    label: 'Interface de rede',
+    tipo: 'enum',
+    valores: ['ETHERNET', 'WLAN'],
+    obrigatorio: false,
+    editavel: false,
+    padrao: null
+  },
   firmware: {
     nome: 'firmware',
     label: 'Firmware',

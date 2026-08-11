@@ -92,13 +92,14 @@ class ToledoPluRepository {
     `, [id]);
   }
 
-  async historico({ limite = 50, host, porta, plu } = {}) {
+  async historico({ limite = 50, host, porta, plu, produto_id } = {}) {
     await garantirTabela();
     const params = [];
     const where = [];
     if (host) { where.push('host = ?'); params.push(String(host)); }
     if (porta != null) { where.push('porta = ?'); params.push(Number(porta)); }
     if (plu) { where.push('plu = ?'); params.push(String(plu)); }
+    if (produto_id != null) { where.push('produto_id = ?'); params.push(Number(produto_id)); }
     params.push(Math.max(1, Math.min(500, Number(limite) || 50)));
     const sql = `
       SELECT * FROM equipamentos_plu_sync
@@ -107,6 +108,18 @@ class ToledoPluRepository {
       LIMIT ?
     `;
     return all(sql, params);
+  }
+
+  /** RC15.3 — última sincronização confirmada do produto. */
+  async ultimaConfirmada(produtoId) {
+    await garantirTabela();
+    if (produtoId == null) return null;
+    return get(`
+      SELECT * FROM equipamentos_plu_sync
+      WHERE produto_id = ? AND status = 'CONFIRMADO'
+      ORDER BY id DESC
+      LIMIT 1
+    `, [Number(produtoId)]);
   }
 
   async buscarPorId(id) {

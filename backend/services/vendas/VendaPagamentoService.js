@@ -50,6 +50,33 @@ function resolverVendaFiscalParaMotor(body = {}) {
   }
   return parseVendaFiscalFlag(body.emitir_fiscal);
 }
+
+/**
+ * HOTFIX FISCAL-4.0.2 — totais oficiais para validação de pagamento.
+ * Prefere valorFiscalLiquido / valorNaoFiscalLiquido do Motor; espelha itens se ausente.
+ */
+function resolverTotaisFiscaisLiquidosMotor(resultadoMotor, distribuicaoItens) {
+  const espelho = separarItensDistribuidos(distribuicaoItens || []);
+  const totalFiscal = Number(
+    resultadoMotor && resultadoMotor.valorFiscalLiquido != null
+      ? resultadoMotor.valorFiscalLiquido
+      : (resultadoMotor && resultadoMotor.valorFiscalEfetivo != null
+        ? resultadoMotor.valorFiscalEfetivo
+        : espelho.totalFiscal)
+  );
+  const totalNaoFiscal = Number(
+    resultadoMotor && resultadoMotor.valorNaoFiscalLiquido != null
+      ? resultadoMotor.valorNaoFiscalLiquido
+      : (resultadoMotor && resultadoMotor.valorNaoFiscal != null
+        ? resultadoMotor.valorNaoFiscal
+        : espelho.totalNaoFiscal)
+  );
+  return {
+    totalFiscal: Math.round((totalFiscal || 0) * 100) / 100,
+    totalNaoFiscal: Math.round((totalNaoFiscal || 0) * 100) / 100
+  };
+}
+
 const VendaFinanceiroService = require('./VendaFinanceiroService');
 const VendaFiscalService = require('./VendaFiscalService');
 
@@ -575,6 +602,7 @@ db.all(`
 
   res.json({
     sucesso: true,
+    liquido_aplicado_backend: true,
     valor_fiscal: resultadoMotor.valorFiscalEfetivo,
     valor_nao_fiscal: resultadoMotor.valorNaoFiscal,
     valor_fiscal_maximo: resultadoMotor.valorFiscalMaximo,
@@ -589,11 +617,37 @@ db.all(`
 });
 }
 
+function vendaExigeAutorizacaoDescontoManual(body = {}) {
+  if (Number(body.desconto || 0) > 0) return true;
+  const itens = Array.isArray(body.itens) ? body.itens : [];
+  return itens.some((item) => (
+    Number(item.desconto_manual || 0) === 1
+    && (Number(item.desconto_valor || 0) > 0 || Number(item.desconto_percentual || 0) > 0)
+  ));
+}
+
 function criarVenda(req, res) {
 const tipoVendaCanal = String(req.body?.tipo_venda || 'BALCAO').toUpperCase();
 if (tipoVendaCanal === 'ENTREGA') {
   const { criarVendaEntrega } = require('../entrega/CriarVendaEntregaService');
   return criarVendaEntrega(req, res);
+}
+
+if (!req.__descontoAuthOk && vendaExigeAutorizacaoDescontoManual(req.body)) {
+  const { verificarSupervisorToken, isSupervisorPerfil } = require('../../rotas/auth');
+  if (!isSupervisorPerfil(req.user || {})) {
+    return verificarSupervisorToken(req.body.supervisor_token || null)
+      .then((supervisorUser) => {
+        req.__descontoAuthOk = true;
+        req.supervisorAutorizacao = supervisorUser;
+        return criarVenda(req, res);
+      })
+      .catch((err) => res.status(403).json({
+        error: err.message || 'Desconto exige autorização de administrador ou supervisor.',
+        codigo: err.code || 'DESCONTO_NAO_AUTORIZADO'
+      }));
+  }
+  req.__descontoAuthOk = true;
 }
 
 const {
@@ -880,8 +934,13 @@ db.all(`
     const codigo = `VND-${agoraLocalBrasil().replace(/[- :]/g, '').slice(0, 14)}`;
     const data_venda = agoraLocalBrasil().slice(0, 10);
 
-    // Calcular valores fiscal e não fiscal (Motor — única fonte de verdade)
-    const { totalFiscal, totalNaoFiscal } = separarItensDistribuidos(distribuicaoItens);
+    // HOTFIX FISCAL-4.0.2 — validação sempre sobre Valor Fiscal Líquido do Motor
+    const totaisLiquidosPrazo = resolverTotaisFiscaisLiquidosMotor(
+      resultadoMotor,
+      distribuicaoItens
+    );
+    const totalFiscal = totaisLiquidosPrazo.totalFiscal;
+    const totalNaoFiscal = totaisLiquidosPrazo.totalNaoFiscal;
 
     const erroSomaPagamentosMotor = validarSomaPagamentosVenda(pagamentosVenda, total, {
       valor_fiscal: totalFiscal,
@@ -914,7 +973,11 @@ db.all(`
       modoConfirmacaoFiscal,
       valorFiscalMaximo: resultadoMotor.valorFiscalMaximo,
       preservacaoAplicada: resultadoMotor.preservacaoAplicada,
-      midpAtivo
+      midpAtivo,
+      desconto: Number(desconto || 0),
+      acrescimo: Number(acrescimo || 0),
+      subtotalBruto: Number(resultadoMotor.totalVendaBruto || 0),
+      debugDescontoFiscal: process.env.CDS_DEBUG_DESCONTO_FISCAL === '1'
     });
 
     if (!resultadoPagamento.sucesso) {
@@ -1021,9 +1084,9 @@ db.all(`
           const tipoVenda = normalizarTipoVendaItem(item);
 
           db.run(`
-            INSERT INTO vendas_itens (venda_id, produto_id, quantidade, preco_unitario, preco_unitario_interno, desconto_percentual, promocao_id, desconto_atacado, tipo_preco, subtotal, item_fiscal, quantidade_fiscal, quantidade_nao_fiscal, valor_fiscal, valor_nao_fiscal, tipo_venda)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `, [vendaId, item.produto_id, item.quantidade, item.preco_unitario, item.preco_unitario_interno ?? item.preco_unitario, item.desconto_percentual || 0, item.promocao_id || null, item.desconto_atacado || 0, item.tipo_preco || 'varejo', item.subtotal, itemFiscal, quantidadeFiscal, quantidadeNaoFiscal, valorFiscal, valorNaoFiscal, tipoVenda], (itemErr) => {
+            INSERT INTO vendas_itens (venda_id, produto_id, quantidade, preco_unitario, preco_unitario_interno, desconto_percentual, desconto_valor, desconto_manual, promocao_id, desconto_atacado, tipo_preco, subtotal, item_fiscal, quantidade_fiscal, quantidade_nao_fiscal, valor_fiscal, valor_nao_fiscal, tipo_venda)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `, [vendaId, item.produto_id, item.quantidade, item.preco_unitario, item.preco_unitario_interno ?? item.preco_unitario, item.desconto_percentual || 0, item.desconto_valor || 0, Number(item.desconto_manual || 0) === 1 ? 1 : 0, item.promocao_id || null, item.desconto_atacado || 0, item.tipo_preco || 'varejo', item.subtotal, itemFiscal, quantidadeFiscal, quantidadeNaoFiscal, valorFiscal, valorNaoFiscal, tipoVenda], (itemErr) => {
             if (itemErr) {
               db.run('ROLLBACK');
               res.status(500).json({ error: itemErr.message });
@@ -1178,8 +1241,13 @@ const executarVenda = async () => {
   const codigo = `VND-${agoraLocalBrasil().replace(/[- :]/g, '').slice(0, 14)}`;
   const data_venda = agoraLocalBrasil().slice(0, 10);
 
-  // Calcular valores fiscal e não fiscal (Motor — única fonte de verdade)
-  const { totalFiscal, totalNaoFiscal } = separarItensDistribuidos(distribuicaoItens);
+  // HOTFIX FISCAL-4.0.2 — validação sempre sobre Valor Fiscal Líquido do Motor
+  const totaisLiquidos = resolverTotaisFiscaisLiquidosMotor(
+    resultadoMotor,
+    distribuicaoItens
+  );
+  const totalFiscal = totaisLiquidos.totalFiscal;
+  const totalNaoFiscal = totaisLiquidos.totalNaoFiscal;
 
   const erroSomaPagamentosMotor = validarSomaPagamentosVenda(pagamentosVenda, total, {
     valor_fiscal: totalFiscal,
@@ -1212,7 +1280,11 @@ const executarVenda = async () => {
     modoConfirmacaoFiscal,
     valorFiscalMaximo: resultadoMotor.valorFiscalMaximo,
     preservacaoAplicada: resultadoMotor.preservacaoAplicada,
-    midpAtivo
+    midpAtivo,
+    desconto: Number(desconto || 0),
+    acrescimo: Number(acrescimo || 0),
+    subtotalBruto: Number(resultadoMotor.totalVendaBruto || 0),
+    debugDescontoFiscal: process.env.CDS_DEBUG_DESCONTO_FISCAL === '1'
   });
 
   if (!resultadoPagamento.sucesso) {
@@ -1356,9 +1428,9 @@ const executarVenda = async () => {
         const tipoVenda = normalizarTipoVendaItem(item);
 
         db.run(`
-          INSERT INTO vendas_itens (venda_id, produto_id, quantidade, preco_unitario, preco_unitario_interno, desconto_percentual, promocao_id, desconto_atacado, tipo_preco, subtotal, item_fiscal, quantidade_fiscal, quantidade_nao_fiscal, valor_fiscal, valor_nao_fiscal, tipo_venda)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `, [vendaId, item.produto_id, item.quantidade, item.preco_unitario, item.preco_unitario_interno ?? item.preco_unitario, item.desconto_percentual || 0, item.promocao_id || null, item.desconto_atacado || 0, item.tipo_preco || 'varejo', item.subtotal, itemFiscal, quantidadeFiscal, quantidadeNaoFiscal, valorFiscal, valorNaoFiscal, tipoVenda], (itemErr) => {
+          INSERT INTO vendas_itens (venda_id, produto_id, quantidade, preco_unitario, preco_unitario_interno, desconto_percentual, desconto_valor, desconto_manual, promocao_id, desconto_atacado, tipo_preco, subtotal, item_fiscal, quantidade_fiscal, quantidade_nao_fiscal, valor_fiscal, valor_nao_fiscal, tipo_venda)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [vendaId, item.produto_id, item.quantidade, item.preco_unitario, item.preco_unitario_interno ?? item.preco_unitario, item.desconto_percentual || 0, item.desconto_valor || 0, Number(item.desconto_manual || 0) === 1 ? 1 : 0, item.promocao_id || null, item.desconto_atacado || 0, item.tipo_preco || 'varejo', item.subtotal, itemFiscal, quantidadeFiscal, quantidadeNaoFiscal, valorFiscal, valorNaoFiscal, tipoVenda], (itemErr) => {
           if (itemErr) {
             db.run('ROLLBACK');
             res.status(500).json({ error: itemErr.message });

@@ -1547,6 +1547,22 @@
       item.miip_revisao_status = 'confirmado';
       item.miip_revisao_origem = 'Confirmacao Manual';
       if (produto?.nome) item.produto_nome_associado = produto.nome;
+      // CORREÇÃO-NF-MARGEM-01 — ao vincular produto, aplicar lucro_percentual do cadastro
+      const lucroCadastro = produto?.lucro_percentual ?? produto?.margem_lucro ?? produto?.percentual_lucro;
+      if (lucroCadastro !== undefined && lucroCadastro !== null && lucroCadastro !== ''
+          && Number.isFinite(Number(lucroCadastro))) {
+        item.margem_lucro = Number(Number(lucroCadastro).toFixed(2));
+        item.margem_origem = 'cadastro';
+        item.margem_editada_manual = 0;
+      } else {
+        item.margem_lucro = 35;
+        item.margem_origem = 'fallback';
+        item.margem_editada_manual = 0;
+      }
+      const custo = Number(item.preco_unitario || item.valor_unitario || 0);
+      if (custo > 0 && Number(item.atualizar_preco_venda ?? 1) === 1) {
+        item.preco_venda_sugerido = Number((custo * (1 + Number(item.margem_lucro) / 100)).toFixed(2));
+      }
     }
 
     if (!estado.sessao.resolvidas.includes(pendencia.indice)) {

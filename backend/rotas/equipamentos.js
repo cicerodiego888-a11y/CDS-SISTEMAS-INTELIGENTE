@@ -29,6 +29,7 @@ const ToledoDriverController = require('../motores/equipamentos/drivers/toledo/T
 router.post('/driver/toledo/connect', ToledoDriverController.connect);
 router.get('/driver/toledo/capabilities', ToledoDriverController.capabilities);
 router.post('/driver/toledo/disconnect', ToledoDriverController.disconnect);
+router.post('/driver/toledo/reconnect', ToledoDriverController.reconnect);
 // Sprint 14.12 — Certificação / Diagnóstico V2.0
 const DiagnosticsController = require('../motores/equipamentos/drivers/toledo/certificacao/DiagnosticsController');
 router.get('/driver/toledo/health', DiagnosticsController.health);
@@ -64,6 +65,8 @@ const PluController = require('../motores/equipamentos/drivers/toledo/plu/PluCon
 router.post('/plu/upload', PluController.upload);
 router.post('/plu/upload-many', PluController.uploadMany);
 router.get('/plu/history', PluController.history);
+router.get('/plu/ultima-sync', PluController.ultimaSync);
+router.get('/plu/sync-log', PluController.syncLogHistorico);
 router.get('/plu/status', PluController.status);
 router.post('/plu/cancel', PluController.cancel);
 router.post('/plu/retry', PluController.retry);
@@ -76,6 +79,11 @@ router.get('/plu/sync/history', SyncController.history);
 router.get('/plu/sync/status', SyncController.status);
 router.post('/plu/sync/cancel', SyncController.cancel);
 router.get('/plu/sync/:id', SyncController.getById);
+
+// RC15.1 — Envio simples de produtos (PLUs) para balança
+router.post('/:id/upload-plus', PluController.uploadPlus);
+// RC15.3 — Envio individual de um produto do cadastro
+router.post('/:id/upload-produto', PluController.uploadProduto);
 
 // Sprint 15.4 — Sync oficial 90AX
 router.post('/:id/sync', SyncController.syncV15);
@@ -139,6 +147,9 @@ router.get('/layouts/ativo', equipamentosController.obterLayoutAtivo);
 router.put('/layouts/ativo', equipamentosController.definirLayoutAtivo);
 router.post('/layouts/testar', equipamentosController.testarParseLayout);
 router.post('/etiquetas/interpretar', equipamentosController.interpretarEtiqueta);
+
+// Sprint 14.15.1 — Bridge compatibilidade MGV6 (exportação legada; paralelo ao TCP 90AX)
+router.use('/mgv6', require('../motores/equipamentos/mgv6/MGV6Routes')());
 
 router.get('/', equipamentosController.listar);
 router.post('/', equipamentosController.criar);

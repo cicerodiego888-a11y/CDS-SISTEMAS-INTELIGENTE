@@ -104,6 +104,22 @@ describe('RCM-ATACADO-02 — auditoria de precisão', () => {
     assert.equal(linha.totalInterno, 40.5);
   });
 
+  it('desconto em R$ equivale ao percentual correspondente', () => {
+    const porPct = Motor.calcularLinhaDescontoPercentual({
+      precoOriginal: 10,
+      quantidade: 2,
+      percentualDesconto: 10
+    });
+    const porValor = Motor.calcularLinhaDescontoValor({
+      precoOriginal: 10,
+      quantidade: 2,
+      valorDesconto: 2
+    });
+    assert.equal(porValor.valorDesconto, 2);
+    assert.equal(porValor.totalInterno, porPct.totalInterno);
+    assert.equal(porValor.total, 18);
+  });
+
   it('faixa atacado usa preço interno sem perda por arredondamento', () => {
     const linha = Motor.calcularLinhaAtacadoFaixa({
       precoVenda: 0.45,
@@ -122,6 +138,7 @@ describe('RCM-ATACADO-02 — auditoria de precisão', () => {
       'utf8'
     );
     assert.match(src, /calcularLinhaDescontoPercentual/);
+    assert.match(src, /calcularLinhaDescontoValor/);
     assert.match(src, /CASAS_INTERNAS\s*=\s*6/);
     assert.match(src, /formatarPrecoExibicao/);
   });

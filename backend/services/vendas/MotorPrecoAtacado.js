@@ -50,6 +50,28 @@ function calcularLinhaDescontoPercentual({ precoOriginal, quantidade, percentual
 }
 
 /**
+ * Desconto em valor (R$) sobre o subtotal bruto.
+ * @param {{ precoOriginal: number, quantidade: number, valorDesconto: number }} params
+ */
+function calcularLinhaDescontoValor({ precoOriginal, quantidade, valorDesconto }) {
+  const preco = arredondarInterno(precoOriginal);
+  const qtd = arredondarInterno(quantidade, 3);
+  const subtotalBruto = arredondarInterno(preco * qtd);
+  const desc = Math.min(
+    Math.max(0, arredondarInterno(valorDesconto)),
+    subtotalBruto
+  );
+  const pct = subtotalBruto > 0
+    ? arredondarInterno((desc / subtotalBruto) * 100, 4)
+    : 0;
+  return calcularLinhaDescontoPercentual({
+    precoOriginal: preco,
+    quantidade: qtd,
+    percentualDesconto: pct
+  });
+}
+
+/**
  * @param {{ precoOriginal: number, quantidade: number, precoUnitarioInformado: number }} params
  */
 function calcularLinhaPrecoUnitarioInformado({ precoOriginal, quantidade, precoUnitarioInformado }) {
@@ -120,6 +142,7 @@ module.exports = {
   arredondarMoeda,
   formatarPrecoExibicao,
   calcularLinhaDescontoPercentual,
+  calcularLinhaDescontoValor,
   calcularLinhaPrecoUnitarioInformado,
   calcularLinhaAtacadoFaixa,
   calcularSubtotalItem

@@ -43,6 +43,24 @@
         };
     }
 
+    function calcularLinhaDescontoValor(params) {
+        const preco = arredondarInterno(params.precoOriginal);
+        const qtd = arredondarInterno(params.quantidade, 3);
+        const subtotalBruto = arredondarInterno(preco * qtd);
+        const desc = Math.min(
+            Math.max(0, arredondarInterno(params.valorDesconto)),
+            subtotalBruto
+        );
+        const pct = subtotalBruto > 0
+            ? arredondarInterno((desc / subtotalBruto) * 100, 4)
+            : 0;
+        return calcularLinhaDescontoPercentual({
+            precoOriginal: preco,
+            quantidade: qtd,
+            percentualDesconto: pct
+        });
+    }
+
     function calcularLinhaPrecoUnitarioInformado(params) {
         const preco = arredondarInterno(params.precoOriginal);
         const qtd = arredondarInterno(params.quantidade, 3);
@@ -99,6 +117,7 @@
         arredondarMoeda,
         formatarPrecoExibicao,
         calcularLinhaDescontoPercentual,
+        calcularLinhaDescontoValor,
         calcularLinhaPrecoUnitarioInformado,
         calcularLinhaAtacadoFaixa,
         calcularSubtotalItem

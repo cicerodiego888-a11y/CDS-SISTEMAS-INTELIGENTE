@@ -671,47 +671,121 @@ function renderCentralEquipamentos() {
         </div>
       </div>
 
-      <div class="card mb-3 border-dark" id="centralEqDiagPainel" style="display:none;">
-        <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
-          <strong><i class="fas fa-stethoscope me-1"></i> Diagnóstico / Homologação V2.0</strong>
+      <div class="card mb-3 border-dark central-eq-diag-enterprise" id="centralEqDiagPainel" style="display:none;">
+        <div class="card-header bg-dark text-white d-flex flex-wrap justify-content-between align-items-center gap-2">
+          <strong><i class="fas fa-stethoscope me-1"></i> Painel de Diagnóstico Enterprise V1.0</strong>
           <button type="button" class="btn btn-sm btn-outline-light" onclick="document.getElementById('centralEqDiagPainel').style.display='none'">Fechar</button>
         </div>
         <div class="card-body">
-          <div class="row g-2 mb-3">
-            <div class="col-md-4">
+          <div class="row g-2 mb-3 align-items-end">
+            <div class="col-md-3 col-sm-6">
               <label class="form-label small mb-1">Host</label>
               <input type="text" class="form-control form-control-sm" id="diagHost" placeholder="10.0.0.170">
             </div>
-            <div class="col-md-2">
+            <div class="col-md-2 col-sm-6">
               <label class="form-label small mb-1">Porta</label>
               <input type="number" class="form-control form-control-sm" id="diagPorta" value="9000">
             </div>
-            <div class="col-md-6 d-flex align-items-end gap-2">
-              <button class="btn btn-sm btn-primary" onclick="centralEqDiagAtualizar()">Atualizar Diagnóstico</button>
+            <div class="col-md-7 col-12 d-flex flex-wrap gap-2">
+              <button type="button" class="btn btn-sm btn-primary" onclick="centralEqDiagAtualizar()"><i class="fas fa-sync-alt me-1"></i>Atualizar Diagnóstico</button>
+              <div class="btn-group btn-group-sm">
+                <button type="button" class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+                  <i class="fas fa-file-export me-1"></i>Exportar Diagnóstico
+                </button>
+                <ul class="dropdown-menu">
+                  <li><a class="dropdown-item" href="#" onclick="centralEqDiagExportar('json'); return false;">JSON</a></li>
+                  <li><a class="dropdown-item" href="#" onclick="centralEqDiagExportar('txt'); return false;">TXT</a></li>
+                  <li><a class="dropdown-item disabled" href="#" title="Em breve">PDF (futuro)</a></li>
+                </ul>
+              </div>
             </div>
           </div>
-          <div class="row g-3 mb-3">
-            <div class="col-md-3"><div class="border rounded p-2"><div class="text-muted small">Driver</div><div id="diagDriver" class="fw-semibold">—</div></div></div>
-            <div class="col-md-3"><div class="border rounded p-2"><div class="text-muted small">Versão</div><div id="diagVersao" class="fw-semibold">—</div></div></div>
-            <div class="col-md-3"><div class="border rounded p-2"><div class="text-muted small">Modelo</div><div id="diagModelo" class="fw-semibold">—</div></div></div>
-            <div class="col-md-3"><div class="border rounded p-2"><div class="text-muted small">Firmware</div><div id="diagFirmware" class="fw-semibold">—</div></div></div>
-            <div class="col-md-3"><div class="border rounded p-2"><div class="text-muted small">Status</div><div id="diagStatus" class="fw-semibold">—</div></div></div>
-            <div class="col-md-3"><div class="border rounded p-2"><div class="text-muted small">Tempo Online</div><div id="diagUptime" class="fw-semibold">—</div></div></div>
-            <div class="col-md-3"><div class="border rounded p-2"><div class="text-muted small">Latência</div><div id="diagLatencia" class="fw-semibold">—</div></div></div>
-            <div class="col-md-3"><div class="border rounded p-2"><div class="text-muted small">Último Erro</div><div id="diagErro" class="fw-semibold small text-danger">—</div></div></div>
-            <div class="col-md-3"><div class="border rounded p-2"><div class="text-muted small">Operações</div><div id="diagOps" class="fw-semibold">—</div></div></div>
-            <div class="col-md-3"><div class="border rounded p-2"><div class="text-muted small">Sincronizações</div><div id="diagSync" class="fw-semibold">—</div></div></div>
-            <div class="col-md-3"><div class="border rounded p-2"><div class="text-muted small">Peso</div><div id="diagPeso" class="fw-semibold">—</div></div></div>
-            <div class="col-md-3"><div class="border rounded p-2"><div class="text-muted small">Monitor</div><div id="diagMon" class="fw-semibold">—</div></div></div>
-          </div>
-          <h6 class="mb-2">Checklist de Homologação</h6>
-          <div class="table-responsive" style="max-height:260px;overflow:auto;">
-            <table class="table table-sm mb-0">
-              <thead class="table-light sticky-top"><tr><th>Item</th><th>Sprint</th><th>Status</th></tr></thead>
-              <tbody id="centralEqDiagCheckBody">
-                <tr><td colspan="3" class="text-muted">Atualize o diagnóstico.</td></tr>
-              </tbody>
-            </table>
+
+          <div id="centralEqDiagOffline" class="alert alert-warning py-2 d-none" role="alert"></div>
+
+          <div class="central-eq-diag-grid" id="centralEqDiagCards">
+            <section class="central-eq-diag-card" data-diag-card="identificacao">
+              <h3 class="central-eq-diag-card__title">Identificação do Equipamento</h3>
+              <dl class="central-eq-diag-dl">
+                <div><dt>Fabricante</dt><dd id="diagFabricante">Não informado</dd></div>
+                <div><dt>Modelo</dt><dd id="diagModelo">Não informado</dd></div>
+                <div><dt>Firmware</dt><dd id="diagFirmware">Não informado</dd></div>
+                <div><dt>Versão do Driver</dt><dd id="diagVersao">Não informado</dd></div>
+                <div><dt>Número de Série</dt><dd id="diagSerie">Não informado</dd></div>
+                <div><dt>Protocolo</dt><dd id="diagProtocolo">Não informado</dd></div>
+                <div><dt>Interface</dt><dd id="diagInterface">Não informado</dd></div>
+                <div class="d-none"><dt>Transporte</dt><dd id="diagTransporte">Não informado</dd></div>
+                <div><dt>Modo</dt><dd id="diagModo">Não informado</dd></div>
+                <div><dt>Status</dt><dd id="diagStatusId">Não informado</dd></div>
+                <div class="d-none"><dt>Driver</dt><dd id="diagDriver">Não informado</dd></div>
+              </dl>
+            </section>
+
+            <section class="central-eq-diag-card" data-diag-card="conexao">
+              <h3 class="central-eq-diag-card__title">Conexão</h3>
+              <div id="diagStatusVisual" class="central-eq-diag-status central-eq-diag-status--unknown mb-2">⚪ Não informado</div>
+              <ul class="central-eq-diag-etapas" id="diagEtapasConexao">
+                <li class="text-muted">Não informado</li>
+              </ul>
+              <dl class="central-eq-diag-dl">
+                <div><dt>Ping / Health</dt><dd id="diagHealth">Não informado</dd></div>
+                <div><dt>Protocolo</dt><dd id="diagProtocoloRede">Não informado</dd></div>
+                <div><dt>Interface</dt><dd id="diagInterfaceRede">Não informado</dd></div>
+                <div><dt>IP</dt><dd id="diagIp">Não informado</dd></div>
+                <div><dt>Porta</dt><dd id="diagPortaInfo">Não informado</dd></div>
+                <div><dt>Driver</dt><dd id="diagDriverConn">Não informado</dd></div>
+                <div><dt>Status</dt><dd id="diagStatus">Não informado</dd></div>
+                <div><dt>Online</dt><dd id="diagOnline">Não informado</dd></div>
+                <div><dt>Tempo conectado</dt><dd id="diagTempoConectado">Não informado</dd></div>
+                <div><dt>Última comunicação</dt><dd id="diagUltimaCom">Não informado</dd></div>
+                <div><dt>Heartbeat</dt><dd id="diagHeartbeat">Não informado</dd></div>
+                <div><dt>Latência</dt><dd id="diagLatencia">Não informado</dd></div>
+                <div class="d-none"><dt>Uptime</dt><dd id="diagUptime">Não informado</dd></div>
+                <div class="d-none"><dt>Erro</dt><dd id="diagErro">Não informado</dd></div>
+                <div class="d-none"><dt>Ops</dt><dd id="diagOps">Não informado</dd></div>
+                <div class="d-none"><dt>Sync</dt><dd id="diagSync">Não informado</dd></div>
+                <div class="d-none"><dt>Peso</dt><dd id="diagPeso">Não informado</dd></div>
+                <div class="d-none"><dt>Mon</dt><dd id="diagMon">Não informado</dd></div>
+                <div class="d-none"><dt>Ts</dt><dd id="diagTimestamp">Não informado</dd></div>
+              </dl>
+            </section>
+
+            <section class="central-eq-diag-card" data-diag-card="capacidades">
+              <h3 class="central-eq-diag-card__title">Capacidades do Driver</h3>
+              <ul class="central-eq-diag-check" id="centralEqDiagCaps">
+                <li class="text-muted">Não informado</li>
+              </ul>
+            </section>
+
+            <section class="central-eq-diag-card" data-diag-card="homologacao">
+              <h3 class="central-eq-diag-card__title">Homologação</h3>
+              <div id="centralEqDiagHomoResumo" class="central-eq-diag-homo mb-2">Não informado</div>
+              <ul class="central-eq-diag-check" id="centralEqDiagCheckBody"></ul>
+            </section>
+
+            <section class="central-eq-diag-card central-eq-diag-card--wide" data-diag-card="historico">
+              <h3 class="central-eq-diag-card__title">Histórico Recente</h3>
+              <div class="table-responsive" style="max-height:220px;overflow:auto;">
+                <table class="table table-sm mb-0">
+                  <thead class="table-light sticky-top"><tr><th>Hora</th><th>Operação</th><th>Resultado</th><th>Tempo</th><th>Origem</th></tr></thead>
+                  <tbody id="centralEqDiagHistBody">
+                    <tr><td colspan="5" class="text-muted">Não informado</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="central-eq-diag-card central-eq-diag-card--wide" data-diag-card="logs">
+              <h3 class="central-eq-diag-card__title">Eventos Recentes</h3>
+              <ul class="central-eq-diag-logs" id="centralEqDiagLogsBody">
+                <li class="text-muted">Não informado</li>
+              </ul>
+            </section>
+
+            <section class="central-eq-diag-card central-eq-diag-card--wide" data-diag-card="resumo">
+              <h3 class="central-eq-diag-card__title">Diagnóstico Geral</h3>
+              <div id="centralEqDiagResumo" class="central-eq-diag-resumo">Não informado</div>
+            </section>
           </div>
         </div>
       </div>
@@ -1183,8 +1257,9 @@ function centralEqExibirResultadosDiscovery(candidatos, meta = {}) {
  * Sprint 14.1–15.1 — Discovery + Fingerprint + Connection V2.
  */
 function centralEqConnBadge(connStatus) {
-  const s = String(connStatus || 'OFFLINE').toUpperCase();
-  if (s === 'CONNECTED' || s === 'ONLINE' || s === 'IDLE' || s === 'BUSY') {
+  const s = String(connStatus || 'DISCONNECTED').toUpperCase();
+  // RC14.14.6 — estados oficiais da EquipmentSession (+ aliases FSM)
+  if (s === 'CONNECTED' || s === 'ONLINE' || s === 'IDLE' || s === 'BUSY' || s === 'OK') {
     return `<span class="badge bg-success"><span style="color:#fff">●</span> Conectado</span>`;
   }
   if (s === 'RECONNECTING' || s === 'CONNECTING') {
@@ -1203,8 +1278,8 @@ function centralEqRenderCardFingerprint(eq, idx) {
   const conf = eq.confidence != null ? Number(eq.confidence) : 0;
   const identificando = eq._fpStatus === 'identificando';
   const identificado = Boolean(fab || modelo || eq.driver);
-  const connStatus = eq._connStatus || 'OFFLINE';
-  const conectado = connStatus === 'CONNECTED' || connStatus === 'ONLINE';
+  const connStatus = eq._connStatus || 'DISCONNECTED';
+  const conectado = ['CONNECTED', 'ONLINE', 'IDLE', 'BUSY', 'OK'].includes(String(connStatus).toUpperCase());
   const latConn = eq._connLatencia != null ? eq._connLatencia : eq.latencia;
   const uptime = eq._connUptime || '00:00:00';
 
@@ -1309,7 +1384,20 @@ async function centralEqConectar(idx) {
     const body = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(body.error || `HTTP ${resp.status}`);
 
-    let caps = { handshake: true, ping: true, uploadPLU: false, readWeight: false };
+    let caps = {
+      handshake: true,
+      ping: true,
+      uploadPLU: true,
+      downloadPLU: true,
+      syncPLU: true,
+      readWeight: true,
+      monitor: true,
+      downloadConfig: true,
+      writeConfig: true,
+      writeLabel: false,
+      firmwareUpdate: false,
+      autoReconnect: false
+    };
     try {
       const capsResp = await fetch(`${api}/equipamentos/driver/toledo/capabilities`, {
         headers: centralEqHeaders()
@@ -1320,9 +1408,10 @@ async function centralEqConectar(idx) {
 
     lista[idx] = {
       ...eq,
-      _connStatus: body.status || 'CONNECTED',
-      _connLatencia: body.latencia,
+      _connStatus: body.session?.state || body.status || 'CONNECTED',
+      _connLatencia: body.session?.latency != null ? body.session.latency : body.latencia,
       _connUptime: '00:00:00',
+      _connectionMode: body.session?.connectionMode || body.connectionMode || null,
       _driver: body.driver || 'TOLEDO_PRIX4',
       _driverLabel: 'TOLEDO PRIX IV',
       _handshake: body.handshake === true,
@@ -1494,11 +1583,13 @@ function centralEqIniciarPollStatus(idx) {
       if (!resp.ok) return;
       lista[idx] = {
         ...eq,
-        _connStatus: body.status || 'OFFLINE',
-        _connLatencia: body.latencia,
-        _connUptime: body.uptime || '00:00:00'
+        _connStatus: body.session?.state || body.status || 'DISCONNECTED',
+        _connLatencia: body.session?.latency != null ? body.session.latency : body.latencia,
+        _connUptime: body.uptime || '00:00:00',
+        _connectionMode: body.session?.connectionMode || body.connectionMode || null
       };
-      if (body.status !== 'CONNECTED' && body.status !== 'ONLINE') {
+      const st = String(lista[idx]._connStatus || '').toUpperCase();
+      if (!['CONNECTED', 'ONLINE', 'IDLE', 'BUSY', 'OK'].includes(st)) {
         centralEqPararPollStatus(idx);
       }
       await centralEqAtualizarCard(idx);
@@ -3472,69 +3563,619 @@ async function centralEqConfigImportar(event) {
 }
 
 /**
- * Sprint 14.12 — Diagnóstico / Homologação
+ * Sprint 14.12 / RC14.12.1 / RC14.12.2 — Diagnóstico Enterprise (UX)
  */
-function centralEqMostrarDiag() {
+const CENTRAL_EQ_DIAG_NAO_INFORMADO = 'Não informado';
+window.__centralEqDiagLast = null;
+window.__centralEqDiagEquipamentoId = null;
+
+const CENTRAL_EQ_DIAG_CAP_LABELS = [
+  { key: 'discovery', label: 'Discovery', fromArch: 'discovery' },
+  { key: 'fingerprint', label: 'Fingerprint', fromArch: 'fingerprint' },
+  { key: 'handshake', label: 'Handshake', cap: 'handshake' },
+  { key: 'ping', label: 'Ping', cap: 'ping' },
+  { key: 'uploadPLU', label: 'Upload PLU', cap: 'uploadPLU' },
+  { key: 'downloadPLU', label: 'Download PLU', cap: 'downloadPLU' },
+  { key: 'syncPLU', label: 'Sincronização', cap: 'syncPLU' },
+  { key: 'readWeight', label: 'Peso', cap: 'readWeight' },
+  { key: 'config', label: 'Configuração', cap: 'downloadConfig' },
+  { key: 'monitor', label: 'Monitor', cap: 'monitor' },
+  { key: 'diagnostico', label: 'Diagnóstico', always: true }
+];
+
+function centralEqDiagValor(v) {
+  if (v === null || v === undefined || v === '') return CENTRAL_EQ_DIAG_NAO_INFORMADO;
+  if (typeof v === 'boolean') return v ? 'Sim' : 'Não';
+  return String(v);
+}
+
+function centralEqDiagAbrirPainel() {
   const painel = document.getElementById('centralEqDiagPainel');
-  if (painel) painel.style.display = '';
+  if (painel) {
+    painel.style.display = '';
+    try { painel.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (_) { /* ignore */ }
+  }
+  console.log('[DIAG RC14.12.2] Painel aberto');
+}
+
+function centralEqMostrarDiag() {
+  console.log('[DIAG RC14.14.5] Diagnóstico solicitado (toolbar)');
+  centralEqDiagAbrirPainel();
+  const cadastrados = centralEqCache || [];
   const lista = window.__centralEqDescobertosV1 || [];
-  const eq = lista.find((e) => e._driver || e._connStatus === 'CONNECTED') || lista[0];
+  const eqCad = cadastrados.find((e) => e.ultimo_ip || e.ip) || cadastrados[0];
+  const eqDisc = lista.find((e) => e._driver || e._connStatus === 'CONNECTED') || lista[0];
+  const eq = eqCad || eqDisc;
   if (eq) {
+    const alvo = centralEqDiagResolverAlvo(eq);
     const h = document.getElementById('diagHost');
     const p = document.getElementById('diagPorta');
-    if (h && !h.value) h.value = eq.host || '';
-    if (p && eq.porta) p.value = eq.porta;
+    if (h && !h.value) h.value = alvo.host || eq.host || '';
+    if (p) p.value = String(alvo.porta || eq.porta || 9000);
+    if (eq.equipamento_id) {
+      window.__centralEqDiagEquipamentoId = Number(eq.equipamento_id);
+    }
   }
   centralEqDiagAtualizar();
 }
 
 function centralEqDiagFmtMs(ms) {
-  if (ms == null || !Number.isFinite(Number(ms))) return '—';
+  if (ms == null || !Number.isFinite(Number(ms))) return CENTRAL_EQ_DIAG_NAO_INFORMADO;
   const s = Math.floor(Number(ms) / 1000);
   const m = Math.floor(s / 60);
   const h = Math.floor(m / 60);
   if (h > 0) return `${h}h ${m % 60}m`;
   if (m > 0) return `${m}m ${s % 60}s`;
+  if (Number(ms) < 1000) return `${Math.round(Number(ms))} ms`;
   return `${s}s`;
 }
 
-async function centralEqDiagAtualizar() {
-  const host = document.getElementById('diagHost')?.value?.trim();
-  const porta = document.getElementById('diagPorta')?.value;
-  const q = new URLSearchParams();
+function centralEqDiagLocalizarEquipamento(id) {
+  const nid = Number(id);
+  const naLista = (centralEqCache || []).find((e) => Number(e.equipamento_id) === nid);
+  if (naLista) return naLista;
+  const descobertos = window.__centralEqDescobertosV1 || [];
+  return descobertos.find((e) => Number(e.equipamento_id) === nid) || null;
+}
+
+function centralEqDiagResolverAlvo(equipamento) {
+  if (!equipamento) return { host: '', porta: 9000, driver: null };
+  return {
+    host: equipamento.ultimo_ip || equipamento.ip || equipamento.host || '',
+    porta: Number(equipamento.porta_tcp || equipamento.porta || 9000) || 9000,
+    driver: equipamento.driver_codigo || equipamento.fabricante || null
+  };
+}
+
+function centralEqDiagSet(id, v) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = centralEqDiagValor(v);
+}
+
+function centralEqDiagStatusVisual(health) {
+  const el = document.getElementById('diagStatusVisual');
+  if (!el) return;
+  el.classList.remove(
+    'central-eq-diag-status--online',
+    'central-eq-diag-status--offline',
+    'central-eq-diag-status--connecting',
+    'central-eq-diag-status--unknown'
+  );
+  // RC14.14.6 — preferir EquipmentSession quando presente
+  const last = window.__centralEqDiagLast || {};
+  const sess = last.session || last.monitor || {};
+  const st = String(sess.state || sess.status || health?.status || '').toUpperCase();
+  const online = sess.connected === true
+    || sess.conectado === true
+    || health?.online === true
+    || st === 'CONNECTED'
+    || st === 'OK'
+    || st === 'IDLE'
+    || st === 'BUSY';
+  if (online) {
+    el.classList.add('central-eq-diag-status--online');
+    el.textContent = '🟢 Online';
+  } else if (st === 'CONNECTING' || st === 'RECONNECTING') {
+    el.classList.add('central-eq-diag-status--connecting');
+    el.textContent = '🟡 Conectando';
+  } else if (
+    sess.connected === false
+    || health?.online === false
+    || st === 'OFFLINE'
+    || st === 'DISCONNECTED'
+    || st === 'DEGRADED'
+    || st === 'ERROR'
+  ) {
+    el.classList.add('central-eq-diag-status--offline');
+    el.textContent = '🔴 Offline';
+  } else {
+    el.classList.add('central-eq-diag-status--unknown');
+    el.textContent = '⚪ Não informado';
+  }
+}
+
+function centralEqDiagRenderCaps(body) {
+  const capsEl = document.getElementById('centralEqDiagCaps');
+  if (!capsEl) return;
+  const caps = body.capabilities || {};
+  const arch = body.arquitetura?.resultados || [];
+  const archOk = (id) => arch.find((r) => r.id === id)?.status === 'OK';
+
+  const items = CENTRAL_EQ_DIAG_CAP_LABELS.map((def) => {
+    let ok = false;
+    if (def.always) ok = true;
+    else if (def.cap) ok = caps[def.cap] === true;
+    else if (def.fromArch) ok = archOk(def.fromArch);
+    return { label: def.label, ok };
+  });
+
+  capsEl.innerHTML = items.map((i) => (
+    i.ok
+      ? `<li class="ok">✔ ${escapeHtmlCentralEq(i.label)}</li>`
+      : `<li class="off">○ Não suportado — ${escapeHtmlCentralEq(i.label)}</li>`
+  )).join('');
+}
+
+function centralEqDiagRenderHomologacao(body) {
+  const list = document.getElementById('centralEqDiagCheckBody');
+  const resumo = document.getElementById('centralEqDiagHomoResumo');
+  const itens = body.checklist?.itens || [];
+  const total = Number(body.checklist?.resumo?.total || itens.length || 0);
+  const ok = Number(body.checklist?.resumo?.ok || itens.filter((i) => i.status === 'OK').length || 0);
+  const pct = total > 0 ? Math.round((ok / total) * 100) : 0;
+  const homologado = body.checklist?.homologado === true || body.homologacao?.prontoProducao === true;
+
+  if (resumo) {
+    resumo.innerHTML = total
+      ? `<div class="central-eq-diag-homo__pct">${pct}%</div>
+         <div class="central-eq-diag-homo__label">${homologado ? 'Homologado' : 'Em homologação'}</div>`
+      : CENTRAL_EQ_DIAG_NAO_INFORMADO;
+  }
+
+  if (list) {
+    list.innerHTML = itens.length
+      ? itens.map((i) => {
+        const okItem = i.status === 'OK';
+        return okItem
+          ? `<li class="ok">✔ ${escapeHtmlCentralEq(i.item || i.id || '')}</li>`
+          : `<li class="off">○ ${escapeHtmlCentralEq(i.item || i.id || '')} — ${escapeHtmlCentralEq(i.status || CENTRAL_EQ_DIAG_NAO_INFORMADO)}</li>`;
+      }).join('')
+      : `<li class="text-muted">${CENTRAL_EQ_DIAG_NAO_INFORMADO}</li>`;
+  }
+}
+
+function centralEqDiagRenderEtapas(body) {
+  const box = document.getElementById('diagEtapasConexao');
+  if (!box) return;
+  const etapas = body.etapas_conexao?.etapas || [];
+  if (!etapas.length) {
+    box.innerHTML = `<li class="text-muted">${CENTRAL_EQ_DIAG_NAO_INFORMADO}</li>`;
+    return;
+  }
+  box.innerHTML = etapas.map((e) => {
+    const estado = e.estado || (e.ok === true ? 'OK' : (e.ok === false ? 'FALHA' : 'NAO_INICIADO'));
+    let mark = '○';
+    let cls = 'pending';
+    if (estado === 'OK') { mark = '✔'; cls = 'ok'; }
+    else if (estado === 'FALHA') { mark = '✖'; cls = 'off'; }
+    else if (estado === 'NAO_EXECUTADO') { mark = '–'; cls = 'pending'; }
+    const detalhe = e.erro && estado !== 'OK'
+      ? ` — ${escapeHtmlCentralEq(e.erro)}`
+      : (e.latenciaMs != null && estado === 'OK' ? ` — ${e.latenciaMs} ms` : '');
+    const rotulo = e.rotulo && estado === 'FALHA' ? ` (${escapeHtmlCentralEq(e.rotulo)})` : '';
+    return `<li class="${cls}">${mark} <strong>${escapeHtmlCentralEq(e.titulo || e.chave)}</strong>${rotulo}${detalhe}</li>`;
+  }).join('');
+}
+
+function centralEqDiagRenderResumo(body) {
+  const box = document.getElementById('centralEqDiagResumo');
+  if (!box) return;
+  const health = body.health || {};
+  const etapas = body.etapas_conexao || {};
+  const tcpOk = health.tcp?.ok === true
+    || (etapas.etapas || []).find((e) => e.chave === 'TCP_CONNECT')?.ok === true;
+  const hsFail = health.handshake?.ok === false
+    || (etapas.etapas || []).find((e) => e.chave === 'HANDSHAKE')?.ok === false;
+  const offline = health.online === false || String(health.status || '').toUpperCase() === 'OFFLINE';
+  const homologado = body.checklist?.homologado === true || body.homologacao?.prontoProducao === true;
+  const total = Number(body.checklist?.resumo?.total || 0);
+  const ok = Number(body.checklist?.resumo?.ok || 0);
+  const healthPct = total > 0 ? Math.round((ok / total) * 100) : (offline && !tcpOk ? 0 : 100);
+
+  if (etapas.etapaFalha || (offline && !tcpOk) || hsFail) {
+    const etapa = etapas.etapaFalhaTitulo || etapas.etapaFalha || (hsFail ? 'Handshake' : 'Conexão');
+    const motivo = etapas.etapaFalhaErro
+      || health.motivo
+      || health.ultimoErro?.message
+      || 'Falha na comunicação';
+    const causa = etapas.etapaFalha === 'TCP_CONNECT'
+      ? 'Socket.connect() falhou (timeout, refused ou host inacessível)'
+      : (etapas.etapaFalha === 'HANDSHAKE'
+        ? 'TCP estabeleceu, mas Handshake/ACK falhou (protocolo)'
+        : 'Verificar etapa indicada no painel de conexão');
+    box.innerHTML = `
+      <div class="central-eq-diag-problema">
+        <div><strong>Problema identificado</strong></div>
+        <div>Etapa: ${escapeHtmlCentralEq(etapa)}</div>
+        <div class="mt-2"><strong>Descrição</strong></div>
+        <div>${escapeHtmlCentralEq(motivo)}</div>
+        <div class="mt-2"><strong>Possível causa</strong></div>
+        <div>${escapeHtmlCentralEq(causa)}</div>
+        <div class="mt-2"><strong>Recomendação</strong></div>
+        <div>${etapas.etapaFalha === 'TCP_CONNECT'
+    ? 'Verificar IP/porta, firewall e cabo/rede'
+    : 'Verificar firmware/protocolo 90AX e logs CONNECTION TRACE'}</div>
+      </div>`;
+    return;
+  }
+
+  box.innerHTML = `
+    <dl class="central-eq-diag-dl central-eq-diag-dl--resumo">
+      <div><dt>Equipamento</dt><dd>${offline && !tcpOk ? 'OFFLINE' : 'ONLINE'}</dd></div>
+      <div><dt>Driver</dt><dd>OPERACIONAL</dd></div>
+      <div><dt>TCP</dt><dd>${tcpOk ? 'OK' : '—'}</dd></div>
+      <div><dt>Comunicação</dt><dd>${hsFail ? 'FALHA HANDSHAKE' : (offline && !tcpOk ? 'FALHA' : 'NORMAL')}</dd></div>
+      <div><dt>Health</dt><dd>${healthPct}%</dd></div>
+      <div><dt>Recomendação</dt><dd>${homologado ? 'Pronto para produção' : 'Concluir checklist de homologação'}</dd></div>
+    </dl>`;
+}
+
+async function centralEqDiagCarregarHistoricoELogs(host, porta) {
+  const histBody = document.getElementById('centralEqDiagHistBody');
+  const logsBody = document.getElementById('centralEqDiagLogsBody');
+  const q = new URLSearchParams({ limite: '20' });
   if (host) q.set('host', host);
   if (porta) q.set('porta', String(porta));
+
+  let rows = [];
   try {
+    const resp = await fetch(`${centralEqApi()}/equipamentos/operations/history?${q}`, {
+      headers: centralEqHeaders()
+    });
+    const body = await resp.json().catch(() => ({}));
+    rows = Array.isArray(body.historico) ? body.historico.slice(0, 20) : [];
+  } catch (_) {
+    rows = [];
+  }
+
+  if (histBody) {
+    histBody.innerHTML = rows.length
+      ? rows.map((r) => {
+        const hora = r.finished_at || r.started_at
+          ? new Date(r.finished_at || r.started_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+          : CENTRAL_EQ_DIAG_NAO_INFORMADO;
+        const resultado = r.status === 'SUCCESS' ? 'OK' : (r.status || CENTRAL_EQ_DIAG_NAO_INFORMADO);
+        const tempo = r.duration != null ? `${r.duration} ms` : CENTRAL_EQ_DIAG_NAO_INFORMADO;
+        const origem = r.origin || r.origem || r.source || 'Operações';
+        return `<tr>
+          <td>${escapeHtmlCentralEq(hora)}</td>
+          <td>${escapeHtmlCentralEq(r.operation || CENTRAL_EQ_DIAG_NAO_INFORMADO)}</td>
+          <td>${escapeHtmlCentralEq(resultado)}</td>
+          <td>${escapeHtmlCentralEq(tempo)}</td>
+          <td>${escapeHtmlCentralEq(origem)}</td>
+        </tr>`;
+      }).join('')
+      : `<tr><td colspan="5" class="text-muted">${CENTRAL_EQ_DIAG_NAO_INFORMADO}</td></tr>`;
+  }
+
+  if (logsBody) {
+    const eventos = [];
+    const last = window.__centralEqDiagLast || {};
+    if (last.generatedAt) {
+      eventos.push({ tipo: 'INFO', msg: 'Diagnóstico gerado', data: last.generatedAt });
+    }
+    if (last.health?.online === true) eventos.push({ tipo: 'INFO', msg: 'Heartbeat OK / Online', data: last.health.checkedAt });
+    if (last.health?.online === false) {
+      eventos.push({
+        tipo: 'WARN',
+        msg: last.health.motivo || 'Sem comunicação',
+        data: last.health.checkedAt
+      });
+    }
+    rows.slice(0, 12).forEach((r) => {
+      eventos.push({
+        tipo: r.status === 'SUCCESS' ? 'INFO' : 'ERROR',
+        msg: `${r.operation || 'Operação'} — ${r.status || ''}`,
+        data: r.finished_at || r.started_at
+      });
+    });
+
+    logsBody.innerHTML = eventos.length
+      ? eventos.map((e) => {
+        const data = e.data
+          ? new Date(e.data).toLocaleString('pt-BR')
+          : CENTRAL_EQ_DIAG_NAO_INFORMADO;
+        return `<li><span class="tipo">${escapeHtmlCentralEq(e.tipo)}</span>
+          <span class="msg">${escapeHtmlCentralEq(e.msg)}</span>
+          <span class="data">${escapeHtmlCentralEq(data)}</span></li>`;
+      }).join('')
+      : `<li class="text-muted">${CENTRAL_EQ_DIAG_NAO_INFORMADO}</li>`;
+  }
+}
+
+/**
+ * Renderiza o painel Enterprise — nunca deixa campo vazio.
+ */
+function centralEqDiagRenderizar(body) {
+  window.__centralEqDiagLast = body || {};
+  const eq = body.equipamento || {};
+  const health = body.health || {};
+  const version = body.version || {};
+  const perf = body.performance || {};
+  const stats = body.estatisticas || {};
+
+  centralEqDiagSet('diagFabricante', eq.fabricante || version.fabricante);
+  centralEqDiagSet('diagModelo', eq.modelo || version.modelo);
+  centralEqDiagSet('diagFirmware', eq.firmware || version.firmwareAlvo);
+  centralEqDiagSet('diagVersao', version.driverVersion || version.homologacao);
+  centralEqDiagSet('diagSerie', eq.numero_serie);
+  // RC15.0.2 — Protocolo TCP/IP × Interface física (nunca inferir cabo por ter IP)
+  const net = body.network || {};
+  const ifaceLabel = net.interface_label
+    || (net.interface === 'WLAN' ? 'WLAN'
+      : (net.interface === 'ETHERNET' ? 'Ethernet'
+        : (net.interface === 'UNKNOWN' ? 'Não informado pelo equipamento' : null)));
+  centralEqDiagSet('diagProtocolo', net.protocol || (eq.ip || eq.porta ? 'TCP/IP' : null));
+  centralEqDiagSet('diagInterface', ifaceLabel);
+  centralEqDiagSet('diagTransporte', ifaceLabel);
+  centralEqDiagSet('diagProtocoloRede', net.protocol || (eq.ip || eq.porta ? 'TCP/IP' : null));
+  centralEqDiagSet('diagInterfaceRede', ifaceLabel);
+  centralEqDiagSet(
+    'diagDriverConn',
+    version.driver || eq.driver || 'Toledo Prix IV Uno'
+  );
+  centralEqDiagSet(
+    'diagModo',
+    version.framing || version.protocolVersion || version.homologacao
+      ? `Framing ${version.framing || version.protocolVersion || version.homologacao}`
+      : null
+  );
+  centralEqDiagSet('diagStatusId', health.status);
+  centralEqDiagSet('diagDriver', version.driver || eq.driver);
+
+  centralEqDiagSet('diagIp', net.ip || eq.ip);
+  centralEqDiagSet('diagPortaInfo', net.port != null ? net.port : (eq.porta != null ? eq.porta : eq.porta_com));
+  centralEqDiagSet('diagStatus', health.status);
+  centralEqDiagSet(
+    'diagOnline',
+    health.online === true ? 'Sim' : (health.online === false ? 'Não' : null)
+  );
+  centralEqDiagSet(
+    'diagHeartbeat',
+    health.heartbeat === true ? 'Ativo' : (health.heartbeat === false ? 'Inativo' : null)
+  );
+  centralEqDiagSet('diagLatencia', perf.pingMs != null ? `${perf.pingMs} ms` : null);
+  centralEqDiagSet('diagUptime', health.uptimeMs != null ? centralEqDiagFmtMs(health.uptimeMs) : null);
+  centralEqDiagSet(
+    'diagTempoConectado',
+    health.tempoConectadoMs != null
+      ? centralEqDiagFmtMs(health.tempoConectadoMs)
+      : (health.uptimeMs != null ? centralEqDiagFmtMs(health.uptimeMs) : null)
+  );
+  centralEqDiagSet(
+    'diagUltimaCom',
+    eq.ultima_comunicacao
+      ? (typeof formatarDataCentralEq === 'function'
+        ? formatarDataCentralEq(eq.ultima_comunicacao)
+        : eq.ultima_comunicacao)
+      : null
+  );
+  centralEqDiagSet('diagErro', health.ultimoErro?.message || health.motivo);
+  centralEqDiagSet('diagOps', stats.operacoes);
+  centralEqDiagSet('diagSync', stats.sincronizacoes);
+  centralEqDiagSet('diagPeso', stats.pesagens);
+  centralEqDiagSet('diagMon', stats.monitorTicks);
+  centralEqDiagSet('diagTimestamp', body.generatedAt);
+  centralEqDiagSet('diagHealth', health.status || (health.online === true ? 'OK' : null));
+
+  centralEqDiagStatusVisual(health);
+
+  const offlineBox = document.getElementById('centralEqDiagOffline');
+  if (offlineBox) {
+    const etapas = body.etapas_conexao || {};
+    const tcpOk = (etapas.etapas || []).find((e) => e.chave === 'TCP_CONNECT')?.ok === true;
+    const offline = (health.online === false || String(health.status || '').toUpperCase() === 'OFFLINE') && !tcpOk;
+    if (offline || etapas.etapaFalha) {
+      const motivo = etapas.etapaFalhaErro
+        || health.motivo
+        || health.ultimoErro?.message
+        || 'Falha na comunicação';
+      const titulo = etapas.etapaFalhaTitulo
+        ? `Falha em ${etapas.etapaFalhaTitulo}`
+        : (offline ? 'Status OFFLINE' : 'Diagnóstico');
+      offlineBox.classList.remove('d-none');
+      offlineBox.innerHTML = `<strong>${escapeHtmlCentralEq(titulo)}</strong> — ${escapeHtmlCentralEq(motivo)}`;
+    } else {
+      offlineBox.classList.add('d-none');
+      offlineBox.textContent = '';
+    }
+  }
+
+  centralEqDiagRenderEtapas(body);
+  centralEqDiagRenderCaps(body);
+  centralEqDiagRenderHomologacao(body);
+  centralEqDiagRenderResumo(body);
+
+  const host = document.getElementById('diagHost')?.value?.trim() || eq.ip;
+  const porta = document.getElementById('diagPorta')?.value || eq.porta;
+  centralEqDiagCarregarHistoricoELogs(host, porta);
+
+  console.log('[DIAG RC14.12.2] Dados renderizados');
+  return body;
+}
+
+function centralEqDiagExportar(formato) {
+  const data = window.__centralEqDiagLast;
+  if (!data || !Object.keys(data).length) {
+    if (typeof showNotification === 'function') {
+      showNotification('Atualize o diagnóstico antes de exportar.', 'warning');
+    }
+    return;
+  }
+
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  let blob;
+  let nome;
+
+  if (formato === 'txt') {
+    const linhas = [
+      'CDS — Diagnóstico Enterprise V1.0',
+      `Gerado em: ${new Date().toLocaleString('pt-BR')}`,
+      '',
+      JSON.stringify(data, null, 2)
+    ];
+    blob = new Blob([linhas.join('\n')], { type: 'text/plain;charset=utf-8' });
+    nome = `diagnostico-equipamento-${ts}.txt`;
+  } else {
+    blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' });
+    nome = `diagnostico-equipamento-${ts}.json`;
+  }
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = nome;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  console.log('[DIAG RC14.12.2] Exportação realizada', formato);
+  if (typeof showNotification === 'function') {
+    showNotification(`Diagnóstico exportado (${String(formato).toUpperCase()})`, 'success');
+  }
+}
+
+async function centralEqDiagAtualizar() {
+  // RC14.14.5 — sempre executar comunicação real (probe ativo)
+  const last = window.__centralEqDiagLast || {};
+  const eqLast = last.equipamento || {};
+  const netLast = last.network || {};
+  const hEl = document.getElementById('diagHost');
+  const pEl = document.getElementById('diagPorta');
+  let host = hEl?.value?.trim()
+    || netLast.ip
+    || eqLast.ip
+    || '';
+  let porta = pEl?.value
+    || (netLast.port != null ? String(netLast.port) : '')
+    || (eqLast.porta != null ? String(eqLast.porta) : '')
+    || '9000';
+
+  const equipamentoId = window.__centralEqDiagEquipamentoId
+    || last.equipamento_id
+    || null;
+
+  // Preferir POST por equipamento (resolve IP via cadastro + identidade)
+  if (equipamentoId) {
+    try {
+      console.log('[DIAG RC14.14.5] Diagnóstico solicitado (POST equipamento)', {
+        equipamentoId,
+        host,
+        porta
+      });
+      if (hEl && host) hEl.value = host;
+      if (pEl && porta) pEl.value = String(porta);
+      const body = await centralEqFetch(`/${equipamentoId}/diagnostico`, {
+        method: 'POST',
+        body: '{}'
+      });
+      const payload = body.diagnostico && body.diagnostico.health
+        ? body.diagnostico
+        : body;
+      const ipOk = payload.network?.ip || payload.equipamento?.ip;
+      const portaOk = payload.network?.port != null
+        ? payload.network.port
+        : payload.equipamento?.porta;
+      if (hEl && ipOk) hEl.value = ipOk;
+      if (pEl && portaOk != null) pEl.value = String(portaOk);
+      centralEqDiagRenderizar(payload);
+      if (typeof showNotification === 'function') {
+        const offline = payload.health?.online === false;
+        showNotification(
+          offline
+            ? `Diagnóstico: OFFLINE — ${payload.health?.motivo || 'Sem comunicação'}`
+            : 'Diagnóstico atualizado (comunicação real)',
+          offline ? 'warning' : 'success'
+        );
+      }
+      return;
+    } catch (errPost) {
+      console.warn('[DIAG RC14.14.5] POST falhou, fallback GET', errPost.message);
+    }
+  }
+
+  if (!host) {
+    if (typeof showNotification === 'function') {
+      showNotification('Informe o IP da balança para executar o diagnóstico', 'warning');
+    }
+    return;
+  }
+
+  const q = new URLSearchParams();
+  q.set('host', host);
+  q.set('porta', String(porta || 9000));
+  q.set('probe', '1');
+  try {
+    console.log('[DIAG RC14.14.5] Diagnóstico solicitado (GET Toledo + probe)', { host, porta });
     const resp = await fetch(`${centralEqApi()}/equipamentos/driver/toledo/diagnostics?${q}`, {
       headers: centralEqHeaders()
     });
     const body = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(body.error || `HTTP ${resp.status}`);
-    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-    set('diagDriver', body.version?.driver || body.equipamento?.driver || '—');
-    set('diagVersao', body.version?.driverVersion || '—');
-    set('diagModelo', body.equipamento?.modelo || '—');
-    set('diagFirmware', body.equipamento?.firmware || '—');
-    set('diagStatus', body.health?.status || '—');
-    set('diagUptime', centralEqDiagFmtMs(body.health?.uptimeMs));
-    set('diagLatencia', body.performance?.pingMs != null ? `${body.performance.pingMs} ms` : '—');
-    set('diagErro', body.health?.ultimoErro?.message || '—');
-    set('diagOps', String(body.estatisticas?.operacoes ?? '—'));
-    set('diagSync', String(body.estatisticas?.sincronizacoes ?? '—'));
-    set('diagPeso', String(body.estatisticas?.pesagens ?? '—'));
-    set('diagMon', String(body.estatisticas?.monitorTicks ?? '—'));
-    const tbody = document.getElementById('centralEqDiagCheckBody');
-    const itens = body.checklist?.itens || [];
-    if (tbody) {
-      tbody.innerHTML = itens.length
-        ? itens.map((i) => `
-            <tr>
-              <td>${escapeHtmlCentralEq(i.item || '')}</td>
-              <td>${escapeHtmlCentralEq(i.sprint || '')}</td>
-              <td>${i.status === 'OK' ? '✔' : (i.status === 'FAIL' ? '✖' : '…')} ${escapeHtmlCentralEq(i.status || '')}</td>
-            </tr>
-          `).join('')
-        : '<tr><td colspan="3" class="text-muted">Sem checklist.</td></tr>';
+    if (hEl && body.network?.ip) hEl.value = body.network.ip;
+    if (pEl && body.network?.port != null) pEl.value = String(body.network.port);
+    centralEqDiagRenderizar(body);
+    if (typeof showNotification === 'function') {
+      const offline = body.health?.online === false;
+      showNotification(
+        offline
+          ? `Diagnóstico: OFFLINE — ${body.health?.motivo || 'Sem comunicação'}`
+          : 'Diagnóstico atualizado (comunicação real)',
+        offline ? 'warning' : 'success'
+      );
+    }
+  } catch (err) {
+    if (typeof showNotification === 'function') showNotification(err.message, 'danger');
+  }
+}
+
+async function centralEqDiagnostico(id) {
+  try {
+    console.log('[DIAG RC14.14.5] Diagnóstico solicitado (linha)', { id });
+    const equipamento = centralEqDiagLocalizarEquipamento(id);
+    if (!equipamento) {
+      throw new Error('Equipamento não encontrado na Central');
+    }
+    const alvo = centralEqDiagResolverAlvo(equipamento);
+    window.__centralEqDiagEquipamentoId = Number(id) || null;
+    const h = document.getElementById('diagHost');
+    const p = document.getElementById('diagPorta');
+    if (h) h.value = alvo.host || '';
+    if (p) p.value = String(alvo.porta || 9000);
+
+    centralEqDiagAbrirPainel();
+
+    const body = await centralEqFetch(`/${id}/diagnostico`, { method: 'POST', body: '{}' });
+    const payload = body.diagnostico && body.diagnostico.health
+      ? body.diagnostico
+      : body;
+    const ipOk = payload.network?.ip || payload.equipamento?.ip || alvo.host;
+    const portaOk = payload.network?.port != null
+      ? payload.network.port
+      : (payload.equipamento?.porta != null ? payload.equipamento.porta : alvo.porta);
+    if (h && ipOk) h.value = ipOk;
+    if (p && portaOk != null) p.value = String(portaOk);
+    centralEqDiagRenderizar(payload);
+
+    if (typeof showNotification === 'function') {
+      const offline = payload.health?.online === false
+        || String(payload.health?.status || '').toUpperCase() === 'OFFLINE';
+      showNotification(
+        offline
+          ? `Diagnóstico: OFFLINE — ${payload.health?.motivo || 'Sem comunicação'}`
+          : 'Diagnóstico concluído — veja o painel',
+        offline ? 'warning' : 'success'
+      );
     }
   } catch (err) {
     if (typeof showNotification === 'function') showNotification(err.message, 'danger');
@@ -3665,15 +4306,25 @@ function centralEqProtoSet(id, v) {
 }
 
 function centralEqProtoMostrarResultado(body) {
-  centralEqProtoSet('protoEstado', body.sucesso ? 'SUCCESS' : (body.session?.estado || 'ERROR'));
-  centralEqProtoSet('protoComando', body.command || body.wireCommand || '—');
-  centralEqProtoSet('protoTempo', body.latenciaMs != null ? `${body.latenciaMs} ms` : '—');
-  centralEqProtoSet('protoChecksum', body.checksum || '—');
-  centralEqProtoSet('protoResposta', body.responseCommand || body.parsed?.command || '—');
-  const payload = body.payload != null ? body.payload : body.parsed?.payload;
-  centralEqProtoSet('protoPayload', payload != null ? JSON.stringify(payload) : '—');
-  centralEqProtoSet('protoTx', body.txHex || '—');
-  centralEqProtoSet('protoRx', body.rxHex || '—');
+  // RC14.14.10 — nunca acessar propriedades de resposta nula
+  const b = body && typeof body === 'object' ? body : {};
+  const semRx = b.timeout === true
+    || b.code === 'RX_TIMEOUT'
+    || (!b.rxHex && !b.sucesso && /nenhuma resposta|timeout/i.test(String(b.mensagem || b.error || '')));
+  centralEqProtoSet('protoEstado', semRx ? 'TIMEOUT' : (b.sucesso ? 'SUCCESS' : (b.session?.estado || 'ERROR')));
+  centralEqProtoSet('protoComando', b.command || b.wireCommand || '—');
+  centralEqProtoSet('protoTempo', b.latenciaMs != null ? `${b.latenciaMs} ms` : '—');
+  centralEqProtoSet('protoChecksum', b.checksum || '—');
+  centralEqProtoSet(
+    'protoResposta',
+    semRx
+      ? 'Nenhuma resposta recebida da balança.'
+      : (b.responseCommand || b.parsed?.command || '—')
+  );
+  const payload = b.payload != null ? b.payload : b.parsed?.payload;
+  centralEqProtoSet('protoPayload', semRx ? '—' : (payload != null ? JSON.stringify(payload) : '—'));
+  centralEqProtoSet('protoTx', b.txHex || '—');
+  centralEqProtoSet('protoRx', semRx ? '(sem RX)' : (b.rxHex || '—'));
 }
 
 async function centralEqProtoExec(comando) {
@@ -3696,16 +4347,66 @@ async function centralEqProtoExec(comando) {
       headers: centralEqHeaders(),
       body: JSON.stringify({ host, porta })
     });
-    const body = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw new Error(body.error || `HTTP ${resp.status}`);
+    const body = await resp.json().catch(() => null);
+    if (!body || typeof body !== 'object') {
+      centralEqProtoMostrarResultado({
+        sucesso: false,
+        timeout: true,
+        mensagem: 'Nenhuma resposta recebida da balança.'
+      });
+      if (typeof showNotification === 'function') {
+        showNotification('Nenhuma resposta recebida da balança.', 'warning');
+      }
+      return;
+    }
+    if (!resp.ok) {
+      const msg = body.error || body.mensagem || `HTTP ${resp.status}`;
+      const semRx = /nenhuma resposta|timeout|RX_TIMEOUT|null.*dados|dados/i.test(String(msg));
+      if (semRx) {
+        centralEqProtoMostrarResultado({
+          ...body,
+          sucesso: false,
+          timeout: true,
+          mensagem: 'Nenhuma resposta recebida da balança.',
+          txHex: body.txHex || body.hex_enviado || null
+        });
+        if (typeof showNotification === 'function') {
+          showNotification('Nenhuma resposta recebida da balança.', 'warning');
+        }
+        return;
+      }
+      throw new Error(msg);
+    }
+    if (body.timeout === true || body.sucesso === false && !body.rxHex) {
+      centralEqProtoMostrarResultado({
+        ...body,
+        timeout: true,
+        mensagem: body.mensagem || 'Nenhuma resposta recebida da balança.'
+      });
+      if (typeof showNotification === 'function') {
+        showNotification('Nenhuma resposta recebida da balança.', 'warning');
+      }
+      return;
+    }
     centralEqProtoMostrarResultado(body);
     centralEqProtoHistorico();
     if (typeof showNotification === 'function') {
       showNotification(`${comando} OK — ${body.checksum || ''} (${body.latenciaMs ?? '—'} ms)`, 'success');
     }
   } catch (err) {
-    centralEqProtoSet('protoEstado', 'ERROR');
-    if (typeof showNotification === 'function') showNotification(err.message, 'danger');
+    const msg = err && err.message ? String(err.message) : String(err || '');
+    const semRx = /nenhuma resposta|timeout|RX_TIMEOUT|Cannot read properties of null|reading 'dados'/i.test(msg);
+    centralEqProtoSet('protoEstado', semRx ? 'TIMEOUT' : 'ERROR');
+    if (semRx) {
+      centralEqProtoSet('protoResposta', 'Nenhuma resposta recebida da balança.');
+      centralEqProtoSet('protoRx', '(sem RX)');
+    }
+    if (typeof showNotification === 'function') {
+      showNotification(
+        semRx ? 'Nenhuma resposta recebida da balança.' : msg,
+        semRx ? 'warning' : 'danger'
+      );
+    }
   }
 }
 
@@ -4029,6 +4730,9 @@ window.centralEqConfigExportar = centralEqConfigExportar;
 window.centralEqConfigImportar = centralEqConfigImportar;
 window.centralEqMostrarDiag = centralEqMostrarDiag;
 window.centralEqDiagAtualizar = centralEqDiagAtualizar;
+window.centralEqDiagnostico = centralEqDiagnostico;
+window.centralEqDiagRenderizar = centralEqDiagRenderizar;
+window.centralEqDiagExportar = centralEqDiagExportar;
 
 async function centralEqAbrirHistorico(idx) {
   const it = centralEqCache[idx];
@@ -4081,15 +4785,6 @@ async function centralEqTestar(id) {
   }
 }
 
-async function centralEqDiagnostico(id) {
-  try {
-    await centralEqFetch(`/${id}/diagnostico`, { method: 'POST', body: '{}' });
-    if (typeof showNotification === 'function') showNotification('Diagnóstico concluído', 'info');
-  } catch (err) {
-    if (typeof showNotification === 'function') showNotification(err.message, 'danger');
-  }
-}
-
 async function centralEqCadastrarIndice(idx) {
   const it = centralEqCache[idx];
   if (!it) return;
@@ -4106,7 +4801,7 @@ async function centralEqCadastrarIndice(idx) {
         modelo: it.modelo,
         transporte: it.transporte || 'ethernet',
         ip: it.ultimo_ip,
-        porta_tcp: it.porta_tcp || 9100,
+        porta_tcp: it.porta_tcp || 9000,
         porta_com: it.porta_com,
         ativo: true,
         observacao: it.identidade_id ? `Central RC3 · identidade=${it.identidade_id}` : 'Central RC3'

@@ -7,12 +7,12 @@
 
 const MAPA_PROTOCOLO_DRIVER = Object.freeze({
   TOLEDO_ETH: {
-    driver: 'TOLEDO_PRIX4',
+    driver: 'TOLEDO_PRIX4_UNO',
     fabricante: 'Toledo',
     modelo: 'Prix IV Uno'
   },
   TOLEDO_90AX: {
-    driver: 'TOLEDO_PRIX4',
+    driver: 'TOLEDO_PRIX4_UNO',
     fabricante: 'Toledo',
     modelo: 'Prix IV Uno'
   },

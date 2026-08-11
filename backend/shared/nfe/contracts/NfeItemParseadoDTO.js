@@ -24,12 +24,22 @@ class NfeItemParseadoDTO {
     this.precoUnitario = Number(dados.precoUnitario ?? dados.preco_unitario ?? 0);
     this.precoUnitarioTrib = Number(dados.precoUnitarioTrib ?? dados.preco_unitario_trib ?? dados.vUnTrib ?? 0);
     this.subtotal = Number(dados.subtotal ?? 0);
-    this.margemLucro = Number(dados.margemLucro ?? dados.margem_lucro ?? 30);
-    this.precoVendaSugerido = Number(
-      dados.precoVendaSugerido
-      ?? dados.preco_venda_sugerido
-      ?? (Number(dados.precoUnitario ?? dados.preco_unitario ?? 0) * 1.3)
-    );
+    // CORREÇÃO-NF-MARGEM-01 — não fabricar margem 30% nem venda ×1.3.
+    // Ausência = null até o produto vinculado fornecer lucro_percentual.
+    const margemRaw = dados.margemLucro ?? dados.margem_lucro;
+    if (margemRaw === undefined || margemRaw === null || margemRaw === '') {
+      this.margemLucro = null;
+    } else {
+      const margemNum = Number(margemRaw);
+      this.margemLucro = Number.isFinite(margemNum) ? margemNum : null;
+    }
+    const vendaRaw = dados.precoVendaSugerido ?? dados.preco_venda_sugerido;
+    if (vendaRaw === undefined || vendaRaw === null || vendaRaw === '') {
+      this.precoVendaSugerido = null;
+    } else {
+      const vendaNum = Number(vendaRaw);
+      this.precoVendaSugerido = Number.isFinite(vendaNum) ? vendaNum : null;
+    }
     this.csosn = dados.csosn ?? '';
     this.cst = dados.cst ?? '';
     this.cstPis = dados.cstPis ?? dados.cst_pis ?? '';

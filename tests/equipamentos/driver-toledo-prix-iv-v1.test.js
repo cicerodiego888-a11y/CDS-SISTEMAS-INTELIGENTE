@@ -51,7 +51,7 @@ function startToledoMockServer() {
 
 describe('Toledo V1.0 — Protocol', () => {
   it('centraliza COMMANDS/RESPONSES/LIMITS', () => {
-    assert.equal(ToledoProtocol.DRIVER, 'TOLEDO_PRIX4');
+    assert.equal(ToledoProtocol.DRIVER, 'TOLEDO_PRIX4_UNO');
     assert.equal(ToledoProtocol.COMMANDS.HANDSHAKE, 'HS');
     assert.equal(ToledoProtocol.RESPONSES.ACK, 'AK');
     assert.ok(ToledoProtocol.LIMITS.handshakeTimeoutMs > 0);
@@ -102,14 +102,22 @@ describe('Toledo V1.0 — FrameParser', () => {
 });
 
 describe('Toledo V1.0 — Capabilities', () => {
-  it('retorna capabilities V1', () => {
+  it('retorna capabilities homologadas (V2 / Sprints 14.x)', () => {
     const c = getCapabilities();
-    assert.equal(c.driver, 'TOLEDO_PRIX4');
+    assert.equal(c.driver, 'TOLEDO_PRIX4_UNO');
+    assert.deepEqual(c.capabilities, { ...CAPABILITIES_V1 });
     assert.equal(c.capabilities.handshake, true);
     assert.equal(c.capabilities.ping, true);
-    assert.equal(c.capabilities.uploadPLU, false);
-    assert.equal(c.capabilities.readWeight, false);
-    assert.equal(CAPABILITIES_V1.monitor, false);
+    assert.equal(c.capabilities.uploadPLU, true);
+    assert.equal(c.capabilities.downloadPLU, true);
+    assert.equal(c.capabilities.syncPLU, true);
+    assert.equal(c.capabilities.readWeight, true);
+    assert.equal(c.capabilities.monitor, true);
+    assert.equal(c.capabilities.downloadConfig, true);
+    assert.equal(c.capabilities.writeConfig, true);
+    assert.equal(c.capabilities.writeLabel, false);
+    assert.equal(c.capabilities.firmwareUpdate, false);
+    assert.equal(c.capabilities.autoReconnect, false);
   });
 });
 
@@ -172,7 +180,7 @@ describe('Toledo V1.0 — Driver + ConnectionManager', () => {
       persistir: false,
       handshakeTimeoutMs: 1500
     });
-    assert.equal(r.driver, 'TOLEDO_PRIX4');
+    assert.equal(r.driver, 'TOLEDO_PRIX4_UNO');
     assert.equal(r.status, 'CONNECTED');
     assert.equal(r.handshake, true);
     assert.ok(typeof r.latencia === 'number');
@@ -207,7 +215,17 @@ describe('Toledo V1.0 — Driver + ConnectionManager', () => {
           persistir: false,
           handshakeTimeoutMs: 250
         }),
-        (err) => err.code === CODES.CONNECTION_TIMEOUT || err.code === CODES.DEVICE_OFFLINE
+        (err) => {
+          // Implementação atual: TimeoutError do 90AXEngine, ou codes Toledo clássicos
+          const code = err && err.code;
+          const name = err && err.name;
+          const msg = String(err && err.message || '');
+          return code === CODES.CONNECTION_TIMEOUT
+            || code === CODES.DEVICE_OFFLINE
+            || code === CODES.HANDSHAKE_FAILED
+            || name === 'TimeoutError'
+            || /timeout/i.test(msg);
+        }
       );
     } finally {
       try {
@@ -290,7 +308,7 @@ describe('Toledo V1.0 — API', () => {
     const json = await resp.json();
     assert.deepEqual(
       { driver: json.driver, status: json.status, handshake: json.handshake },
-      { driver: 'TOLEDO_PRIX4', status: 'CONNECTED', handshake: true }
+      { driver: 'TOLEDO_PRIX4_UNO', status: 'CONNECTED', handshake: true }
     );
     assert.ok(typeof json.latencia === 'number');
 
@@ -306,8 +324,11 @@ describe('Toledo V1.0 — API', () => {
     const resp = await fetch(`${baseUrl}/api/equipamentos/driver/toledo/capabilities`);
     assert.equal(resp.status, 200);
     const json = await resp.json();
-    assert.equal(json.driver, 'TOLEDO_PRIX4');
-    assert.equal(json.capabilities.uploadPLU, false);
+    assert.equal(json.driver, 'TOLEDO_PRIX4_UNO');
+    assert.deepEqual(json.capabilities, { ...CAPABILITIES_V1 });
+    assert.equal(json.capabilities.uploadPLU, true);
+    assert.equal(json.capabilities.readWeight, true);
     assert.equal(json.capabilities.handshake, true);
+    assert.equal(json.capabilities.monitor, true);
   });
 });

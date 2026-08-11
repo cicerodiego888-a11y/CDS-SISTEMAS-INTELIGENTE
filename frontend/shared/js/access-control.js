@@ -235,7 +235,7 @@ function usuarioTemPermissao(page) {
         return podeGerenciarUsuariosSistema();
     }
 
-    if (page === 'configuracoes-avancadas' || page === 'configuracao-rede' || page === 'nome-terminal-pdv' || page === 'observabilidade') {
+    if (page === 'configuracoes-avancadas' || page === 'configuracao-rede' || page === 'nome-terminal-pdv' || page === 'observabilidade' || page === 'mib-analytics' || page === 'enterprise-search' || page === 'knowledge-center' || page === 'cip-insights' || page === 'cds-copiloto') {
         return isSuperAdminUser();
     }
 

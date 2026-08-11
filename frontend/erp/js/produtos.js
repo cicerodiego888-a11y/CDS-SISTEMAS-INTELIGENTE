@@ -185,6 +185,512 @@ function inicializarVendaUnidadeCadastro(produto, isEdit) {
     aplicarModoVendaUnidadeCadastro();
 }
 
+/** RC15.3 — produto elegível para envio individual à balança (UI do modal). */
+function produtoCadastroElegivelEnvioBalanca(produtoHint = null) {
+    const id = Number($('#produtoId').val() || produtoHint?.id || 0);
+    if (!Number.isFinite(id) || id <= 0) return false;
+
+    const pesavel = $('#produto_fracionado').length
+        ? $('#produto_fracionado').is(':checked')
+        : Number(produtoHint?.produto_fracionado ?? produtoHint?.vendido_por_peso ?? 0) === 1;
+    if (!pesavel) return false;
+
+    const plu = String($('#plu').val() || produtoHint?.plu || '').replace(/\D/g, '');
+    if (!plu || plu.length > 10) return false;
+
+    const $painel = $('#painelEnvioBalancaProduto');
+    const ativoFlag = $painel.attr('data-produto-ativo');
+    const ativo = ativoFlag != null
+        ? ativoFlag !== '0'
+        : !(produtoHint && (produtoHint.ativo === 0 || produtoHint.ativo === false || produtoHint.ativo === '0'));
+    if (!ativo) return false;
+
+    const tipo = String(produtoHint?.tipo || produtoHint?.tipo_produto || '').toUpperCase();
+    if (tipo.includes('SERVICO') || tipo.includes('SERVIÇO') || tipo.includes('COMBO') || tipo.includes('KIT')) {
+        return false;
+    }
+    if (produtoHint?.servico === 1 || produtoHint?.combo === 1 || produtoHint?.is_combo === 1) {
+        return false;
+    }
+    return true;
+}
+
+/**
+ * RC15.3.1 — elegível para a pergunta pós-salvar (usa dados do produto, sem depender do modal aberto).
+ */
+function produtoSalvoElegivelPerguntaBalanca(produto) {
+    if (!produto || !produto.id) return false;
+    if (Number(produto.ativo ?? 1) !== 1) return false;
+    if (Number(produto.produto_fracionado ?? produto.vendido_por_peso ?? 0) !== 1) return false;
+    const plu = String(produto.plu || '').replace(/\D/g, '');
+    if (!plu || plu.length > 10) return false;
+    const tipo = String(produto.tipo || produto.tipo_produto || '').toUpperCase();
+    if (tipo.includes('SERVICO') || tipo.includes('SERVIÇO') || tipo.includes('COMBO') || tipo.includes('KIT')) {
+        return false;
+    }
+    if (produto.servico === 1 || produto.combo === 1 || produto.is_combo === 1) return false;
+    return true;
+}
+
+async function resolverEquipamentoBalancaPadrao(preferidoId = null) {
+    const pref = Number(preferidoId || 0);
+    if (Number.isFinite(pref) && pref > 0) return pref;
+    try {
+        const token = localStorage.getItem('token') || '';
+        const resp = await fetch(`${API_URL}/equipamentos?todos=1`, {
+            headers: { Authorization: `Bearer ${token}` }
+        });
+        const body = await resp.json().catch(() => ([]));
+        const lista = Array.isArray(body) ? body : (body.equipamentos || body.data || []);
+        let eqs = lista.filter((e) => {
+            const driver = String(e.driver_codigo || e.driver || '').toUpperCase();
+            const fab = String(e.fabricante || '').toLowerCase();
+            const modelo = String(e.modelo || '').toLowerCase();
+            return driver.includes('TOLEDO') || fab.includes('toledo') || modelo.includes('prix');
+        });
+        if (!eqs.length) eqs = lista.filter((e) => e.ip || e.host);
+        return eqs.length ? Number(eqs[0].id) : 0;
+    } catch (_) {
+        return 0;
+    }
+}
+
+/**
+ * RC15.3.1 — envio por id (após salvar / modal já fechado).
+ * RC14.15.3 — respeita modo_envio (TCP → upload-produto | MGV6 → /mgv6/export).
+ */
+/** RC15.5 — monta mensagem legível a partir do ValidationReport. */
+function formatarMotivosValidacaoBalanca(body) {
+    const motivos = Array.isArray(body?.motivos) && body.motivos.length
+        ? body.motivos
+        : (Array.isArray(body?.errors)
+            ? body.errors.map((e) => (typeof e === 'string' ? e : e.motivo)).filter(Boolean)
+            : []);
+    if (motivos.length) {
+        return `Produto não enviado\nMotivo:\n${motivos.map((m) => `• ${m}`).join('\n')}`;
+    }
+    const msg = body?.error || body?.mensagem || 'Falha ao enviar produto.';
+    if (String(msg).toUpperCase() === 'VALIDATION_ERROR') {
+        return 'Produto não enviado\nMotivo:\n• Validação falhou (detalhes indisponíveis).';
+    }
+    return msg;
+}
+
+async function obterModoEnvioEquipamentoProduto(equipamentoId) {
+    const eid = Number(equipamentoId);
+    if (!Number.isFinite(eid) || eid <= 0) return 'TCP';
+    try {
+        const token = localStorage.getItem('token') || '';
+        const resp = await fetch(`${API_URL}/equipamentos/mgv6/config/${eid}`, {
+            headers: { Authorization: `Bearer ${token}` }
+        });
+        const body = await resp.json().catch(() => ({}));
+        const modo = String(body.modo_envio || body.config?.modo_envio || 'TCP').toUpperCase();
+        return modo === 'MGV6' ? 'MGV6' : 'TCP';
+    } catch (_) {
+        return 'TCP';
+    }
+}
+
+async function enviarProdutoParaBalancaPorId(produtoId, equipamentoId) {
+    const pid = Number(produtoId);
+    const eid = Number(equipamentoId);
+    if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(eid) || eid <= 0) {
+        throw new Error('Produto ou equipamento inválido para envio.');
+    }
+    const token = localStorage.getItem('token') || '';
+    const modo = await obterModoEnvioEquipamentoProduto(eid);
+
+    if (modo === 'MGV6') {
+        const resp = await fetch(`${API_URL}/equipamentos/mgv6/export`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`
+            },
+            body: JSON.stringify({ equipamentoId: eid, produtoIds: [pid], autoLaunch: false })
+        });
+        const body = await resp.json().catch(() => ({}));
+        if (!resp.ok || body.sucesso === false) {
+            const err = new Error(body.mensagem || body.error || 'Falha na exportação MGV6.');
+            err.code = body.codigo || body.code;
+            throw err;
+        }
+
+        let mgv6Iniciado = false;
+        if (body.mgv6?.encontrado) {
+            const deseja = typeof epbPerguntarIniciarSoftwareBalanca === 'function'
+                ? await epbPerguntarIniciarSoftwareBalanca()
+                : window.confirm('Deseja iniciar o software da balança?');
+            if (deseja) {
+                const launchResp = await fetch(`${API_URL}/equipamentos/mgv6/launch`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ equipamentoId: eid })
+                });
+                const launchBody = await launchResp.json().catch(() => ({}));
+                mgv6Iniciado = Boolean(launchResp.ok && launchBody.iniciado);
+            }
+        } else if (typeof showNotification === 'function') {
+            showNotification('Software MGV6 não encontrado neste computador.', 'warning');
+        }
+
+        return {
+            success: true,
+            sucesso: true,
+            modo_envio: 'MGV6',
+            arquivo: body.arquivo,
+            quantidade: body.quantidade,
+            caminho: body.caminho,
+            mgv6Iniciado,
+            transmitidoBalanca: false
+        };
+    }
+
+    const resp = await fetch(`${API_URL}/equipamentos/${eid}/upload-produto`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ produtoId: pid })
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok || body.success === false) {
+        const err = new Error(formatarMotivosValidacaoBalanca(body));
+        err.validationReport = body.validationReport || null;
+        err.motivos = body.motivos || null;
+        throw err;
+    }
+    return body;
+}
+
+function fecharDialogoEnviarBalancaAposSalvar() {
+    const el = document.getElementById('modalEnviarBalancaAposSalvar');
+    if (!el) return;
+    if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+        const inst = bootstrap.Modal.getInstance(el);
+        if (inst) inst.hide();
+        else bootstrap.Modal.getOrCreateInstance(el).hide();
+    } else {
+        $(el).modal('hide');
+    }
+    setTimeout(() => $(el).remove(), 400);
+}
+
+/**
+ * RC15.3.1 — diálogo opcional após salvar produto pesável.
+ */
+function perguntarEnvioBalancaAposSalvar(produto, equipamentoIdPreferido = null) {
+    if (!produtoSalvoElegivelPerguntaBalanca(produto)) return;
+
+    $('#modalEnviarBalancaAposSalvar').remove();
+    const nome = escapeHtml(produto.nome || 'este produto');
+    const html = `
+        <div class="modal fade" id="modalEnviarBalancaAposSalvar" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+            <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Produto salvo com sucesso.</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p class="mb-0">Deseja enviar este produto para a balança agora?</p>
+                        <p class="text-muted small mt-2 mb-0">${nome}</p>
+                        <div class="small text-muted mt-2 d-none" id="envioBalancaAposSalvarStatus" aria-live="polite"></div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-outline-secondary" id="btnBalancaAposSalvarDepois">Depois</button>
+                        <button type="button" class="btn btn-primary" id="btnBalancaAposSalvarAgora">Enviar Agora</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    $('body').append(html);
+
+    const el = document.getElementById('modalEnviarBalancaAposSalvar');
+    const mostrar = () => {
+        if (el && typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+            bootstrap.Modal.getOrCreateInstance(el).show();
+        } else {
+            $('#modalEnviarBalancaAposSalvar').modal('show');
+        }
+    };
+    // Aguarda o modal de produto fechar para não empilhar backdrop
+    setTimeout(mostrar, 350);
+
+    $('#btnBalancaAposSalvarDepois').on('click', () => {
+        fecharDialogoEnviarBalancaAposSalvar();
+    });
+
+    $('#btnBalancaAposSalvarAgora').on('click', async function onEnviarAgora() {
+        const $btn = $(this);
+        const $st = $('#envioBalancaAposSalvarStatus');
+        $btn.prop('disabled', true);
+        $('#btnBalancaAposSalvarDepois').prop('disabled', true);
+        $st.removeClass('d-none text-danger text-success').addClass('text-muted').text('⏳ Enviando produto...');
+        try {
+            const eqId = await resolverEquipamentoBalancaPadrao(
+                equipamentoIdPreferido || Number($('#balancaProdutoEquipamento').val() || 0)
+            );
+            if (!eqId) {
+                throw new Error('Nenhum equipamento Toledo cadastrado.');
+            }
+            const modoEq = await obterModoEnvioEquipamentoProduto(eqId);
+            const result = await enviarProdutoParaBalancaPorId(produto.id, eqId);
+            fecharDialogoEnviarBalancaAposSalvar();
+            if (modoEq === 'MGV6' || result?.modo_envio === 'MGV6') {
+                showNotification(
+                    'Produtos preparados para o MGV6. ' +
+                    'TXITENS.TXT gravado e MGV6 iniciado (se configurado). ' +
+                    'Para transmitir à balança: Carga → Solicitar Carga das Balanças → Enviar.',
+                    'success'
+                );
+            } else {
+                showNotification('Produto enviado para a balança.', 'success');
+            }
+        } catch (err) {
+            $st.removeClass('text-muted text-success').addClass('text-danger').text(`❌ ${err.message || 'Falha ao enviar produto.'}`);
+            $btn.prop('disabled', false);
+            $('#btnBalancaAposSalvarDepois').prop('disabled', false);
+            showNotification(err.message || 'Falha ao enviar produto.', 'danger');
+        }
+    });
+}
+
+function formatarDataHoraBalancaProduto(iso) {
+    if (!iso) return 'Nunca';
+    try {
+        const d = new Date(iso);
+        if (Number.isNaN(d.getTime())) return String(iso);
+        return d.toLocaleString('pt-BR', {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+    } catch (_) {
+        return String(iso);
+    }
+}
+
+function balancaProdutoLogLinha(msg) {
+    const el = document.getElementById('balancaProdutoLog');
+    if (!el) return;
+    el.classList.remove('d-none');
+    const hora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    el.textContent = `${el.textContent ? `${el.textContent}\n` : ''}${hora}\n${msg}`.trim();
+    el.scrollTop = el.scrollHeight;
+}
+
+function atualizarVisibilidadePainelEnvioBalancaProduto(produtoHint = null) {
+    const $painel = $('#painelEnvioBalancaProduto');
+    if (!$painel.length) return;
+    const elegivel = produtoCadastroElegivelEnvioBalanca(produtoHint);
+    $painel.toggleClass('d-none', !elegivel);
+    const $btn = $('#btnEnviarProdutoBalanca');
+    const temEq = Boolean(Number($('#balancaProdutoEquipamento').val() || 0));
+    $btn.prop('disabled', !elegivel || !temEq || $btn.data('enviando') === true);
+    if (elegivel) {
+        $('#balancaProdutoStatusApto').text('🟢 Produto apto para balança');
+    }
+}
+
+async function carregarEquipamentosPainelBalancaProduto() {
+    const sel = document.getElementById('balancaProdutoEquipamento');
+    if (!sel) return;
+    const token = localStorage.getItem('token') || '';
+    const headers = { Authorization: `Bearer ${token}` };
+    try {
+        const resp = await fetch(`${API_URL}/equipamentos?todos=1`, { headers });
+        const body = await resp.json().catch(() => ([]));
+        const lista = Array.isArray(body) ? body : (body.equipamentos || body.data || []);
+        let eqs = lista.filter((e) => {
+            const driver = String(e.driver_codigo || e.driver || '').toUpperCase();
+            const fab = String(e.fabricante || '').toLowerCase();
+            const modelo = String(e.modelo || '').toLowerCase();
+            return driver.includes('TOLEDO') || fab.includes('toledo') || modelo.includes('prix');
+        });
+        if (!eqs.length) {
+            eqs = lista.filter((e) => e.ip || e.host);
+        }
+        sel.innerHTML = eqs.length
+            ? eqs.map((e) => {
+                const label = `${e.nome || e.modelo || 'Equipamento'} — ${e.ip || e.host || '?'}:${e.porta_tcp || e.porta || 9000}`;
+                return `<option value="${e.id}">${String(label).replace(/</g, '&lt;')}</option>`;
+            }).join('')
+            : '<option value="">Nenhum equipamento Toledo cadastrado</option>';
+    } catch (_) {
+        sel.innerHTML = '<option value="">Erro ao carregar equipamentos</option>';
+    }
+}
+
+async function carregarUltimaSyncBalancaProduto(produtoId) {
+    const id = Number(produtoId || $('#produtoId').val() || 0);
+    const $sync = $('#balancaProdutoUltimaSync');
+    const $res = $('#balancaProdutoResultado');
+    if (!$sync.length || !id) {
+        if ($sync.length) $sync.text('Nunca');
+        if ($res.length) $res.text('—').removeClass('text-success text-danger').addClass('text-muted');
+        return;
+    }
+    try {
+        const token = localStorage.getItem('token') || '';
+        const resp = await fetch(`${API_URL}/equipamentos/plu/ultima-sync?produto_id=${id}`, {
+            headers: { Authorization: `Bearer ${token}` }
+        });
+        const body = await resp.json().catch(() => ({}));
+        if (body.sincronizado_em) {
+            $sync.text(formatarDataHoraBalancaProduto(body.sincronizado_em));
+            $res.text('🟢 Sincronizado').removeClass('text-muted text-danger').addClass('text-success');
+        } else {
+            $sync.text('Nunca');
+            $res.text('—').removeClass('text-success text-danger').addClass('text-muted');
+        }
+    } catch (_) {
+        $sync.text('Nunca');
+    }
+}
+
+async function enviarProdutoParaBalancaCadastro() {
+    const $btn = $('#btnEnviarProdutoBalanca');
+    const $fb = $('#balancaProdutoFeedback');
+    const produtoId = Number($('#produtoId').val() || 0);
+    const equipamentoId = Number($('#balancaProdutoEquipamento').val() || 0);
+    if (!produtoCadastroElegivelEnvioBalanca() || !equipamentoId || !produtoId) {
+        showNotification('Salve o produto pesável com PLU válido antes de enviar.', 'warning');
+        return;
+    }
+
+    $btn.data('enviando', true).prop('disabled', true);
+    $fb.removeClass('text-success text-danger').addClass('text-muted').text('⏳ Enviando produto...');
+
+    const nome = String($('#nome').val() || 'Produto').trim();
+    const plu = String($('#plu').val() || '').replace(/\D/g, '');
+    const inicio = Date.now();
+
+    try {
+        const body = await enviarProdutoParaBalancaPorId(produtoId, equipamentoId);
+        const tempo = body.tempo_ms != null ? body.tempo_ms : (Date.now() - inicio);
+
+        $fb.removeClass('text-muted text-danger').addClass('text-success').text('✅ Produto enviado com sucesso.');
+        $('#balancaProdutoUltimaSync').text(formatarDataHoraBalancaProduto(body.sincronizado_em || new Date().toISOString()));
+        $('#balancaProdutoResultado').text('🟢 Sincronizado').removeClass('text-muted text-danger').addClass('text-success');
+        balancaProdutoLogLinha(
+            `Produto:\n${nome}\nPLU:\n${plu}\nEquipamento:\n${body.equipamento || equipamentoId}\nResultado:\n${body.resultado || 'ACK recebido'}\nTempo:\n${tempo} ms`
+        );
+        if (!$('#balancaProdutoHistoricoBox').hasClass('d-none')) {
+            carregarHistoricoBalancaProduto(produtoId, false);
+        }
+        showNotification('Produto enviado com sucesso.', 'success');
+    } catch (err) {
+        $fb.removeClass('text-muted text-success').addClass('text-danger').text('❌ Falha ao enviar produto.');
+        balancaProdutoLogLinha(`Produto:\n${nome}\nPLU:\n${plu}\nResultado:\n${err.message || 'Erro'}`);
+        if (!$('#balancaProdutoHistoricoBox').hasClass('d-none')) {
+            carregarHistoricoBalancaProduto(produtoId, false);
+        }
+        showNotification(err.message || 'Falha ao enviar produto.', 'danger');
+    } finally {
+        $btn.data('enviando', false);
+        atualizarVisibilidadePainelEnvioBalancaProduto();
+    }
+}
+
+function formatarItemHistoricoBalancaProduto(item) {
+    const dt = formatarDataHoraBalancaProduto(item.created_at);
+    const ok = String(item.resultado || '').toUpperCase() === 'SUCESSO';
+    const titulo = ok ? 'Sucesso' : 'Erro';
+    const eq = item.equipamento_nome || item.equipamento_modelo || (item.equipamento_id ? `#${item.equipamento_id}` : '');
+    const tempo = item.tempo_ms != null ? `${item.tempo_ms} ms` : '';
+    const msg = !ok && item.mensagem ? String(item.mensagem) : '';
+    const linhas = [
+        `<div class="fw-semibold">${escapeHtml(dt)}</div>`,
+        `<div class="${ok ? 'text-success' : 'text-danger'}">${escapeHtml(titulo)}</div>`
+    ];
+    if (eq) linhas.push(`<div class="text-muted">Equipamento<br>${escapeHtml(eq)}</div>`);
+    if (tempo && ok) linhas.push(`<div>${escapeHtml(tempo)}</div>`);
+    if (msg) linhas.push(`<div class="text-danger">${escapeHtml(msg)}</div>`);
+    return `<div class="border-bottom py-2 mb-1">${linhas.join('')}</div>`;
+}
+
+async function carregarHistoricoBalancaProduto(produtoId, forcarAbrir = false) {
+    const id = Number(produtoId || $('#produtoId').val() || 0);
+    const $box = $('#balancaProdutoHistoricoBox');
+    const $lista = $('#balancaProdutoHistoricoLista');
+    if (!$box.length || !$lista.length) return;
+    if (forcarAbrir) $box.toggleClass('d-none');
+    if ($box.hasClass('d-none')) return;
+    if (!id) {
+        $lista.html('<div class="text-muted">Salve o produto para ver o histórico.</div>');
+        return;
+    }
+    $lista.html('<div class="text-muted">Carregando…</div>');
+    try {
+        const token = localStorage.getItem('token') || '';
+        const resp = await fetch(`${API_URL}/equipamentos/plu/sync-log?produto_id=${id}&limite=30`, {
+            headers: { Authorization: `Bearer ${token}` }
+        });
+        const body = await resp.json().catch(() => ({}));
+        const hist = Array.isArray(body.historico) ? body.historico : [];
+        if (!hist.length) {
+            $lista.html('<div class="text-muted">Nenhuma sincronização registrada.</div>');
+            return;
+        }
+        $lista.html(hist.map(formatarItemHistoricoBalancaProduto).join(''));
+    } catch (err) {
+        $lista.html(`<div class="text-danger">Erro ao carregar histórico.</div>`);
+    }
+}
+
+function inicializarPainelEnvioBalancaProduto(produto, isEdit) {
+    const $modal = $('#produtoModal');
+    if (!$modal.length) return;
+
+    const ativo = !isEdit || Number(produto?.ativo ?? 1) === 1;
+    $('#painelEnvioBalancaProduto').attr('data-produto-ativo', ativo ? '1' : '0');
+    $('#balancaProdutoFeedback').text('').removeClass('text-success text-danger text-muted');
+    $('#balancaProdutoLog').addClass('d-none').text('');
+    $('#balancaProdutoHistoricoBox').addClass('d-none');
+    $('#balancaProdutoHistoricoLista').empty();
+    $('#balancaProdutoResultado').text('—').removeClass('text-success text-danger').addClass('text-muted');
+    $('#balancaProdutoUltimaSync').text('Nunca');
+
+    $modal
+        .off('change.envioBalancaProduto input.envioBalancaProduto click.envioBalancaProduto')
+        .on('change.envioBalancaProduto', '#integrar_balanca', () => {
+            $('#integrar_balanca').data('userTouched', true);
+        })
+        .on('change.envioBalancaProduto input.envioBalancaProduto', '#produto_fracionado, #plu, #integrar_balanca', () => {
+            if ($('#produto_fracionado').is(':checked') && !$('#integrar_balanca').data('userTouched')) {
+                $('#integrar_balanca').prop('checked', true);
+            }
+            atualizarVisibilidadePainelEnvioBalancaProduto(produto);
+        })
+        .on('change.envioBalancaProduto', '#balancaProdutoEquipamento', () => {
+            atualizarVisibilidadePainelEnvioBalancaProduto(produto);
+        })
+        .on('click.envioBalancaProduto', '#btnEnviarProdutoBalanca', (ev) => {
+            ev.preventDefault();
+            enviarProdutoParaBalancaCadastro();
+        })
+        .on('click.envioBalancaProduto', '#btnHistoricoBalancaProduto', (ev) => {
+            ev.preventDefault();
+            carregarHistoricoBalancaProduto(produto?.id, true);
+        });
+
+    carregarEquipamentosPainelBalancaProduto().then(() => {
+        atualizarVisibilidadePainelEnvioBalancaProduto(produto);
+        if (isEdit && produto?.id) {
+            carregarUltimaSyncBalancaProduto(produto.id);
+        }
+    });
+}
+
 function inicializarMotorConversaoUnidadesCadastro() {
     const $modal = $('#produtoModal');
     if (!$modal.length) return;
@@ -1036,6 +1542,8 @@ function filtrarListaProdutosUI(produtos) {
     const categoriaId = String($('#filtroCategoriaProduto').val() || '');
 
     return (produtos || []).filter(p => {
+        // HOTFIX MIB-4.0.1 — com texto, a busca tipada vem do MIB; aqui só aplica categoria
+        // (e fallback local quando SearchSDK indisponível).
         const bateBusca = !termo || produtoCorrespondeBuscaInteligente(p, termo, termoDigits);
 
         const bateCategoria =
@@ -1045,11 +1553,17 @@ function filtrarListaProdutosUI(produtos) {
     });
 }
 
+/** Fallback legado — somente se SearchService/SDK falhar. */
+function filtrarListaProdutosFallbackLocal(produtos) {
+    return filtrarListaProdutosUI(produtos);
+}
+
 function produtoCorrespondeBuscaInteligente(produto, termoNormalizado, termoDigits) {
     if (!termoNormalizado) return true;
 
     const camposTexto = [
         produto.nome,
+        produto.nome_busca,
         produto.descricao,
         produto.observacoes,
         produto.codigo,
@@ -1057,6 +1571,7 @@ function produtoCorrespondeBuscaInteligente(produto, termoNormalizado, termoDigi
         produto.plu,
         produto.categoria,
         produto.categoria_nome,
+        produto.marca,
         produto.fornecedor
     ];
 
@@ -1098,10 +1613,32 @@ function expandirNosArvoreParaLista(produtos) {
     });
 }
 
-function aplicarFiltrosProdutos(produtos) {
-    const termo = normalizarTexto($('#buscaProduto').val()).trim();
+function aplicarFiltrosProdutos(produtos, opcoes = {}) {
+    const termo = String($('#buscaProduto').val() || '').trim();
     const categoriaId = String($('#filtroCategoriaProduto').val() || '');
-    const filtrados = filtrarListaProdutosUI(produtos);
+    const origemMib = opcoes.origem === 'mib';
+    const fallbackLocal = opcoes.fallbackLocal === true;
+
+    let filtrados;
+    if (!termo) {
+        // Restaura árvore original (apenas filtro de categoria, se houver)
+        filtrados = (produtos || []).filter((p) =>
+            !categoriaId || String(p.categoria_id || '') === categoriaId
+        );
+    } else if (origemMib) {
+        // Hits já vieram do MIB — só categoria
+        filtrados = (produtos || []).filter((p) =>
+            !categoriaId || String(p.categoria_id || '') === categoriaId
+        );
+    } else if (fallbackLocal) {
+        filtrados = filtrarListaProdutosFallbackLocal(produtos);
+    } else {
+        // Sem termo tratado acima; categoria-only
+        filtrados = (produtos || []).filter((p) =>
+            !categoriaId || String(p.categoria_id || '') === categoriaId
+        );
+    }
+
     const filtroAtivo = !!(termo || categoriaId);
 
     // Com busca/filtro ativo, abre os nós do resultado para o usuário ver os produtos.
@@ -1112,6 +1649,138 @@ function aplicarFiltrosProdutos(produtos) {
     $('#tabela-produtos-container').hide();
     $('#categorias-container').show();
     renderizarArvoreListagemProdutos(filtrados);
+}
+
+/** HOTFIX MIB-4.0.1 — estado da busca tipada via SearchSDK */
+const CDS_PRODUTOS_BUSCA_MIB = {
+    debounceMs: 300,
+    timer: null,
+    abort: null,
+    seq: 0,
+    ultimaMeta: null
+};
+
+function obterSdkBuscaProdutos() {
+    return window.CdsSearchSDK || window.SearchSDK || null;
+}
+
+function setIndicadorBuscaProdutos(ativo) {
+    const $icon = $('.cds-prod-lista-header__busca-icon');
+    if (!$icon.length) return;
+    if (ativo) {
+        $icon.removeClass('fa-search').addClass('fa-spinner fa-spin');
+        $icon.attr('title', 'Pesquisando…');
+    } else {
+        $icon.removeClass('fa-spinner fa-spin').addClass('fa-search');
+        $icon.removeAttr('title');
+    }
+}
+
+function enriquecerHitsBuscaProdutos(itens) {
+    const cache = window.produtosCache || window.produtosList || [];
+    const byId = new Map(cache.map((p) => [Number(p.id), p]));
+    return (itens || []).map((hit) => {
+        const full = byId.get(Number(hit.id));
+        if (full) {
+            return { ...full, mib_score: hit.mib_score, _fonteBusca: hit._fonte || 'mib' };
+        }
+        return {
+            ...hit,
+            categoria: hit.categoria || hit.categoria_nome || '',
+            categoria_nome: hit.categoria_nome || hit.categoria || '',
+            subcategoria: hit.subcategoria || hit.subcategoria_nome || '',
+            _fonteBusca: hit._fonte || 'mib'
+        };
+    });
+}
+
+function cancelarBuscaProdutosMib() {
+    if (CDS_PRODUTOS_BUSCA_MIB.timer) {
+        clearTimeout(CDS_PRODUTOS_BUSCA_MIB.timer);
+        CDS_PRODUTOS_BUSCA_MIB.timer = null;
+    }
+    if (CDS_PRODUTOS_BUSCA_MIB.abort) {
+        try { CDS_PRODUTOS_BUSCA_MIB.abort.abort(); } catch (_) { /* ignore */ }
+        CDS_PRODUTOS_BUSCA_MIB.abort = null;
+    }
+}
+
+function restaurarArvoreProdutosOriginal() {
+    setIndicadorBuscaProdutos(false);
+    CDS_PRODUTOS_BUSCA_MIB.ultimaMeta = null;
+    const base = window.produtosCache || window.produtosList || [];
+    aplicarFiltrosProdutos(base, { origem: 'arvore' });
+}
+
+async function executarBuscaProdutosViaMib(termo) {
+    const sdk = obterSdkBuscaProdutos();
+    const base = window.produtosCache || window.produtosList || [];
+    const seq = ++CDS_PRODUTOS_BUSCA_MIB.seq;
+
+    if (!sdk || typeof sdk.search !== 'function') {
+        console.warn('[MIB-4.0.1] SearchSDK indisponível — fallback filtro local');
+        aplicarFiltrosProdutos(base, { fallbackLocal: true });
+        return;
+    }
+
+    if (CDS_PRODUTOS_BUSCA_MIB.abort) {
+        try { CDS_PRODUTOS_BUSCA_MIB.abort.abort(); } catch (_) { /* ignore */ }
+    }
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    CDS_PRODUTOS_BUSCA_MIB.abort = controller;
+    setIndicadorBuscaProdutos(true);
+
+    try {
+        const modoFiscal = typeof modoFiscalQueryParam === 'function' ? modoFiscalQueryParam() : '0';
+        const resultado = await sdk.search({
+            entity: 'produto',
+            query: termo,
+            limite: 50,
+            modo_fiscal: modoFiscal,
+            origem: 'erp-cadastro-produtos'
+        }, { signal: controller ? controller.signal : undefined });
+
+        if (seq !== CDS_PRODUTOS_BUSCA_MIB.seq) return;
+
+        const itens = enriquecerHitsBuscaProdutos(resultado.itens || []);
+        CDS_PRODUTOS_BUSCA_MIB.ultimaMeta = resultado.meta || null;
+        aplicarFiltrosProdutos(itens, { origem: 'mib' });
+    } catch (err) {
+        if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) return;
+        console.warn('[MIB-4.0.1] SearchService falhou — fallback filtro local:', err && err.message ? err.message : err);
+        if (seq !== CDS_PRODUTOS_BUSCA_MIB.seq) return;
+        aplicarFiltrosProdutos(base, { fallbackLocal: true });
+    } finally {
+        if (seq === CDS_PRODUTOS_BUSCA_MIB.seq) {
+            setIndicadorBuscaProdutos(false);
+            CDS_PRODUTOS_BUSCA_MIB.abort = null;
+        }
+    }
+}
+
+function agendarBuscaProdutosMib() {
+    const termo = String($('#buscaProduto').val() || '').trim();
+    cancelarBuscaProdutosMib();
+
+    if (!termo) {
+        restaurarArvoreProdutosOriginal();
+        return;
+    }
+
+    CDS_PRODUTOS_BUSCA_MIB.timer = setTimeout(() => {
+        CDS_PRODUTOS_BUSCA_MIB.timer = null;
+        executarBuscaProdutosViaMib(termo);
+    }, CDS_PRODUTOS_BUSCA_MIB.debounceMs);
+}
+
+function onFiltroCategoriaProdutosChange() {
+    const termo = String($('#buscaProduto').val() || '').trim();
+    if (!termo) {
+        restaurarArvoreProdutosOriginal();
+        return;
+    }
+    // Rebusca MIB para aplicar o filtro de categoria sobre hits atualizados
+    agendarBuscaProdutosMib();
 }
 
 function produtoComEstoqueBaixo(p) {
@@ -1565,6 +2234,7 @@ function renderProdutos(produtos) {
                             id="buscaProduto"
                             placeholder="Buscar por nome, PLU, código ou código de barras..."
                             aria-label="Buscar produtos"
+                            autocomplete="off"
                         >
                     </div>
                     <select
@@ -1617,8 +2287,11 @@ function renderProdutos(produtos) {
 
     $('#page-content').html(html);
 
-    $('#buscaProduto, #filtroCategoriaProduto').on('input change', function () {
-        aplicarFiltrosProdutos(produtos);
+    $('#buscaProduto').on('input', function () {
+        agendarBuscaProdutosMib();
+    });
+    $('#filtroCategoriaProduto').on('change', function () {
+        onFiltroCategoriaProdutosChange();
     });
 
     inicializarZoomListagemProdutos();
@@ -1693,7 +2366,9 @@ function renderCategoriasProdutos(produtos) {
 }
 
 function carregarCategoriasProdutos() {
-    aplicarFiltrosProdutos(window.produtosCache || []);
+    const termo = String($('#buscaProduto').val() || '').trim();
+    if (termo) agendarBuscaProdutosMib();
+    else restaurarArvoreProdutosOriginal();
 }
 
 function toggleProdutosCategoriaMenu(categoriaId) {
@@ -1786,17 +2461,19 @@ function showProdutoModal(produto = null, opcoes = {}) {
                                                 <input type="text" class="form-control" id="codigo" value="${isEdit ? escapeHtml(produto.codigo || '') : ''}" placeholder="Gerado ao salvar" autocomplete="off">
                                                 <div class="form-text">Se não informar, o sistema gera ao salvar. Informe primeiro o código de barras, se houver.</div>
                                             </div>
-                                            <div class="col-md-2">
-                                                <label for="plu" class="form-label">PLU</label>
+                                            <div class="col-md-3">
+                                                <label for="plu" class="form-label">PLU / Código do item da balança</label>
                                                 <input
                                                     type="text"
                                                     class="form-control cds-prod-cadastro__plu"
                                                     id="plu"
                                                     inputmode="numeric"
                                                     maxlength="10"
-                                                    placeholder="Ex.: 67"
+                                                    placeholder="Ex.: 39"
                                                     value="${isEdit ? escapeHtml(produto.plu || '') : ''}"
+                                                    title="Código do item na balança / MGV6 (não é EAN/GTIN). Usado no TXITENS."
                                                 >
+                                                <div class="form-text">Código do item na balança (MGV6). Não é EAN.</div>
                                             </div>
                                             <div class="col-md-3">
                                                 <label for="codigo_barras" class="form-label">Código de Barras</label>
@@ -2080,6 +2757,59 @@ function showProdutoModal(produto = null, opcoes = {}) {
                                                     </label>
                                                 </div>
                                                 <div class="form-text">Mesmo flag operacional já usado pelo PDV e balanças (produto_fracionado).</div>
+                                                <div class="form-check form-switch mt-2">
+                                                    <input
+                                                        class="form-check-input"
+                                                        type="checkbox"
+                                                        id="integrar_balanca"
+                                                        ${isEdit
+                                                          ? (produto.integrar_balanca == null
+                                                              ? (produtoEhFracionado(produto) ? 'checked' : '')
+                                                              : (Number(produto.integrar_balanca) === 1 ? 'checked' : ''))
+                                                          : ''}
+                                                    >
+                                                    <label class="form-check-label" for="integrar_balanca">
+                                                        Integrar com Balança
+                                                    </label>
+                                                </div>
+                                                <div class="form-text">Equivalente ao legado: se marcado, o produto pode ir ao MGV6 (exige PLU).</div>
+
+                                                <!-- RC15.3 — Envio individual para balança (Motor Universal) -->
+                                                <div class="border rounded p-3 mt-3 bg-light d-none" id="painelEnvioBalancaProduto" data-produto-ativo="${isEdit && Number(produto.ativo ?? 1) === 1 ? '1' : (isEdit ? '0' : '1')}">
+                                                    <div class="d-flex flex-wrap align-items-start justify-content-between gap-2">
+                                                        <div>
+                                                            <strong class="d-block mb-1">Balança Toledo</strong>
+                                                            <div class="small mb-1">
+                                                                Status:
+                                                                <span id="balancaProdutoStatusApto">🟢 Produto apto para balança</span>
+                                                            </div>
+                                                            <div class="small mb-1">
+                                                                Última sincronização:
+                                                                <span id="balancaProdutoUltimaSync">Nunca</span>
+                                                            </div>
+                                                            <div class="small mb-2">
+                                                                Resultado:
+                                                                <span id="balancaProdutoResultado" class="text-muted">—</span>
+                                                            </div>
+                                                            <label for="balancaProdutoEquipamento" class="form-label small mb-1">Equipamento</label>
+                                                            <select id="balancaProdutoEquipamento" class="form-select form-select-sm" style="max-width: 360px;"></select>
+                                                        </div>
+                                                        <div class="text-end">
+                                                            <button type="button" class="btn btn-primary btn-sm" id="btnEnviarProdutoBalanca" disabled>
+                                                                Enviar para Balança
+                                                            </button>
+                                                            <button type="button" class="btn btn-outline-secondary btn-sm ms-1" id="btnHistoricoBalancaProduto">
+                                                                Histórico
+                                                            </button>
+                                                            <div class="small mt-2" id="balancaProdutoFeedback" aria-live="polite"></div>
+                                                        </div>
+                                                    </div>
+                                                    <div class="mt-2 d-none" id="balancaProdutoHistoricoBox">
+                                                        <div class="small text-muted mb-1">Histórico de sincronização</div>
+                                                        <div id="balancaProdutoHistoricoLista" class="small"></div>
+                                                    </div>
+                                                    <pre class="small bg-dark text-light rounded p-2 mt-2 mb-0 d-none" id="balancaProdutoLog" style="max-height: 140px; overflow: auto; white-space: pre-wrap;"></pre>
+                                                </div>
 
                                                 <div class="ms-1 mt-2 d-none" id="painelVendaUnidadeCadastro">
                                                     <div class="form-check form-switch mb-2">
@@ -2300,6 +3030,7 @@ function showProdutoModal(produto = null, opcoes = {}) {
     inicializarControleLoteInicial();
     inicializarPreviewEstoqueTotalInicial();
     inicializarEspelhoCodigoBarras(produto, isEdit);
+    inicializarPainelEnvioBalancaProduto(produto, isEdit);
 
     if (!isEdit) {
         aplicarPadraoFiscalNovoProduto();
@@ -3559,6 +4290,7 @@ async function saveProduto() {
         produto_fracionado: fracionadoAtivo ? 1 : 0,
         vendido_por_peso: fracionadoAtivo ? 1 : 0,
         produto_pesavel: fracionadoAtivo ? 1 : 0,
+        integrar_balanca: $('#integrar_balanca').is(':checked') ? 1 : 0,
         permite_venda_unidade: permiteVendaUnidade ? 1 : 0,
         peso_medio_unidade: permiteVendaUnidade ? pesoMedioUnidade : 0,
         preco_unidade: permiteVendaUnidade ? precoUnidadeVenda : 0,
@@ -3676,6 +4408,24 @@ async function saveProduto() {
             $modal.data('produtoRecemSalvo', produtoSalvo || null);
             $modal.data('produtoSalvoComSucesso', true);
 
+            const produtoNormalizado = normalizarProduto(produtoSalvo || {}, window.categoriasSistema || []);
+            // Completa flags/PLU do formulário (fonte do que acabou de ser salvo)
+            if (!produtoNormalizado.plu) {
+                produtoNormalizado.plu = String($('#plu').val() || '').replace(/\D/g, '');
+            }
+            if (Number(produtoNormalizado.produto_fracionado ?? 0) !== 1 && $('#produto_fracionado').is(':checked')) {
+                produtoNormalizado.produto_fracionado = 1;
+                produtoNormalizado.vendido_por_peso = 1;
+            }
+            if (produtoNormalizado.ativo == null) {
+                produtoNormalizado.ativo = 1;
+            }
+
+            const eqPreferido = Number($('#balancaProdutoEquipamento').val() || 0) || null;
+            const perguntarBalanca = typeof produtoSalvoElegivelPerguntaBalanca === 'function'
+                && produtoSalvoElegivelPerguntaBalanca(produtoNormalizado);
+
+            // RC15.3.1 — sempre fecha o modal (fluxo padrão do ERP)
             const modalEl = document.getElementById('produtoModal');
             if (modalEl && typeof bootstrap !== 'undefined' && bootstrap.Modal) {
                 const inst = bootstrap.Modal.getInstance(modalEl) || bootstrap.Modal.getOrCreateInstance(modalEl);
@@ -3700,7 +4450,6 @@ async function saveProduto() {
 
             // Atualiza lista local se necessário
             if (window.produtosList && Array.isArray(window.produtosList)) {
-                const produtoNormalizado = normalizarProduto(produtoSalvo, window.categoriasSistema || []);
                 const indexExistente = window.produtosList.findIndex(p => String(p.id) === String(produtoNormalizado.id));
 
                 if (indexExistente >= 0) {
@@ -3714,6 +4463,10 @@ async function saveProduto() {
                 }
             } else if (typeof loadProdutos === 'function') {
                 loadProdutos();
+            }
+
+            if (perguntarBalanca) {
+                perguntarEnvioBalancaAposSalvar(produtoNormalizado, eqPreferido);
             }
         },
         error: function (xhr) {

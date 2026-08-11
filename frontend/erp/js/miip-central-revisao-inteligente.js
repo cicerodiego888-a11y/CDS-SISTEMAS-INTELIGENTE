@@ -71,9 +71,12 @@
   function margemDoCadastro(produto, item) {
     if (produto) {
       const m = produto.lucro_percentual ?? produto.margem ?? produto.margem_lucro;
-      if (m != null && m !== '') return num(m, 30);
+      if (m != null && m !== '') return num(m, 35);
     }
-    return num(item?.margem_lucro, 30);
+    if (item?.margem_lucro != null && item.margem_lucro !== '') {
+      return num(item.margem_lucro, 35);
+    }
+    return 35;
   }
 
   function precoVendaCadastro(produto) {

@@ -114,7 +114,8 @@ class ToledoDownloadEngine {
       const frame = frameBuilder.build(COMMANDS.DOWNLOAD_PLU, range);
       const chave = `${host}:${porta}`;
 
-      const result = await engine.queue.enqueue(chave, async () => {
+      const { withBusy, OP_BUSY } = require('../../../connection/SessionBusy');
+      const result = await withBusy({ host, porta }, OP_BUSY.DOWNLOAD, () => engine.queue.enqueue(chave, async () => {
         const driver = await engine._ensureDriver(host, porta, opcoes);
         const op = new DownloadPluOperation({
           range,
@@ -128,7 +129,7 @@ class ToledoDownloadEngine {
           connection: { host, porta, via: 'ConnectionManager' }
         });
         return op.execute(ctx);
-      });
+      }));
 
       if (!result.success) {
         throw SyncError.fromCode(

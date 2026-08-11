@@ -50,9 +50,9 @@ describe('Fingerprint V1.0 — DriverResolver', () => {
     );
   });
 
-  it('resolve TOLEDO_ETH para TOLEDO_PRIX4 / Prix IV Uno', () => {
+  it('resolve TOLEDO_ETH para TOLEDO_PRIX4_UNO / Prix IV Uno', () => {
     const r = new DriverResolver().resolve('TOLEDO_ETH');
-    assert.equal(r.driver, 'TOLEDO_PRIX4');
+    assert.equal(r.driver, 'TOLEDO_PRIX4_UNO');
     assert.equal(r.fabricante, 'Toledo');
     assert.equal(r.modelo, 'Prix IV Uno');
   });
@@ -72,7 +72,7 @@ describe('Fingerprint V1.0 — FingerprintCandidate', () => {
       protocolo: 'TOLEDO_ETH',
       fabricante: 'Toledo',
       modelo: 'Prix IV Uno',
-      driver: 'TOLEDO_PRIX4',
+      driver: 'TOLEDO_PRIX4_UNO',
       confidence: 98,
       fingerprint: 'abc'
     });
@@ -82,7 +82,7 @@ describe('Fingerprint V1.0 — FingerprintCandidate', () => {
       porta: 9000,
       fabricante: 'Toledo',
       modelo: 'Prix IV Uno',
-      driver: 'TOLEDO_PRIX4',
+      driver: 'TOLEDO_PRIX4_UNO',
       confidence: 98
     });
   });
@@ -99,14 +99,14 @@ describe('Fingerprint V1.0 — FingerprintRepository', () => {
       protocolo: 'TOLEDO_ETH',
       fabricante: 'Toledo',
       modelo: 'Prix IV Uno',
-      driver: 'TOLEDO_PRIX4',
+      driver: 'TOLEDO_PRIX4_UNO',
       confidence: 98,
       fingerprint: 'fp-test'
     });
     const row = await repo.buscarPorHostPorta(host, porta);
     assert.ok(row);
     assert.equal(row.fabricante, 'Toledo');
-    assert.equal(row.driver, 'TOLEDO_PRIX4');
+    assert.equal(row.driver, 'TOLEDO_PRIX4_UNO');
     assert.equal(Number(row.confidence), 98);
   });
 });
@@ -123,7 +123,7 @@ describe('Fingerprint V1.0 — FingerprintService', () => {
     );
     assert.equal(c.fabricante, 'Toledo');
     assert.equal(c.modelo, 'Prix IV Uno');
-    assert.equal(c.driver, 'TOLEDO_PRIX4');
+    assert.equal(c.driver, 'TOLEDO_PRIX4_UNO');
     assert.equal(c.confidence, 98);
     assert.equal(c.protocolo, 'TOLEDO_ETH');
   });
@@ -163,7 +163,7 @@ describe('Fingerprint V1.0 — FingerprintService', () => {
     });
     const c = await svc.identificar({ host: '10.0.0.170', porta: 9000 }, { persistir: false });
     assert.equal(capturas, 1);
-    assert.equal(c.driver, 'TOLEDO_PRIX4');
+    assert.equal(c.driver, 'TOLEDO_PRIX4_UNO');
   });
 });
 
@@ -207,7 +207,7 @@ describe('Fingerprint V1.0 — API POST /fingerprint', () => {
       porta: 9000,
       fabricante: 'Toledo',
       modelo: 'Prix IV Uno',
-      driver: 'TOLEDO_PRIX4',
+      driver: 'TOLEDO_PRIX4_UNO',
       confidence: 98
     });
   });
@@ -256,7 +256,7 @@ describe('Fingerprint V1.0 — Fluxo completo Discovery → Fingerprint', () => 
     assert.equal(fp.protocolo, 'TOLEDO_ETH');
     assert.equal(fp.fabricante, 'Toledo');
     assert.equal(fp.modelo, 'Prix IV Uno');
-    assert.equal(fp.driver, 'TOLEDO_PRIX4');
+    assert.equal(fp.driver, 'TOLEDO_PRIX4_UNO');
     assert.equal(fp.confidence, 98);
     assert.ok(fp.fingerprint);
   });

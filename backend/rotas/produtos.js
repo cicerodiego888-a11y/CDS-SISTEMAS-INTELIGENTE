@@ -30,8 +30,13 @@ const {
 } = require('../services/produtoImagemUpload');
 const { obterProdutoImagemService } = require('../services/ProdutoImagemService');
 const { obterProdutoEmbalagemService } = require('../services/produto-embalagem/ProdutoEmbalagemService');
+const { obterMib, normalizarNomeBusca } = require('../motores/mib');
 
 let _pdvIdentificacaoService = null;
+
+function obterMibService() {
+  return obterMib(db);
+}
 
 function obterPdvIdentificacaoService() {
   if (!_pdvIdentificacaoService) {
@@ -144,6 +149,10 @@ function normalizarProdutoResposta(produto, modoFiscal) {
     ? String(produto.plu).trim()
     : null;
 
+  const codigoMgv6Valor = produto.codigo_mgv6 != null && String(produto.codigo_mgv6).trim() !== ''
+    ? String(produto.codigo_mgv6).trim()
+    : null;
+
   const base = {
     ...produto,
     ...aplicarCamposVendaUnidadeResposta(produto),
@@ -152,6 +161,8 @@ function normalizarProdutoResposta(produto, modoFiscal) {
     /** Alias oficial Sprint 06 — mesmo valor de produto_fracionado */
     produto_pesavel: flagFracionado,
     plu: pluValor,
+    codigo_mgv6: codigoMgv6Valor,
+    codigoMgv6: codigoMgv6Valor,
     controla_estoque: normalizarFlagControlaEstoque(produto.controla_estoque),
     preco_compra: precoCompra,
     saldo_fiscal: saldoFiscal,
@@ -242,6 +253,8 @@ const CAMPOS_PRODUTO_IGNORADOS = new Set([
   'saldo_nao_fiscal_inicial',
   // Sprint 06 — não são colunas de produtos; tratados via MIP / alias
   'plu',
+  'codigo_mgv6',
+  'codigoMgv6',
   'produto_pesavel',
   'identificadores'
 ]);
@@ -276,6 +289,16 @@ const SQL_PLU_SUBQUERY = `(
   ORDER BY pi.id DESC
   LIMIT 1
 ) AS plu`;
+
+/** @deprecated RC14.15.9 — dados históricos tipo=MGV6; não usados na UI nem no export */
+const SQL_MGV6_SUBQUERY = `(
+  SELECT pi.codigo FROM produto_identificadores pi
+  WHERE pi.produto_id = p.id
+    AND UPPER(pi.tipo) = 'MGV6'
+    AND COALESCE(pi.ativo, 1) = 1
+  ORDER BY COALESCE(pi.principal, 0) DESC, pi.id DESC
+  LIMIT 1
+) AS codigo_mgv6`;
 
 function obterEstoqueTotalProduto(produto = {}) {
   const fiscal = Number(produto.saldo_fiscal ?? 0);
@@ -430,6 +453,7 @@ function buscarProdutoCompleto(produtoId, callback) {
     SELECT 
       p.*, 
       ${SQL_PLU_SUBQUERY},
+      ${SQL_MGV6_SUBQUERY},
       (SELECT preco_atacado FROM produto_atacado WHERE produto_id = p.id ORDER BY quantidade_minima ASC LIMIT 1) AS preco_atacado,
       (SELECT quantidade_minima FROM produto_atacado WHERE produto_id = p.id ORDER BY quantidade_minima ASC LIMIT 1) AS quantidade_minima_atacado,
       c.nome AS categoria_nome,
@@ -554,6 +578,7 @@ router.get('/', (req, res) => {
     SELECT 
       p.*, 
       ${SQL_PLU_SUBQUERY},
+      ${SQL_MGV6_SUBQUERY},
       (SELECT preco_atacado FROM produto_atacado WHERE produto_id = p.id ORDER BY quantidade_minima ASC LIMIT 1) AS preco_atacado,
       (SELECT quantidade_minima FROM produto_atacado WHERE produto_id = p.id ORDER BY quantidade_minima ASC LIMIT 1) AS quantidade_minima_atacado,
       c.nome AS categoria_nome,
@@ -777,146 +802,239 @@ router.get('/relatorio-estoque', (req, res) => {
   });
 });
 
-// CONSULTA DE PRODUTOS NO PDV - F1
-router.get('/consulta-pdv/buscar', (req, res) => {
+// MIB-RC1.1 — health / diagnóstico / benchmark / catálogo
+router.get('/mib/health', (req, res) => {
+  try {
+    return res.json(obterMibService().health());
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Falha no health MIB' });
+  }
+});
+
+router.get('/mib/diagnostico', (req, res) => {
+  try {
+    return res.json(obterMibService().diagnostico());
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Falha no diagnóstico MIB' });
+  }
+});
+
+router.get('/mib/statistics', async (req, res) => {
+  try {
+    return res.json(await obterMibService().statistics());
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Falha nas estatísticas MIB' });
+  }
+});
+
+router.get('/mib/catalog', (req, res) => {
+  try {
+    return res.json(obterMibService().catalogInfo());
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Falha ao ler catálogo MIB' });
+  }
+});
+
+router.get('/mib/config', async (req, res) => {
+  try {
+    return res.json(await obterMibService().getConfig());
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Falha ao ler config MIB' });
+  }
+});
+
+router.put('/mib/config', async (req, res) => {
+  try {
+    return res.json(await obterMibService().setConfig(req.body || {}));
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Falha ao salvar config MIB' });
+  }
+});
+
+router.post('/mib/refresh', async (req, res) => {
+  try {
+    const info = await obterMibService().refresh(req.body || {});
+    return res.json({ ok: true, ...info });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Falha no refresh MIB' });
+  }
+});
+
+router.post('/mib/rebuild', async (req, res) => {
+  try {
+    const info = await obterMibService().rebuild();
+    return res.json({ ok: true, ...info });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Falha no rebuild MIB' });
+  }
+});
+
+router.post('/mib/hotcache/rebuild', async (req, res) => {
+  try {
+    const info = await obterMibService().rebuildHotCache();
+    return res.json({ ok: true, ...info });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Falha no HotCache MIB' });
+  }
+});
+
+router.post('/mib/benchmark', async (req, res) => {
+  try {
+    const resultado = await obterMibService().executarBenchmark(req.body || {});
+    return res.json(resultado);
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Falha no benchmark MIB' });
+  }
+});
+
+router.post('/mib/recarregar-catalogo', async (req, res) => {
+  try {
+    const info = await obterMibService().recarregarCatalogo();
+    return res.json({ ok: true, ...info });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Falha ao recarregar catálogo MIB' });
+  }
+});
+
+router.post('/mib/backfill-nome-busca', (req, res) => {
+  const limite = Number(req.body?.limite) || 5000;
+  obterMibService().backfill({ limite, apenasVazios: req.body?.apenasVazios !== false }, (err, resultado) => {
+    if (err) return res.status(500).json({ error: err.message });
+    obterMibService().refresh({ motivo: 'backfill' }).catch(() => {});
+    return res.json({ ok: true, ...resultado });
+  });
+});
+
+router.post('/mib/selecao', async (req, res) => {
+  const produtoId = Number(req.body?.produto_id || req.body?.id);
+  if (!produtoId) return res.status(400).json({ error: 'produto_id obrigatório' });
+  try {
+    obterMibService().registrarSelecao(produtoId);
+    const aprendizado = await obterMibService().registrarAprendizado({
+      produto_id: produtoId,
+      texto: req.body?.texto || req.body?.termo || '',
+      posicao: req.body?.posicao,
+      tempo_ms: req.body?.tempo_ms,
+      operador_id: req.user?.id || req.body?.operador_id || null,
+      filial_id: req.user?.filial_id || req.body?.filial_id || null,
+      caixa_id: req.body?.caixa_id || null
+    });
+    return res.json({ ok: true, aprendizado });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// MIB-RC2.0 — analytics / learning / sinônimos
+router.get('/mib/analytics', async (req, res) => {
+  try {
+    return res.json(await obterMibService().analytics());
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Falha analytics MIB' });
+  }
+});
+
+router.get('/mib/top-searches', async (req, res) => {
+  try {
+    return res.json(await obterMibService().topSearches(Number(req.query.limite) || 20));
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/mib/not-found', async (req, res) => {
+  try {
+    return res.json(await obterMibService().notFound(Number(req.query.limite) || 20));
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/mib/learning', async (req, res) => {
+  try {
+    return res.json(await obterMibService().learningList(Number(req.query.limite) || 50));
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/mib/synonym', async (req, res) => {
+  try {
+    return res.json(await obterMibService().listarSinonimos());
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/mib/synonym', async (req, res) => {
+  try {
+    const { termo, sinonimo, origem } = req.body || {};
+    const row = await obterMibService().cadastrarSinonimo(termo, sinonimo, origem);
+    return res.json({ ok: true, ...row });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/mib/retrain', async (req, res) => {
+  try {
+    return res.json(await obterMibService().retrain());
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/mib/reset-learning', async (req, res) => {
+  try {
+    return res.json(await obterMibService().resetLearning());
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// CONSULTA DE PRODUTOS NO PDV — via SearchService (MIB-RC3.0)
+router.get('/consulta-pdv/buscar', async (req, res) => {
   const termo = String(req.query.q || '').trim();
   const modoFiscal = isModoFiscalQuery(req.query.modo_fiscal);
-  const filtroFiscal = filtroSqlModoFiscalProduto(modoFiscal, 'p');
+  const limite = Math.min(Math.max(parseInt(req.query.limite, 10) || 20, 1), 20);
 
   if (!termo) {
     return res.json([]);
   }
-  // Normalizar termo (remover acentos) para busca sem acento
-  function removeDiacritics(str) {
-    if (!str) return '';
-    return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  }
 
-  const termoNormalized = removeDiacritics(termo.toLowerCase());
-  const buscaLike = `%${termo}%`;
-  const buscaLikeNormalized = `%${termoNormalized}%`;
-  const buscaNumero = termo.replace(/\D/g, '') || termo;
-  const termoLower = termo.toLowerCase();
-  const limite = Math.min(Math.max(parseInt(req.query.limite, 10) || 20, 1), 20);
-  const hoje = new Date().toISOString().split('T')[0];
-  // Construir cadeia de REPLACE para remover acentos no campo p.nome dentro do SQL
-  const replacements = {
-    'á':'a','à':'a','â':'a','ã':'a','ä':'a',
-    'é':'e','è':'e','ê':'e','ë':'e',
-    'í':'i','ì':'i','î':'i','ï':'i',
-    'ó':'o','ò':'o','ô':'o','õ':'o','ö':'o',
-    'ú':'u','ù':'u','û':'u','ü':'u',
-    'ç':'c','ñ':'n'
-  };
-
-  const replaceChain = Object.keys(replacements).reduce((acc, ch) => {
-    const to = replacements[ch];
-    return `REPLACE(${acc}, '${ch}', '${to}')`;
-  }, 'LOWER(p.nome)');
-
-  db.all(`
-    SELECT
-      p.id,
-      p.codigo,
-      p.codigo_barras,
-      p.nome,
-      p.unidade,
-      COALESCE(p.unidade_comercial, 'UN') AS unidade_comercial,
-      COALESCE(p.quantidade_por_embalagem, 0) AS quantidade_por_embalagem,
-      COALESCE(p.compra_por_embalagem, 0) AS compra_por_embalagem,
-      COALESCE(p.valor_compra_embalagem, 0) AS valor_compra_embalagem,
-      p.preco_compra,
-      p.preco_venda,
-      ${SQL_PLU_SUBQUERY},
-      (SELECT preco_atacado FROM produto_atacado WHERE produto_id = p.id ORDER BY quantidade_minima ASC LIMIT 1) AS preco_atacado,
-      (SELECT quantidade_minima FROM produto_atacado WHERE produto_id = p.id ORDER BY quantidade_minima ASC LIMIT 1) AS quantidade_minima_atacado,
-      p.estoque_atual,
-      COALESCE(p.saldo_fiscal, 0) AS saldo_fiscal,
-      COALESCE(p.saldo_nao_fiscal, 0) AS saldo_nao_fiscal,
-      COALESCE(p.item_fiscal, 1) AS item_fiscal,
-      COALESCE(p.controla_estoque, 1) AS controla_estoque,
-      p.estoque_minimo,
-      p.vendido_por_peso,
-      COALESCE(p.produto_fracionado, p.vendido_por_peso, 0) AS produto_fracionado,
-      COALESCE(p.permite_venda_unidade, 0) AS permite_venda_unidade,
-      COALESCE(p.peso_medio_unidade, 0) AS peso_medio_unidade,
-      COALESCE(p.preco_unidade, 0) AS preco_unidade,
-      CASE 
-        WHEN promo.id IS NOT NULL THEN 1 
-        ELSE 0 
-      END AS tem_promocao,
-      CASE 
-        WHEN promo.id IS NOT NULL THEN promo.preco_promocional 
-        ELSE NULL 
-      END AS preco_promocional,
-      CASE 
-        WHEN promo.id IS NOT NULL THEN promo.desconto_percentual 
-        ELSE NULL 
-      END AS desconto_percentual,
-      CASE
-        WHEN LOWER(TRIM(COALESCE(p.codigo_barras, ''))) = ?
-          OR LOWER(TRIM(COALESCE(p.codigo, ''))) = ?
-          OR CAST(p.id AS TEXT) = ?
-          OR TRIM(COALESCE(p.codigo_barras, '')) = ?
-          OR TRIM(COALESCE(p.codigo, '')) = ?
-          OR EXISTS (
-            SELECT 1 FROM produto_identificadores pi
-            WHERE pi.produto_id = p.id
-              AND pi.tipo = 'PLU'
-              AND COALESCE(pi.ativo, 1) = 1
-              AND TRIM(pi.codigo) = ?
-          )
-        THEN 1
-        ELSE 0
-      END AS match_exato
-    FROM produtos p
-    LEFT JOIN promocoes promo ON promo.produto_id = p.id 
-      AND promo.status = 'ativa'
-      AND date(promo.data_inicio) <= date(?)
-      AND date(promo.data_fim) >= date(?)
-    WHERE
-      (
-        CAST(p.id AS TEXT) = ?
-        OR LOWER(COALESCE(p.codigo, '')) LIKE LOWER(?)
-        OR LOWER(COALESCE(p.codigo_barras, '')) LIKE LOWER(?)
-        OR (${replaceChain}) LIKE ?
-        OR EXISTS (
-          SELECT 1 FROM produto_identificadores pi
-          WHERE pi.produto_id = p.id
-            AND pi.tipo = 'PLU'
-            AND COALESCE(pi.ativo, 1) = 1
-            AND (
-              TRIM(pi.codigo) = ?
-              OR LOWER(pi.codigo) LIKE LOWER(?)
-            )
-          )
-      )
-      ${filtroFiscal}
-    ORDER BY match_exato DESC, p.nome ASC
-    LIMIT ${limite}
-  `, [
-    termoLower,
-    termoLower,
-    buscaNumero,
-    termo,
-    termo,
-    buscaNumero,
-    hoje,
-    hoje,
-    buscaNumero,
-    buscaLike,
-    buscaLike,
-    buscaLikeNormalized,
-    buscaNumero,
-    buscaLike
-  ], (err, rows) => {
-    if (err) {
-      console.error('Erro na consulta de produtos PDV:', err.message);
-      return res.status(500).json({ error: err.message });
+  try {
+    const { obterSearchService } = require('../motores/mib');
+    const user = req.user || {};
+    const resultado = await obterSearchService(db).search({
+      entity: 'produto',
+      query: termo,
+      limite,
+      modoFiscal,
+      operador_id: user.id || req.operadorId || null,
+      filial_id: user.filial_id || null,
+      caixa_id: req.caixaId || null,
+      permissoes: user.permissoes || ['produtos', 'pdv'],
+      perfil: user.perfil,
+      role: user.role || 'admin',
+      origem: 'pdv',
+      user,
+      skipAuth: true
+    });
+    const itens = (resultado.itens || []).map((row) => normalizarProdutoResposta(row, modoFiscal));
+    if (req.query.debug === '1') {
+      return res.json({ itens, meta: resultado.meta });
     }
-
-    res.json((rows || []).map((row) => normalizarProdutoResposta(row, modoFiscal)));
-  });
+    if (resultado.meta?.sugestao?.mensagem && itens.length === 0) {
+      res.setHeader('X-MIB-Sugestao', encodeURIComponent(JSON.stringify(resultado.meta.sugestao)));
+    }
+    return res.json(itens);
+  } catch (err) {
+    if (err && err.code === 'MIB_CANCELLED') {
+      return res.status(499).json({ error: 'Busca cancelada', code: 'MIB_CANCELLED' });
+    }
+    console.error('Erro na consulta SearchService PDV:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 router.get('/ranking-vendas', (req, res) => {
@@ -1973,6 +2091,7 @@ router.get('/:id', (req, res) => {
     SELECT 
       p.*, 
       ${SQL_PLU_SUBQUERY},
+      ${SQL_MGV6_SUBQUERY},
       (SELECT preco_atacado FROM produto_atacado WHERE produto_id = p.id ORDER BY quantidade_minima ASC LIMIT 1) AS preco_atacado,
       (SELECT quantidade_minima FROM produto_atacado WHERE produto_id = p.id ORDER BY quantidade_minima ASC LIMIT 1) AS quantidade_minima_atacado,
       c.nome AS categoria_nome,
@@ -2064,6 +2183,24 @@ router.post('/', (req, res) => {
   const pluValidacao = validarPluOpcional(plu);
   if (!pluValidacao.ok) {
     return res.status(400).json({ error: pluValidacao.erro });
+  }
+
+  const codigoMgv6Body = Object.prototype.hasOwnProperty.call(req.body, 'codigo_mgv6')
+    ? req.body.codigo_mgv6
+    : (Object.prototype.hasOwnProperty.call(req.body, 'codigoMgv6') ? req.body.codigoMgv6 : undefined);
+  const codigoMgv6Informado = codigoMgv6Body !== undefined;
+  let codigoMgv6Valor = null;
+  if (codigoMgv6Informado) {
+    const bruto = codigoMgv6Body == null ? '' : String(codigoMgv6Body).trim();
+    if (bruto) {
+      if (!/^\d+$/.test(bruto)) {
+        return res.status(400).json({ error: 'Código MGV6 inválido: informe apenas dígitos.' });
+      }
+      if (bruto.length > 9) {
+        return res.status(400).json({ error: 'Código MGV6 inválido: máximo 9 dígitos.', code: 'MGV6_CODE_OVERFLOW' });
+      }
+      codigoMgv6Valor = bruto;
+    }
   }
 
   const marcaIdGravar = normalizarMarcaIdOpcional(
@@ -2173,6 +2310,20 @@ router.post('/', (req, res) => {
 
       const produtoId = this.lastID;
       try {
+        obterMibService().sincronizarNomeBusca(produtoId, nome, () => {
+          obterMibService().notificarProdutoCriado({
+            id: produtoId,
+            nome,
+            nome_busca: normalizarNomeBusca(nome),
+            codigo: codigoFinal,
+            codigo_barras,
+            preco_venda
+          });
+        });
+      } catch (mibErr) {
+        console.warn('[MIB] nome_busca no POST:', mibErr.message);
+      }
+      try {
         const MotorUM = require('../services/unidades/MotorUnidadesMedida');
         const compraPorEmb = Number(req.body.compra_por_embalagem || 0) === 1 ? 1 : 0;
         const uc = compraPorEmb
@@ -2196,6 +2347,9 @@ router.post('/', (req, res) => {
       const camposEspelho = { codigo: codigoFinal, codigo_barras };
       if (pluValidacao.informado) {
         camposEspelho.plu = pluValidacao.valor;
+      }
+      if (codigoMgv6Informado) {
+        camposEspelho.codigo_mgv6 = codigoMgv6Valor;
       }
 
       const aposDualWrite = () => {
@@ -2471,6 +2625,25 @@ router.put('/:id', (req, res) => {
     return res.status(400).json({ error: pluValidacao.erro });
   }
 
+  const codigoMgv6Informado = Object.prototype.hasOwnProperty.call(req.body, 'codigo_mgv6')
+    || Object.prototype.hasOwnProperty.call(req.body, 'codigoMgv6');
+  let codigoMgv6Valor = null;
+  if (codigoMgv6Informado) {
+    const brutoRaw = Object.prototype.hasOwnProperty.call(req.body, 'codigo_mgv6')
+      ? req.body.codigo_mgv6
+      : req.body.codigoMgv6;
+    const bruto = brutoRaw == null ? '' : String(brutoRaw).trim();
+    if (bruto) {
+      if (!/^\d+$/.test(bruto)) {
+        return res.status(400).json({ error: 'Código MGV6 inválido: informe apenas dígitos.' });
+      }
+      if (bruto.length > 9) {
+        return res.status(400).json({ error: 'Código MGV6 inválido: máximo 9 dígitos.', code: 'MGV6_CODE_OVERFLOW' });
+      }
+      codigoMgv6Valor = bruto;
+    }
+  }
+
   const dataValidadeInformada = data_validade_inicial || data_validade || null;
   const diasAlertaInformado = dias_alerta_validade;
   const controlarValidadeInformado = controlar_validade;
@@ -2546,6 +2719,11 @@ router.put('/:id', (req, res) => {
       bodyUpdates.imagem_principal = normalizarImagemPrincipalOpcional(bodyUpdates.imagem_principal);
     }
 
+    // MIB — nome_busca gerado na gravação (nunca na consulta)
+    if (Object.prototype.hasOwnProperty.call(bodyUpdates, 'nome')) {
+      bodyUpdates.nome_busca = normalizarNomeBusca(bodyUpdates.nome);
+    }
+
     // RC8.4.2 — normalizar modo compra por embalagem (opt-in)
     if (
       Object.prototype.hasOwnProperty.call(bodyUpdates, 'compra_por_embalagem')
@@ -2599,7 +2777,7 @@ router.put('/:id', (req, res) => {
 
     const temSaldosIniciais = saldo_fiscal_inicial !== undefined || saldo_nao_fiscal_inicial !== undefined;
     const temEmbalagens = Array.isArray(embalagens);
-    if (fields.length === 0 && !Array.isArray(atacado_faixas) && !temSaldosIniciais && !pluInformado && !temEmbalagens) {
+    if (fields.length === 0 && !Array.isArray(atacado_faixas) && !temSaldosIniciais && !pluInformado && !codigoMgv6Informado && !temEmbalagens) {
       return res.status(400).json({ error: 'Nenhum campo válido para atualizar.' });
     }
 
@@ -2613,7 +2791,8 @@ router.put('/:id', (req, res) => {
       const cb = typeof done === 'function' ? done : () => {};
       const deveEspelhar = bodyUpdates.codigo !== undefined
         || bodyUpdates.codigo_barras !== undefined
-        || pluInformado;
+        || pluInformado
+        || codigoMgv6Informado;
       if (!deveEspelhar) {
         return cb();
       }
@@ -2626,6 +2805,9 @@ router.put('/:id', (req, res) => {
       };
       if (pluInformado) {
         camposEspelho.plu = pluValidacao.valor;
+      }
+      if (codigoMgv6Informado) {
+        camposEspelho.codigo_mgv6 = codigoMgv6Valor;
       }
       espelharIdentificadoresSafe(id, camposEspelho, { db }, () => cb());
     };
@@ -2758,6 +2940,13 @@ router.put('/:id', (req, res) => {
         return;
       }
 
+      try {
+        const nomeSync = bodyUpdates.nome !== undefined ? bodyUpdates.nome : old.nome;
+        obterMibService().sincronizarNomeBusca(id, nomeSync);
+      } catch (mibErr) {
+        console.warn('[MIB] nome_busca no PUT:', mibErr.message);
+      }
+
       db.get(
         'SELECT id, nome, item_fiscal, saldo_fiscal, saldo_nao_fiscal FROM produtos WHERE id = ?',
         [id],
@@ -2786,6 +2975,9 @@ router.delete('/:id', (req, res) => {
       res.status(500).json({ error: err.message });
       return;
     }
+    try {
+      obterMibService().notificarProdutoRemovido(id);
+    } catch (_) { /* ignore */ }
     gravarAuditoria({
       usuario_id: req.user?.id || null,
       usuario_nome: req.user?.username || req.user?.nome || null,

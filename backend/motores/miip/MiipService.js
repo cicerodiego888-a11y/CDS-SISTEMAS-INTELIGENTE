@@ -246,11 +246,29 @@ class MiipService {
       });
     }
 
+    // MIB-RC4.0 — consulta Knowledge Graph quando sem match (não bloqueia decisão)
+    let knowledge = null;
+    if (produtoId == null) {
+      try {
+        const { consultarGrafoMiip } = require('../mib/knowledge/MiipKnowledgeBridge');
+        const db = this.db || require('../../database');
+        knowledge = await consultarGrafoMiip(db, {
+          nome: itemNormalizado?.descricao || itemNormalizado?.nome || item?.descricao || item?.nome,
+          gtin: itemNormalizado?.gtin || itemNormalizado?.codigoBarras || item?.gtin || item?.codigo_barras,
+          ncm: itemNormalizado?.ncm || item?.ncm,
+          preco: itemNormalizado?.preco || item?.preco
+        }, { origem: 'miip' });
+      } catch (_) {
+        knowledge = null;
+      }
+    }
+
     return {
       encontrado: produtoId != null,
       produtoId,
       resultado,
-      aprendizado
+      aprendizado,
+      knowledge
     };
   }
 

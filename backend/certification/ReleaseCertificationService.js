@@ -284,7 +284,23 @@ class ReleaseCertificationService {
 
     const existente = await documentosRepository.buscarPorChave(CHAVE);
     if (existente) {
-      await this._ctx.db.run('DELETE FROM central_entradas_historico WHERE documento_id = ?', [existente.id]);
+      // sqlite3 db.run NÃO retorna Promise — usar dbRun para aguardar o DELETE
+      // antes do remover (FK: historico.documento_id → documentos.id).
+      await dbRun(
+        this._ctx.db,
+        'DELETE FROM central_entradas_historico WHERE documento_id = ?',
+        [existente.id]
+      );
+      await dbRun(
+        this._ctx.db,
+        'DELETE FROM central_entradas_eventos WHERE documento_id = ?',
+        [existente.id]
+      ).catch(() => {});
+      await dbRun(
+        this._ctx.db,
+        'DELETE FROM central_entradas_notificacoes WHERE documento_id = ?',
+        [existente.id]
+      ).catch(() => {});
       await documentosRepository.remover(existente.id);
     }
 

@@ -51,7 +51,7 @@ describe('Certificação V2 — Auditoria Arquitetural', () => {
 describe('Certificação V2 — Health / Diagnostics / Checklist', () => {
   before(() => resetStatsForTests());
 
-  it('health e diagnostics', () => {
+  it('health e diagnostics', async () => {
     recordLatency('ping', 2);
     recordLatency('handshake', 5);
     recordLatency('upload', 12);
@@ -61,7 +61,7 @@ describe('Certificação V2 — Health / Diagnostics / Checklist', () => {
     const h = health({});
     assert.equal(h.success, true);
     assert.ok(h.status === 'OK' || h.status === 'DEGRADED');
-    const d = diagnostics({});
+    const d = await diagnostics({});
     assert.equal(d.success, true);
     assert.ok(d.version);
     assert.ok(d.capabilities.handshake);
@@ -79,8 +79,8 @@ describe('Certificação V2 — Health / Diagnostics / Checklist', () => {
     assert.equal(r.resumo.ok, CHECKLIST.length);
   });
 
-  it('relatório consolidado', () => {
-    const report = buildCertificationReport({});
+  it('relatório consolidado', async () => {
+    const report = await buildCertificationReport({});
     assert.ok(report.titulo.includes('Homologação'));
     assert.equal(report.resumo.arquiteturaOk, true);
     assert.equal(report.resumo.homologado, true);
@@ -179,16 +179,27 @@ describe('Certificação V2 — Estabilidade / Recuperação / Volume (simulado)
 describe('Certificação V2 — Documentação e capabilities', () => {
   it('capabilities homologadas e doc presente', () => {
     const caps = getCapabilities().capabilities;
+    assert.equal(caps.handshake, true);
+    assert.equal(caps.ping, true);
     assert.equal(caps.uploadPLU, true);
+    assert.equal(caps.downloadPLU, true);
+    assert.equal(caps.syncPLU, true);
     assert.equal(caps.readWeight, true);
     assert.equal(caps.monitor, true);
     assert.equal(caps.downloadConfig, true);
+    assert.equal(caps.writeConfig, true);
+    assert.equal(caps.writeLabel, false);
     assert.equal(caps.firmwareUpdate, false);
+    assert.equal(caps.autoReconnect, false);
 
     const doc = path.resolve(
       __dirname,
       '../../docs/equipamentos/toledo-prix-iv-uno-homologacao-v2.md'
     );
     assert.ok(fs.existsSync(doc), 'documentação de homologação deve existir');
+    const docTxt = fs.readFileSync(doc, 'utf8');
+    assert.match(docTxt, /Capabilities homologadas/);
+    assert.match(docTxt, /`uploadPLU`/);
+    assert.match(docTxt, /`readWeight`/);
   });
 });
