@@ -1,6 +1,9 @@
 /**
  * RC — Fechamento de Caixa: fonte única de consolidação financeira.
- * Distribuição por forma: venda_pagamentos (não só vendas.forma_pagamento).
+ * Dinheiro recebido por venda (sem dupla contagem):
+ *   1) venda_recebimentos (fiscal + não fiscal) quando existir
+ *   2) senão venda_pagamentos (legado / parcela fiscal isolada)
+ *   3) senão fallback pela forma_pagamento da venda
  * Entrega não prestada (reserva_entrega) = a receber, não recebido.
  */
 
@@ -124,6 +127,49 @@ function valorVendaLiquido(venda) {
   return arred2(venda.total);
 }
 
+/**
+ * Fonte lógica do dinheiro recebido na venda.
+ * Nunca soma venda_pagamentos + venda_recebimentos (evita dupla contagem fiscal).
+ */
+function resolverLinhasRecebidasVenda(venda, pagamentosLinhas = [], recebimentosLinhas = []) {
+  const recebimentos = Array.isArray(recebimentosLinhas) ? recebimentosLinhas : [];
+  const pagamentos = Array.isArray(pagamentosLinhas) ? pagamentosLinhas : [];
+
+  if (recebimentos.length > 0) {
+    return recebimentos.map((r) => ({
+      forma_pagamento: r.forma_pagamento,
+      valor: n(r.valor),
+      tef_transacao_id: r.tef_transacao_id || null,
+      tef_nsu: r.tef_nsu || r.nsu || null,
+      tef_autorizacao: r.tef_autorizacao || r.autorizacao || null,
+      tipo_recebimento: r.tipo_recebimento || null,
+      fonte: 'venda_recebimentos'
+    }));
+  }
+
+  if (pagamentos.length > 0) {
+    return pagamentos.map((p) => ({
+      forma_pagamento: p.forma_pagamento,
+      valor: n(p.valor),
+      tef_transacao_id: p.tef_transacao_id || null,
+      tef_nsu: p.tef_nsu || null,
+      tef_autorizacao: p.tef_autorizacao || null,
+      tipo_recebimento: p.tipo_recebimento || null,
+      fonte: 'venda_pagamentos'
+    }));
+  }
+
+  return [{
+    forma_pagamento: venda.forma_pagamento || 'outros',
+    valor: valorVendaLiquido(venda),
+    tef_transacao_id: null,
+    tef_nsu: null,
+    tef_autorizacao: null,
+    tipo_recebimento: null,
+    fonte: 'fallback_venda'
+  }];
+}
+
 function filtrarVendasSessaoSql() {
   return `
     (
@@ -219,6 +265,7 @@ async function consolidarSessaoCaixa(caixa, options = {}) {
 
   const vendaIds = vendas.map((v) => v.id);
   let pagamentosRows = [];
+  let recebimentosRows = [];
   if (vendaIds.length) {
     const placeholders = vendaIds.map(() => '?').join(',');
     pagamentosRows = await promisifyAll(
@@ -238,6 +285,38 @@ async function consolidarSessaoCaixa(caixa, options = {}) {
       `,
       vendaIds
     );
+
+    try {
+      recebimentosRows = await promisifyAll(
+        database,
+        `
+          SELECT
+            vr.id,
+            vr.venda_id,
+            vr.tipo_recebimento,
+            vr.forma_pagamento,
+            vr.valor,
+            vr.tef_transacao_id,
+            vr.nsu,
+            vr.autorizacao,
+            vr.status
+          FROM venda_recebimentos vr
+          WHERE vr.venda_id IN (${placeholders})
+            AND (
+              vr.status IS NULL
+              OR LOWER(TRIM(vr.status)) IN ('aprovado', 'confirmado', 'quitado', 'pago')
+            )
+          ORDER BY vr.id ASC
+        `,
+        vendaIds
+      );
+    } catch (errReceb) {
+      // Bancos/testes legados sem a tabela: fecha apenas com venda_pagamentos.
+      if (!/no such table/i.test(String(errReceb && errReceb.message))) {
+        throw errReceb;
+      }
+      recebimentosRows = [];
+    }
   }
 
   const pagamentosPorVenda = new Map();
@@ -245,6 +324,13 @@ async function consolidarSessaoCaixa(caixa, options = {}) {
     const list = pagamentosPorVenda.get(p.venda_id) || [];
     list.push(p);
     pagamentosPorVenda.set(p.venda_id, list);
+  }
+
+  const recebimentosPorVenda = new Map();
+  for (const r of recebimentosRows) {
+    const list = recebimentosPorVenda.get(r.venda_id) || [];
+    list.push(r);
+    recebimentosPorVenda.set(r.venda_id, list);
   }
 
   const movSangria = await promisifyGet(
@@ -306,17 +392,11 @@ async function consolidarSessaoCaixa(caixa, options = {}) {
     fiscalRecebido = arred2(fiscalRecebido + n(venda.valor_fiscal));
     naoFiscalRecebido = arred2(naoFiscalRecebido + n(venda.valor_nao_fiscal));
 
-    const linhas = pagamentosPorVenda.get(venda.id) || [];
-    let linhasUsadas = linhas;
-
-    if (!linhasUsadas.length) {
-      // Compatibilidade: venda sem linhas em venda_pagamentos
-      linhasUsadas = [{
-        forma_pagamento: venda.forma_pagamento || 'outros',
-        valor,
-        tef_transacao_id: null
-      }];
-    }
+    const linhasUsadas = resolverLinhasRecebidasVenda(
+      venda,
+      pagamentosPorVenda.get(venda.id) || [],
+      recebimentosPorVenda.get(venda.id) || []
+    );
 
     const somaLinhas = arred2(linhasUsadas.reduce((acc, p) => acc + n(p.valor), 0));
     if (Math.abs(somaLinhas - valor) > TOLERANCIA) {
@@ -325,7 +405,8 @@ async function consolidarSessaoCaixa(caixa, options = {}) {
         venda_id: venda.id,
         valor_venda: valor,
         soma_pagamentos: somaLinhas,
-        diferenca: arred2(somaLinhas - valor)
+        diferenca: arred2(somaLinhas - valor),
+        fonte_recebido: linhasUsadas[0]?.fonte || null
       });
     }
 
@@ -616,6 +697,7 @@ module.exports = {
   isVendaCancelada,
   isEntregaPendente,
   valorVendaLiquido,
+  resolverLinhasRecebidasVenda,
   consolidarSessaoCaixa,
   paraResumoLegado,
   paraFechamentoLegado,

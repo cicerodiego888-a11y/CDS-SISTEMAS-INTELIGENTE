@@ -24,6 +24,18 @@ function produtoTemMovimentacoes(db, produtoId, callback) {
   });
 }
 
+/** Estoque Inicial só bloqueia após a primeira venda do produto. */
+function produtoTemVendas(db, produtoId, callback) {
+  db.get(
+    `SELECT COUNT(*) AS vendas FROM vendas_itens WHERE produto_id = ?`,
+    [produtoId],
+    (err, row) => {
+      if (err) return callback(err);
+      callback(null, Number(row?.vendas || 0) > 0);
+    }
+  );
+}
+
 function registrarAjusteEstoque(db, dados, callback) {
   db.run(`
     INSERT INTO produtos_ajustes_estoque (
@@ -184,6 +196,7 @@ function definirSaldosIniciaisProduto(saldoFiscal, saldoNaoFiscal) {
 
 module.exports = {
   produtoTemMovimentacoes,
+  produtoTemVendas,
   registrarAjusteEstoque,
   aplicarAjusteEstoqueProduto,
   definirSaldosIniciaisProduto

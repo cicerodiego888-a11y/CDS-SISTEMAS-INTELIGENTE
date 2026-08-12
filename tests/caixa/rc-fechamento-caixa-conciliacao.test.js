@@ -106,6 +106,19 @@ async function criarDbMemoria() {
       tef_autorizacao TEXT
     )
   `);
+  await run(db, `
+    CREATE TABLE venda_recebimentos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      venda_id INTEGER,
+      tipo_recebimento TEXT,
+      forma_pagamento TEXT,
+      valor REAL,
+      tef_transacao_id INTEGER,
+      nsu TEXT,
+      autorizacao TEXT,
+      status TEXT DEFAULT 'aprovado'
+    )
+  `);
 
   return db;
 }
@@ -126,7 +139,7 @@ async function seedCaixaBase(db, valorInicial = 200) {
   return { caixa, sessaoId, caixaId };
 }
 
-async function inserirVenda(db, sessaoId, dados, pagamentos = []) {
+async function inserirVenda(db, sessaoId, dados, pagamentos = [], recebimentos = []) {
   const ins = await run(db, `
     INSERT INTO vendas (
       codigo, total, desconto, forma_pagamento, status, status_venda, cancelada,
@@ -159,6 +172,22 @@ async function inserirVenda(db, sessaoId, dados, pagamentos = []) {
       p.tef_transacao_id || null,
       p.tef_nsu || null,
       p.tef_autorizacao || null
+    ]);
+  }
+  for (const r of recebimentos) {
+    await run(db, `
+      INSERT INTO venda_recebimentos (
+        venda_id, tipo_recebimento, forma_pagamento, valor, tef_transacao_id, nsu, autorizacao, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      vendaId,
+      r.tipo_recebimento,
+      r.forma_pagamento,
+      r.valor,
+      r.tef_transacao_id || null,
+      r.nsu || null,
+      r.autorizacao || null,
+      r.status || 'aprovado'
     ]);
   }
   return vendaId;
@@ -527,6 +556,162 @@ console.log('✓ regras entrega pendente / cancelamento');
     assert.ok(auth.includes('fechar_caixa'));
 
     console.log('✓ integração rotas / frontend / permissão / reimpressão');
+  }
+
+  // Fonte de verdade: venda_recebimentos (fiscal + não fiscal) sem dupla contagem
+  {
+    const linhas = Svc.resolverLinhasRecebidasVenda(
+      { total: 4, valor_fiscal: 2, valor_nao_fiscal: 2, forma_pagamento: 'misto' },
+      [{ forma_pagamento: 'pix', valor: 2 }],
+      [
+        { tipo_recebimento: 'fiscal', forma_pagamento: 'pix', valor: 2 },
+        { tipo_recebimento: 'nao_fiscal', forma_pagamento: 'pix', valor: 2 }
+      ]
+    );
+    assert.strictEqual(linhas.length, 2);
+    assert.strictEqual(linhas[0].fonte, 'venda_recebimentos');
+    quaseIgual(linhas.reduce((a, l) => a + Number(l.valor), 0), 4);
+    console.log('✓ resolverLinhasRecebidasVenda prioriza recebimentos (sem dupla contagem)');
+  }
+
+  // TESTE 1 — 100% fiscal
+  {
+    const db = await criarDbMemoria();
+    const { caixa, sessaoId } = await seedCaixaBase(db, 0);
+    await inserirVenda(db, sessaoId, {
+      total: 10, valor_fiscal: 10, valor_nao_fiscal: 0, forma_pagamento: 'pix'
+    }, [{ forma_pagamento: 'pix', valor: 10 }], [
+      { tipo_recebimento: 'fiscal', forma_pagamento: 'pix', valor: 10 }
+    ]);
+    const c = await Svc.consolidarSessaoCaixa(caixa, { sessaoId, db });
+    quaseIgual(c.totais.recebido, 10);
+    quaseIgual(c.pagamentos.pix, 10);
+    assert.ok(c.validacao.ok);
+    db.close();
+    console.log('✓ TESTE 1 venda 100% fiscal');
+  }
+
+  // TESTE 2 — 100% não fiscal
+  {
+    const db = await criarDbMemoria();
+    const { caixa, sessaoId } = await seedCaixaBase(db, 0);
+    await inserirVenda(db, sessaoId, {
+      total: 10, valor_fiscal: 0, valor_nao_fiscal: 10, forma_pagamento: 'dinheiro'
+    }, [], [
+      { tipo_recebimento: 'nao_fiscal', forma_pagamento: 'dinheiro', valor: 10 }
+    ]);
+    const c = await Svc.consolidarSessaoCaixa(caixa, { sessaoId, db });
+    quaseIgual(c.totais.recebido, 10);
+    quaseIgual(c.pagamentos.dinheiro, 10);
+    assert.ok(c.validacao.ok);
+    db.close();
+    console.log('✓ TESTE 2 venda 100% não fiscal');
+  }
+
+  // TESTE 3 — mista 6+4
+  {
+    const db = await criarDbMemoria();
+    const { caixa, sessaoId } = await seedCaixaBase(db, 0);
+    await inserirVenda(db, sessaoId, {
+      total: 10, valor_fiscal: 6, valor_nao_fiscal: 4, forma_pagamento: 'misto'
+    }, [{ forma_pagamento: 'pix', valor: 6 }], [
+      { tipo_recebimento: 'fiscal', forma_pagamento: 'pix', valor: 6 },
+      { tipo_recebimento: 'nao_fiscal', forma_pagamento: 'dinheiro', valor: 4 }
+    ]);
+    const c = await Svc.consolidarSessaoCaixa(caixa, { sessaoId, db });
+    quaseIgual(c.totais.recebido, 10);
+    quaseIgual(c.pagamentos.pix, 6);
+    quaseIgual(c.pagamentos.dinheiro, 4);
+    assert.strictEqual(c.validacao.divergencias.length, 0);
+    assert.ok(c.validacao.ok);
+    db.close();
+    console.log('✓ TESTE 3 venda mista 6+4 diferença 0');
+  }
+
+  // TESTE 4 — mista mesma forma PIX 2+2 = 4
+  {
+    const db = await criarDbMemoria();
+    const { caixa, sessaoId } = await seedCaixaBase(db, 0);
+    await inserirVenda(db, sessaoId, {
+      total: 4, valor_fiscal: 2, valor_nao_fiscal: 2, forma_pagamento: 'pix'
+    }, [{ forma_pagamento: 'pix', valor: 2 }], [
+      { tipo_recebimento: 'fiscal', forma_pagamento: 'pix', valor: 2 },
+      { tipo_recebimento: 'nao_fiscal', forma_pagamento: 'pix', valor: 2 }
+    ]);
+    const c = await Svc.consolidarSessaoCaixa(caixa, { sessaoId, db });
+    quaseIgual(c.pagamentos.pix, 4, 'PIX deve somar fiscal+não fiscal');
+    quaseIgual(c.totais.recebido, 4);
+    assert.ok(c.validacao.ok);
+    db.close();
+    console.log('✓ TESTE 4 mista mesma forma PIX=4');
+  }
+
+  // TESTE 5 — mista formas diferentes
+  {
+    const db = await criarDbMemoria();
+    const { caixa, sessaoId } = await seedCaixaBase(db, 0);
+    await inserirVenda(db, sessaoId, {
+      total: 4, valor_fiscal: 2, valor_nao_fiscal: 2, forma_pagamento: 'misto'
+    }, [{ forma_pagamento: 'pix', valor: 2 }], [
+      { tipo_recebimento: 'fiscal', forma_pagamento: 'pix', valor: 2 },
+      { tipo_recebimento: 'nao_fiscal', forma_pagamento: 'dinheiro', valor: 2 }
+    ]);
+    const c = await Svc.consolidarSessaoCaixa(caixa, { sessaoId, db });
+    quaseIgual(c.pagamentos.pix, 2);
+    quaseIgual(c.pagamentos.dinheiro, 2);
+    quaseIgual(c.totais.recebido, 4);
+    assert.ok(c.validacao.ok);
+    db.close();
+    console.log('✓ TESTE 5 mista PIX+DINHEIRO');
+  }
+
+  // TESTE 6 — pagamento incompleto (só fiscal em pagamentos; sem NF em recebimentos)
+  {
+    const db = await criarDbMemoria();
+    const { caixa, sessaoId } = await seedCaixaBase(db, 0);
+    await inserirVenda(db, sessaoId, {
+      total: 10, valor_fiscal: 8, valor_nao_fiscal: 2, forma_pagamento: 'misto'
+    }, [{ forma_pagamento: 'pix', valor: 8 }], [
+      { tipo_recebimento: 'fiscal', forma_pagamento: 'pix', valor: 8 }
+    ]);
+    const c = await Svc.consolidarSessaoCaixa(caixa, { sessaoId, db });
+    quaseIgual(c.totais.recebido, 10);
+    quaseIgual(c.pagamentos.pix, 8);
+    assert.ok(!c.validacao.ok);
+    const div = c.validacao.divergencias.find((d) => d.tipo === 'pagamento_vs_venda');
+    assert.ok(div);
+    quaseIgual(Math.abs(div.diferenca), 2);
+    db.close();
+    console.log('✓ TESTE 6 incompleto diferença R$ 2');
+  }
+
+  // TESTE 10 — várias fiscais / não fiscais / mistas
+  {
+    const db = await criarDbMemoria();
+    const { caixa, sessaoId } = await seedCaixaBase(db, 0);
+    await inserirVenda(db, sessaoId, {
+      total: 10, valor_fiscal: 10, valor_nao_fiscal: 0, forma_pagamento: 'pix'
+    }, [{ forma_pagamento: 'pix', valor: 10 }], [
+      { tipo_recebimento: 'fiscal', forma_pagamento: 'pix', valor: 10 }
+    ]);
+    await inserirVenda(db, sessaoId, {
+      total: 10, valor_fiscal: 0, valor_nao_fiscal: 10, forma_pagamento: 'dinheiro'
+    }, [], [
+      { tipo_recebimento: 'nao_fiscal', forma_pagamento: 'dinheiro', valor: 10 }
+    ]);
+    await inserirVenda(db, sessaoId, {
+      total: 4, valor_fiscal: 2, valor_nao_fiscal: 2, forma_pagamento: 'pix'
+    }, [{ forma_pagamento: 'pix', valor: 2 }], [
+      { tipo_recebimento: 'fiscal', forma_pagamento: 'pix', valor: 2 },
+      { tipo_recebimento: 'nao_fiscal', forma_pagamento: 'pix', valor: 2 }
+    ]);
+    const c = await Svc.consolidarSessaoCaixa(caixa, { sessaoId, db });
+    quaseIgual(c.totais.recebido, 24);
+    quaseIgual(c.pagamentos.pix, 14);
+    quaseIgual(c.pagamentos.dinheiro, 10);
+    assert.ok(c.validacao.ok);
+    db.close();
+    console.log('✓ TESTE 10 fechamento com vendas mistas agregadas');
   }
 
   console.log('\nRC FECHAMENTO CAIXA — todos os testes passaram.');

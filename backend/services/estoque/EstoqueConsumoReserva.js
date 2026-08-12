@@ -16,6 +16,12 @@ function all(sql, params = []) {
   });
 }
 
+function get(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row || null)));
+  });
+}
+
 function run(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.run(sql, params, function onRun(err) {
@@ -34,6 +40,19 @@ function reduzirEstoqueDistribuidoAsync(vendaItemId, produtoId, qF, qNf) {
   });
 }
 
+/** Resolve item válido para FEFO/venda_lotes — evita FK com item órfão. */
+async function resolverVendaItemId(vendaId, produtoId, vendaItemId) {
+  if (vendaItemId) {
+    const ok = await get('SELECT id FROM vendas_itens WHERE id = ?', [vendaItemId]);
+    if (ok) return ok.id;
+  }
+  const porProduto = await get(
+    `SELECT id FROM vendas_itens WHERE venda_id = ? AND produto_id = ? ORDER BY id DESC LIMIT 1`,
+    [vendaId, produtoId]
+  );
+  return porProduto ? porProduto.id : null;
+}
+
 /**
  * Consome reservas ativas da venda (baixa definitiva).
  * Deve ser chamado dentro de transação aberta pelo caller quando possível.
@@ -49,8 +68,13 @@ async function consumirReservasDaVenda(vendaId) {
     const qNf = Number(row.quantidade_nao_fiscal || 0);
 
     if (qF > 0 || qNf > 0) {
+      const vendaItemId = await resolverVendaItemId(
+        vendaId,
+        row.produto_id,
+        row.venda_item_id
+      );
       await reduzirEstoqueDistribuidoAsync(
-        row.venda_item_id || null,
+        vendaItemId,
         row.produto_id,
         qF,
         qNf

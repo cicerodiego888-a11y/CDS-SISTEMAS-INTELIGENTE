@@ -32,6 +32,7 @@ const PERMISSOES_PAGINAS = {
     categorias: 'categorias',
     fiscal: 'fiscal',
     configuracoes: 'configuracoes',
+    'importacao-inicial-produtos': 'configuracoes',
     equipamentos: 'configuracoes',
     'central-equipamentos': 'configuracoes',
     'laboratorio-equipamentos': 'configuracoes',
@@ -235,7 +236,7 @@ function usuarioTemPermissao(page) {
         return podeGerenciarUsuariosSistema();
     }
 
-    if (page === 'configuracoes-avancadas' || page === 'configuracao-rede' || page === 'nome-terminal-pdv' || page === 'observabilidade' || page === 'mib-analytics' || page === 'enterprise-search' || page === 'knowledge-center' || page === 'cip-insights' || page === 'cds-copiloto') {
+    if (page === 'configuracoes-avancadas' || page === 'importacao-inicial-produtos' || page === 'configuracao-rede' || page === 'nome-terminal-pdv' || page === 'observabilidade' || page === 'mib-analytics' || page === 'enterprise-search' || page === 'knowledge-center' || page === 'cip-insights' || page === 'cds-copiloto') {
         return isSuperAdminUser();
     }
 

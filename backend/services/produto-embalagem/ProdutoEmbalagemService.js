@@ -127,7 +127,12 @@ class ProdutoEmbalagemService {
     );
   }
 
-  sincronizarEmbalagensProduto(produtoId, embalagensRaw, unidadeProduto, usuario, callback) {
+  /**
+   * @param {object} [opcoes]
+   * @param {boolean} [opcoes.usarTransacao=true] — false quando já houver TX externa (ex.: importação)
+   */
+  sincronizarEmbalagensProduto(produtoId, embalagensRaw, unidadeProduto, usuario, callback, opcoes = {}) {
+    const usarTransacao = opcoes.usarTransacao !== false;
     const validacao = validarListaEmbalagens(
       (Array.isArray(embalagensRaw) ? embalagensRaw : []).map((e) =>
         normalizarEmbalagemInput(e, unidadeProduto)
@@ -139,26 +144,27 @@ class ProdutoEmbalagemService {
     }
 
     const lista = validacao.lista;
+    const svc = this;
+
+    const abortar = (err) => {
+      if (!usarTransacao) return callback(err);
+      svc.db.run('ROLLBACK', () => callback(err));
+    };
 
     this.listarPorProduto(produtoId, (listErr, antigas) => {
       if (listErr) return callback(listErr);
 
-      this.db.serialize(() => {
-        this.db.run('BEGIN TRANSACTION');
+      const executarSync = () => {
+        svc.registrarAuditoriaPermissoesEmbalagens(antigas || [], lista, usuario);
 
-        this.registrarAuditoriaPermissoesEmbalagens(antigas || [], lista, usuario);
-
-        this.db.run(
+        svc.db.run(
           `DELETE FROM produto_embalagens WHERE produto_id = ?`,
           [produtoId],
           (delErr) => {
-            if (delErr) {
-              this.db.run('ROLLBACK');
-              return callback(delErr);
-            }
+            if (delErr) return abortar(delErr);
 
             if (lista.length === 0) {
-              return this.finalizarSync(produtoId, [], usuario, callback);
+              return svc.finalizarSync(produtoId, [], usuario, callback, { usarTransacao });
             }
 
             let indice = 0;
@@ -166,66 +172,73 @@ class ProdutoEmbalagemService {
 
             const inserirProxima = () => {
               if (indice >= lista.length) {
-                return this.finalizarSync(produtoId, inseridas, usuario, callback);
+                return svc.finalizarSync(produtoId, inseridas, usuario, callback, { usarTransacao });
               }
 
               const emb = lista[indice];
               indice += 1;
-              const svc = this;
 
-              this.db.run(
-              `INSERT INTO produto_embalagens (
-                produto_id, tipo, descricao, quantidade, unidade, gtin,
-                codigo_fornecedor, codigo_interno_fornecedor,
-                fornecedor_cnpj, fornecedor_nome, fornecedor_descricao,
-                valor_compra, preco_venda, tipo_conversao,
-                principal, compra, venda, estoque, ativa,
-                vigencia_inicio, vigencia_fim, origem,
-                usuario_criacao, observacao, motivo_alteracao,
-                created_at, updated_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                datetime('now', 'localtime'), datetime('now', 'localtime'))`,
-              [
-                produtoId,
-                emb.tipo,
-                emb.descricao,
-                emb.quantidade,
-                emb.unidade,
-                emb.gtin,
-                emb.codigo_fornecedor,
-                emb.codigo_interno_fornecedor,
-                emb.fornecedor_cnpj,
-                emb.fornecedor_nome,
-                emb.fornecedor_descricao,
-                emb.valor_compra,
-                emb.preco_venda,
-                emb.tipo_conversao,
-                emb.principal,
-                emb.compra,
-                emb.venda,
-                emb.estoque,
-                emb.ativa,
-                emb.vigencia_inicio || null,
-                emb.vigencia_fim || null,
-                emb.origem || 'CADASTRO',
-                usuario?.id || null,
-                emb.observacao || null,
-                emb.motivo_alteracao || null
-              ],
-              function onInsert(err) {
-                if (err) {
-                  svc.db.run('ROLLBACK');
-                  return callback(err);
+              svc.db.run(
+                `INSERT INTO produto_embalagens (
+                  produto_id, tipo, descricao, quantidade, unidade, gtin,
+                  codigo_fornecedor, codigo_interno_fornecedor,
+                  fornecedor_cnpj, fornecedor_nome, fornecedor_descricao,
+                  valor_compra, preco_venda, tipo_conversao,
+                  principal, compra, venda, estoque, ativa,
+                  vigencia_inicio, vigencia_fim, origem,
+                  usuario_criacao, observacao, motivo_alteracao,
+                  created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                  datetime('now', 'localtime'), datetime('now', 'localtime'))`,
+                [
+                  produtoId,
+                  emb.tipo,
+                  emb.descricao,
+                  emb.quantidade,
+                  emb.unidade,
+                  emb.gtin,
+                  emb.codigo_fornecedor,
+                  emb.codigo_interno_fornecedor,
+                  emb.fornecedor_cnpj,
+                  emb.fornecedor_nome,
+                  emb.fornecedor_descricao,
+                  emb.valor_compra,
+                  emb.preco_venda,
+                  emb.tipo_conversao,
+                  emb.principal,
+                  emb.compra,
+                  emb.venda,
+                  emb.estoque,
+                  emb.ativa,
+                  emb.vigencia_inicio || null,
+                  emb.vigencia_fim || null,
+                  emb.origem || 'CADASTRO',
+                  usuario?.id || null,
+                  emb.observacao || null,
+                  emb.motivo_alteracao || null
+                ],
+                function onInsert(err) {
+                  if (err) return abortar(err);
+                  inseridas.push({ ...emb, id: this.lastID });
+                  inserirProxima();
                 }
-                inseridas.push({ ...emb, id: this.lastID });
-                inserirProxima();
-              }
-            );
-          };
+              );
+            };
 
-          inserirProxima();
+            inserirProxima();
+          }
+        );
+      };
+
+      svc.db.serialize(() => {
+        if (!usarTransacao) {
+          executarSync();
+          return;
         }
-      );
+        svc.db.run('BEGIN TRANSACTION', (beginErr) => {
+          if (beginErr) return callback(beginErr);
+          executarSync();
+        });
       });
     });
   }
@@ -374,11 +387,16 @@ class ProdutoEmbalagemService {
     });
   }
 
-  finalizarSync(produtoId, inseridas, usuario, callback) {
+  finalizarSync(produtoId, inseridas, usuario, callback, opcoes = {}) {
+    const usarTransacao = opcoes.usarTransacao !== false;
     this.sincronizarCamposLegadoProduto(produtoId, inseridas, (syncErr) => {
       if (syncErr) {
-        this.db.run('ROLLBACK');
+        if (usarTransacao) this.db.run('ROLLBACK');
         return callback(syncErr);
+      }
+
+      if (!usarTransacao) {
+        return callback(null, inseridas.map(normalizarEmbalagemResposta));
       }
 
       this.db.run('COMMIT', (commitErr) => {

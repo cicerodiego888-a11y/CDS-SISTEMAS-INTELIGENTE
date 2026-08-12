@@ -721,7 +721,7 @@ function inicializarMotorConversaoUnidadesCadastro() {
 function loadProdutos() {
     const modoFiscal = typeof modoFiscalQueryParam === 'function' ? modoFiscalQueryParam() : '0';
 
-    $.ajax({
+    return $.ajax({
         url: `${API_URL}/produtos?modo_fiscal=${modoFiscal}`,
         method: 'GET',
         success: function (produtos) {
@@ -872,8 +872,9 @@ function obterSaldosIniciaisDoFormulario() {
 }
 
 function montarHtmlCamposEstoqueProduto(produto, isEdit, opcoes = {}) {
-    const temMovimentacoes = Boolean(opcoes.temMovimentacoes ?? produto?.tem_movimentacoes);
-    const permiteEditarSaldos = !isEdit || !temMovimentacoes;
+    // Bloqueia edição do Estoque Inicial somente após a 1ª venda
+    const temVendas = Boolean(opcoes.temVendas ?? produto?.tem_vendas);
+    const permiteEditarSaldos = !isEdit || !temVendas;
     const modoFiscal = typeof isModoFiscalVisualizacaoAtivo === 'function' && isModoFiscalVisualizacaoAtivo();
     const saldoFiscal = Number(produto?.saldo_fiscal ?? 0);
     const saldoNaoFiscal = Number(produto?.saldo_nao_fiscal ?? 0);
@@ -936,9 +937,11 @@ function montarHtmlCamposEstoqueProduto(produto, isEdit, opcoes = {}) {
         `;
     }
 
-    const avisoAjuste = temMovimentacoes && podeAjustarEstoque()
-        ? '<small class="text-muted d-block mt-1">Use o botão <strong>Ajustar Estoque</strong> na lista para alterar saldos.</small>'
-        : '';
+    const avisoAjuste = temVendas && podeAjustarEstoque()
+        ? '<small class="text-muted d-block mt-1">Produto já vendido. Use o botão <strong>Ajustar Estoque</strong> na lista para alterar saldos.</small>'
+        : (temVendas
+            ? '<small class="text-muted d-block mt-1">Produto já vendido — saldos iniciais não podem ser alterados.</small>'
+            : '');
 
     if (modoFiscal) {
         return `
@@ -1000,26 +1003,26 @@ function atualizarCamposEstoqueModalProduto() {
 
     const saldosForm = obterSaldosIniciaisDoFormulario();
     const isEdit = Boolean($('#produtoId').val());
-    const temMovimentacoes = $modal.data('temMovimentacoes') === true;
+    const temVendas = $modal.data('temVendas') === true;
     const saldosArmazenados = $modal.data('produtoSaldos') || {};
 
     const produto = {
         unidade: $('#unidade').val() || '',
-        tem_movimentacoes: temMovimentacoes,
-        saldo_fiscal: temMovimentacoes && isEdit
+        tem_vendas: temVendas,
+        saldo_fiscal: temVendas && isEdit
             ? Number(saldosArmazenados.saldo_fiscal ?? 0)
             : saldosForm.saldo_fiscal_inicial,
-        saldo_nao_fiscal: temMovimentacoes && isEdit
+        saldo_nao_fiscal: temVendas && isEdit
             ? Number(saldosArmazenados.saldo_nao_fiscal ?? 0)
             : saldosForm.saldo_nao_fiscal_inicial,
-        estoque_atual: temMovimentacoes && isEdit
+        estoque_atual: temVendas && isEdit
             ? Number(saldosArmazenados.estoque_atual ?? 0)
             : saldosForm.estoque_total
     };
 
-    $area.html(montarHtmlCamposEstoqueProduto(produto, isEdit, { temMovimentacoes }));
+    $area.html(montarHtmlCamposEstoqueProduto(produto, isEdit, { temVendas }));
 
-    const permiteEditarSaldos = !isEdit || !temMovimentacoes;
+    const permiteEditarSaldos = !isEdit || !temVendas;
     if (permiteEditarSaldos) {
         $('#saldo_fiscal_inicial').val(saldosForm.saldo_fiscal_inicial);
         const $naoFiscal = $('#saldo_nao_fiscal_inicial');
@@ -2550,7 +2553,7 @@ function showProdutoModal(produto = null, opcoes = {}) {
                                                     <option value="g" ${isEdit && produto.unidade === 'g' ? 'selected' : ''}>Grama</option>
                                                     <option value="l" ${isEdit && produto.unidade === 'l' ? 'selected' : ''}>Litro</option>
                                                     <option value="ml" ${isEdit && produto.unidade === 'ml' ? 'selected' : ''}>Mililitro</option>
-                                                    <option value="mt" ${isEdit && produto.unidade === 'mt' ? 'selected' : ''}>Metro</option>
+                                                    <option value="mt" ${isEdit && (produto.unidade === 'mt' || produto.unidade === 'm') ? 'selected' : ''}>Metro</option>
                                                     <option value="m2" ${isEdit && produto.unidade === 'm2' ? 'selected' : ''}>Metro Quadrado</option>
                                                     <option value="m3" ${isEdit && produto.unidade === 'm3' ? 'selected' : ''}>Metro Cúbico</option>
                                                 </select>
@@ -2573,7 +2576,7 @@ function showProdutoModal(produto = null, opcoes = {}) {
                                     <div class="cds-prod-cadastro__card-body">
                                         <div class="row g-3" id="areaCamposEstoqueProduto">
                                             ${montarHtmlCamposEstoqueProduto(produto, isEdit, {
-                                                temMovimentacoes: produto?.tem_movimentacoes
+                                                temVendas: Boolean(produto?.tem_vendas)
                                             })}
                                         </div>
                                         <div class="row g-3 mt-1">
@@ -3034,6 +3037,7 @@ function showProdutoModal(produto = null, opcoes = {}) {
     const faixasInit = (produto && Array.isArray(produto.atacado_faixas)) ? produto.atacado_faixas : [];
     $('#produtoModal').data('faixasTemp', faixasInit);
     $('#produtoModal').data('temMovimentacoes', Boolean(produto?.tem_movimentacoes));
+    $('#produtoModal').data('temVendas', Boolean(produto?.tem_vendas));
     $('#produtoModal').removeData('produtoRecemSalvo');
     $('#produtoModal').removeData('produtoSalvoComSucesso');
     if (origemCadastro) {

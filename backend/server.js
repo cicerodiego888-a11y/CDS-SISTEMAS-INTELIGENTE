@@ -94,6 +94,7 @@ app.get(['/erp', '/erp/'], verificarToken, (req, res) => {
 
 // Rotas protegidas (API)
 const produtosRoutes = require('./rotas/produtos');
+const importacaoInicialProdutosRoutes = require('./rotas/importacao-inicial-produtos');
 const searchRoutes = require('./rotas/search');
 const intelligenceRoutes = require('./rotas/intelligence');
 const agentRoutes = require('./rotas/agent');
@@ -164,6 +165,7 @@ app.use('/api', apiAuthLicencaGate);
 // Rotas de licença (públicas — gate libera /api/licenca)
 app.use('/api/licenca', licencaRoutes);
 
+app.use('/api/produtos/importacao-inicial', verificarToken, importacaoInicialProdutosRoutes);
 app.use('/api/produtos', verificarToken, produtosRoutes);
 app.use('/api/search', verificarToken, searchRoutes);
 app.use('/api/intelligence', verificarToken, intelligenceRoutes);

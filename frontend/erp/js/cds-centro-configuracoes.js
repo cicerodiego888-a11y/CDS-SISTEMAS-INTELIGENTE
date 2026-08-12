@@ -18,6 +18,7 @@
     { id: 'bancoDados', icon: 'fa-database', label: 'Banco de Dados', keywords: 'rede ip porta cliente servidor local modo operação' },
     { id: 'performance', icon: 'fa-tachometer-alt', label: 'Performance', keywords: 'timeout retry sync performance' },
     { id: 'backup', icon: 'fa-hdd', label: 'Backup', keywords: 'backup restauração' },
+    { id: 'implantacao', icon: 'fa-file-import', label: 'Implantação', keywords: 'importação inicial produtos xlsx migração implantação cliente base avançadas ferramentas' },
     { id: 'diagnostico', icon: 'fa-stethoscope', label: 'Diagnóstico', keywords: 'central sync nsu scheduler logs debug sefaz saúde mib busca', fiscal: true }
   ]);
 
@@ -503,6 +504,26 @@
           <div id="pastaAtual" class="cds-cfg-hint"></div>
           <div id="resultadoBackup" class="mt-2"></div>
         `, 'backup restauração pasta')}
+      </div>
+
+      <div class="cds-cfg-pane" data-cfg-pane="implantacao">
+        <h2 class="cds-cfg-pane__title">Implantação</h2>
+        <p class="cds-cfg-pane__sub">Ferramentas avançadas de implantação inicial do cliente (Super Usuário).</p>
+        ${card('<i class="fas fa-file-excel text-success"></i> Importação Inicial de Produtos', `
+          <p class="cds-cfg-hint mb-3">Importe produtos e registre o estoque inicial informado no arquivo XLSX.</p>
+          <button type="button" class="btn btn-success btn-sm" id="btnAbrirImportacaoInicialProdutos"
+            onclick="typeof loadPage==='function'&&loadPage('importacao-inicial-produtos')">
+            <i class="fas fa-file-excel"></i> Abrir Importação Inicial de Produtos
+          </button>
+        `, 'importação inicial produtos xlsx implantação')}
+        ${card('<i class="fas fa-database"></i> Próximas ferramentas', `
+          <p class="cds-cfg-hint mb-2 text-muted">Em breve (não disponíveis nesta versão):</p>
+          <ul class="cds-cfg-hint mb-0 text-muted">
+            <li>Migração de Banco Antigo</li>
+            <li>Importação de CSV</li>
+            <li>Importação de XML</li>
+          </ul>
+        `, 'migração banco antigo csv xml futuro')}
       </div>
 
       <div class="cds-cfg-pane" data-cfg-pane="modulosLicenciados">

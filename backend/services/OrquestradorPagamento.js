@@ -150,12 +150,26 @@ async function processarFluxoPagamentoVenda({
       distribuicao
     };
   }
-  
-  // Determinar status do pagamento (somente recebimentos confirmados, nunca o plano do distribuidor)
-  const recebimentosNaoFiscalConfirmados =
-    totalFiscal > 0 && totalNaoFiscal > 0
-      ? []
-      : (distribuicao.recebimentosNaoFiscal || []);
+
+  /**
+   * Pagamento integral: totais comerciais cobrem F+NF e MIDP zerou saldos.
+   * Nesse caso a parcela não fiscal já está confirmada nesta operação
+   * (ex.: prestação de entrega / PDV com pagamento completo).
+   * Caso contrário, venda mista permanece em 2 etapas (aguardando_nao_fiscal).
+   */
+  const pagamentoIntegralConfirmado = isPagamentoIntegralConfirmado({
+    totalPagamentos,
+    totalLiquidoEsperado,
+    saldoFiscal: distribuicao.saldoFiscal,
+    saldoNaoFiscal: distribuicao.saldoNaoFiscal
+  });
+
+  const vendaMista = totalFiscal > 0 && totalNaoFiscal > 0;
+
+  // Somente recebimentos efetivamente confirmados — nunca o plano MIDP “pendente”
+  const recebimentosNaoFiscalConfirmados = vendaMista
+    ? (pagamentoIntegralConfirmado ? (distribuicao.recebimentosNaoFiscal || []) : [])
+    : (distribuicao.recebimentosNaoFiscal || []);
 
   const statusPagamento = determinarStatusPagamento({
     totalFiscal,
@@ -179,6 +193,7 @@ async function processarFluxoPagamentoVenda({
     recebimentos: recebimentosParaGravar,
     distribuicao,
     resultadoFiscal,
+    pagamentoIntegralConfirmado,
     proximaAcao: determinarProximaAcao(statusPagamento, totalNaoFiscal)
   };
 }
@@ -390,8 +405,28 @@ function determinarStatusPagamento({
 }
 
 /**
+ * Pagamento cobre F+NF e MIDP não deixou saldo pendente.
+ */
+function isPagamentoIntegralConfirmado({
+  totalPagamentos,
+  totalLiquidoEsperado,
+  saldoFiscal,
+  saldoNaoFiscal
+}) {
+  const pagos = Math.round((Number(totalPagamentos || 0) + Number.EPSILON) * 100) / 100;
+  const esperado = Math.round((Number(totalLiquidoEsperado || 0) + Number.EPSILON) * 100) / 100;
+  return (
+    Math.abs(pagos - esperado) <= 0.01
+    && Number(saldoFiscal || 0) <= 0.009
+    && Number(saldoNaoFiscal || 0) <= 0.009
+  );
+}
+
+/**
  * Monta os recebimentos para gravar no banco.
- * Venda mista na 1ª etapa grava somente recebimentos fiscais.
+ *
+ * - aguardando_nao_fiscal (2ª etapa legítima): grava somente fiscais.
+ * - quitada / demais: grava fiscais + não fiscais da distribuição MIDP.
  */
 function montarRecebimentosParaGravar({
   distribuicao,
@@ -401,31 +436,23 @@ function montarRecebimentosParaGravar({
   resultadoFiscal
 }) {
   const { recebimentosFiscal, recebimentosNaoFiscal } = distribuicao;
-  const vendaMista = Number(totalFiscal || 0) > 0 && Number(totalNaoFiscal || 0) > 0;
-  const somenteFiscal =
-    statusPagamento === 'aguardando_nao_fiscal'
-    || vendaMista;
+  const fiscais = (Array.isArray(recebimentosFiscal) ? recebimentosFiscal : []).map((recebimento) => ({
+    ...recebimento,
+    tipo_recebimento: 'fiscal',
+    status: 'aprovado'
+  }));
 
-  if (somenteFiscal) {
-    return recebimentosFiscal.map((recebimento) => ({
-      ...recebimento,
-      tipo_recebimento: 'fiscal',
-      status: 'aprovado'
-    }));
+  if (statusPagamento === 'aguardando_nao_fiscal') {
+    return fiscais;
   }
 
-  return [
-    ...recebimentosFiscal.map((recebimento) => ({
-      ...recebimento,
-      tipo_recebimento: recebimento.tipo_recebimento || 'fiscal',
-      status: 'aprovado'
-    })),
-    ...recebimentosNaoFiscal.map((recebimento) => ({
-      ...recebimento,
-      tipo_recebimento: 'nao_fiscal',
-      status: 'aprovado'
-    }))
-  ];
+  const naoFiscais = (Array.isArray(recebimentosNaoFiscal) ? recebimentosNaoFiscal : []).map((recebimento) => ({
+    ...recebimento,
+    tipo_recebimento: 'nao_fiscal',
+    status: 'aprovado'
+  }));
+
+  return [...fiscais, ...naoFiscais];
 }
 
 /**
@@ -538,6 +565,7 @@ module.exports = {
   processarPagamentoNaoFiscal,
   determinarStatusPagamento,
   montarRecebimentosParaGravar,
+  isPagamentoIntegralConfirmado,
   normalizarPagamentosEntrada,
   logDebugDescontoFiscal
 };

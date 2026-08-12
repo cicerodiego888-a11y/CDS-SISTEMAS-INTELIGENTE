@@ -8,6 +8,7 @@ const lotesService = require('../services/lotesService');
 const { recalcularEstoqueConsolidado, recalcularSaldosProduto } = require('../services/estoqueFiscalService');
 const {
   produtoTemMovimentacoes,
+  produtoTemVendas,
   aplicarAjusteEstoqueProduto,
   definirSaldosIniciaisProduto
 } = require('../services/ajusteEstoqueService');
@@ -2127,20 +2128,28 @@ router.get('/:id', (req, res) => {
               return res.status(500).json({ error: movErr.message });
             }
 
-            const produtoBase = normalizarProdutoResposta({
-              ...row,
-              categoria: row.categoria_nome || '',
-              subcategoria: row.subcategoria_nome || '',
-              atacado_faixas: faixas || [],
-              embalagens: embalagens || [],
-              tem_movimentacoes: temMovimentacoes
-            }, modoFiscal);
-
-            enriquecerProdutoComValidade(req.params.id, produtoBase, (validadeErr, produto) => {
-              if (validadeErr) {
-                return res.status(500).json({ error: validadeErr.message });
+            produtoTemVendas(db, req.params.id, (vendErr, temVendas) => {
+              if (vendErr) {
+                return res.status(500).json({ error: vendErr.message });
               }
-              res.json(produto);
+
+              const produtoBase = normalizarProdutoResposta({
+                ...row,
+                categoria: row.categoria_nome || '',
+                subcategoria: row.subcategoria_nome || '',
+                atacado_faixas: faixas || [],
+                embalagens: embalagens || [],
+                tem_movimentacoes: temMovimentacoes,
+                // Estoque Inicial bloqueia só após a 1ª venda
+                tem_vendas: temVendas
+              }, modoFiscal);
+
+              enriquecerProdutoComValidade(req.params.id, produtoBase, (validadeErr, produto) => {
+                if (validadeErr) {
+                  return res.status(500).json({ error: validadeErr.message });
+                }
+                res.json(produto);
+              });
             });
           });
         });
@@ -2673,10 +2682,10 @@ router.put('/:id', (req, res) => {
         return callback(null);
       }
 
-      produtoTemMovimentacoes(db, id, (movErr, tem) => {
+      produtoTemVendas(db, id, (movErr, temVendas) => {
         if (movErr) return callback(movErr);
-        if (tem) {
-          return callback(new Error('Produto com movimentações não permite alterar saldos iniciais.'));
+        if (temVendas) {
+          return callback(new Error('Produto já vendido não permite alterar saldos iniciais. Use Ajustar Estoque.'));
         }
 
         try {

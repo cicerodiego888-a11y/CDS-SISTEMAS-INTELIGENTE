@@ -2401,6 +2401,104 @@ function abrirCadastroCliente() {
     }
 }
 
+/** URL segura da foto do produto (somente visual; sem data: / javascript:). */
+function urlImagemProdutoPdv(path) {
+    const valor = String(path || '').trim();
+    if (!valor) return '';
+    if (/^(javascript|vbscript|data):/i.test(valor)) return '';
+    if (/^https?:\/\//i.test(valor)) return valor;
+    return valor.startsWith('/') ? valor : `/${valor}`;
+}
+
+function htmlMiniaturaProdutoPdv(produto, nomeProduto) {
+    const src = urlImagemProdutoPdv(produto?.imagem_principal);
+    if (!src) return '';
+    const alt = escapeHtml(nomeProduto || produto?.nome || 'Produto');
+    const srcSafe = escapeHtml(src);
+    return `<img
+        class="pdv-produto-miniatura"
+        src="${srcSafe}"
+        alt="${alt}"
+        title="Ampliar foto"
+        loading="lazy"
+        decoding="async"
+        data-imagem-src="${srcSafe}"
+      >`;
+}
+
+function garantirOverlayFotoProdutoPdv() {
+    let overlay = document.getElementById('pdvFotoProdutoOverlay');
+    if (overlay) return overlay;
+
+    overlay = document.createElement('div');
+    overlay.id = 'pdvFotoProdutoOverlay';
+    overlay.className = 'pdv-foto-overlay';
+    overlay.hidden = true;
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-label', 'Foto do produto');
+    overlay.innerHTML = `
+      <button type="button" class="pdv-foto-fechar" aria-label="Fechar">
+        <i class="fas fa-times" aria-hidden="true"></i>
+      </button>
+      <div class="pdv-foto-dialog">
+        <img class="pdv-foto-grande" alt="Foto do produto" draggable="false">
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    overlay.addEventListener('click', (ev) => {
+        if (ev.target === overlay || ev.target.closest('.pdv-foto-fechar')) {
+            fecharFotoProdutoPdv();
+        }
+    });
+
+    const imgGrande = overlay.querySelector('.pdv-foto-grande');
+    if (imgGrande) {
+        imgGrande.addEventListener('click', (ev) => ev.stopPropagation());
+    }
+
+    return overlay;
+}
+
+function fecharFotoProdutoPdv() {
+    const overlay = document.getElementById('pdvFotoProdutoOverlay');
+    if (!overlay) return;
+    overlay.hidden = true;
+    overlay.classList.remove('is-open');
+    const img = overlay.querySelector('.pdv-foto-grande');
+    if (img) {
+        img.removeAttribute('src');
+        img.alt = 'Foto do produto';
+    }
+    document.removeEventListener('keydown', pdvFotoProdutoEscHandler, true);
+}
+
+function pdvFotoProdutoEscHandler(ev) {
+    if (ev.key === 'Escape' || ev.key === 'Esc') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        fecharFotoProdutoPdv();
+    }
+}
+
+function abrirFotoProdutoPdv(src, altTexto) {
+    const url = urlImagemProdutoPdv(src);
+    if (!url) return;
+
+    const overlay = garantirOverlayFotoProdutoPdv();
+    const img = overlay.querySelector('.pdv-foto-grande');
+    if (img) {
+        img.src = url;
+        img.alt = String(altTexto || 'Foto do produto');
+    }
+    overlay.hidden = false;
+    overlay.classList.add('is-open');
+    document.addEventListener('keydown', pdvFotoProdutoEscHandler, true);
+    const btnFechar = overlay.querySelector('.pdv-foto-fechar');
+    if (btnFechar) btnFechar.focus({ preventScroll: true });
+}
+
 function renderCarrinhoItens() {
     if (!Array.isArray(carrinho) || carrinho.length === 0) {
         return '<tr><td colspan="8" class="text-center vazio">Nenhum item no carrinho</td></tr>';
@@ -2438,6 +2536,7 @@ function renderCarrinhoItens() {
         const extrasHtml = [badgeDescontoAtacado, modoAtacadoBadge, infoVendaUnidade]
             .filter(Boolean)
             .join('');
+        const miniaturaHtml = htmlMiniaturaProdutoPdv(produto, item.nome);
 
         return `
             <tr ${classe ? `class="${classe}"` : ''} data-item-index="${index}">
@@ -2453,8 +2552,11 @@ function renderCarrinhoItens() {
                 <td class="col-un"><span class="pdv-unidade-badge">${escapeHtml(unidade)}</span></td>
                 <td class="col-produto">
                     <div class="pdv-produto-cell">
-                      <span class="pdv-produto-nome">${escapeHtml(item.nome)}</span>
-                      ${extrasHtml ? `<div class="pdv-produto-extras">${extrasHtml}</div>` : ''}
+                      ${miniaturaHtml}
+                      <div class="pdv-produto-texto">
+                        <span class="pdv-produto-nome">${escapeHtml(item.nome)}</span>
+                        ${extrasHtml ? `<div class="pdv-produto-extras">${extrasHtml}</div>` : ''}
+                      </div>
                     </div>
                 </td>
                 <td class="col-unit">
@@ -3699,9 +3801,21 @@ function atualizarCarrinho() {
     if (tbody.length) {
         tbody.html(renderCarrinhoItens());
 
-        tbody.off('click').on('click', '.item-remover', function() {
+        tbody.off('click', '.item-remover').on('click', '.item-remover', function() {
             const index = $(this).data('index');
             removerItemCarrinho(index);
+        });
+
+        tbody.off('click', '.pdv-produto-miniatura').on('click', '.pdv-produto-miniatura', function(ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            if (typeof ev.stopImmediatePropagation === 'function') {
+                ev.stopImmediatePropagation();
+            }
+            const src = this.getAttribute('data-imagem-src') || this.getAttribute('src');
+            const alt = this.getAttribute('alt') || 'Foto do produto';
+            abrirFotoProdutoPdv(src, alt);
+            return false;
         });
 
         tbody.off('change').on('change', '.quantidade-item', function() {
@@ -4510,7 +4624,7 @@ function mostrarModalCpfCnpjNota() {
     });
 }
 
-function mostrarModalAvisoDebitoCliente(aviso, totalEmAberto, parcelasVencidas, onConfirm) {
+function mostrarModalAvisoDebitoCliente(aviso, totalEmAberto, parcelasVencidas, onConfirm, onCancel) {
     const detalhes = [];
     if (totalEmAberto > 0) {
         detalhes.push(`Valor em aberto: <strong>${formatCurrency(totalEmAberto)}</strong>`);
@@ -4542,6 +4656,7 @@ function mostrarModalAvisoDebitoCliente(aviso, totalEmAberto, parcelasVencidas, 
 
     const modalEl = document.getElementById('debitoAvisoModal');
     const modal = new bootstrap.Modal(modalEl);
+    let confirmado = false;
     modal.show();
 
     $('#confirmar-continuar-debito').off('click').on('click', function() {
@@ -4549,9 +4664,16 @@ function mostrarModalAvisoDebitoCliente(aviso, totalEmAberto, parcelasVencidas, 
             document.activeElement.blur();
         }
 
+        confirmado = true;
         modal.hide();
         if (typeof onConfirm === 'function') {
             onConfirm();
+        }
+    });
+
+    $(modalEl).off('hidden.bs.modal.avisoDebito').on('hidden.bs.modal.avisoDebito', function() {
+        if (!confirmado && typeof onCancel === 'function') {
+            onCancel();
         }
     });
 }
@@ -4935,63 +5057,80 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
 
     function enviarVenda(payload) {
         payload = getTerminalRequestData(payload);
+        let handoffNaoFiscal = false;
 
         $.ajax({
             url: `${API_URL}/vendas`,
             method: 'POST',
             contentType: 'application/json',
             data: JSON.stringify(payload),
+            timeout: 120000,
             success: function(response) {
-                const vendaId = response.venda_id || response.id || response.vendaId || response.venda?.id;
-                const statusPagamento = response.status_pagamento;
-
-                if (!vendaId) {
-                    vendaEmProcessamento = false;
-                    console.error('Resposta da venda sem ID:', response);
-                    showNotification('Venda finalizada, mas não foi possível localizar o ID da venda.', 'danger');
-                    return;
-                }
-
-                if (statusPagamento === 'aguardando_nao_fiscal') {
-                    if (Number(dados.valor_fiscal || 0) > 0) {
-                        iniciarFluxoPosVendaComNaoFiscal(vendaId, {
-                            emitirFiscal: Boolean(dados.emitir_fiscal)
-                        });
+                try {
+                    if (!response || typeof response !== 'object') {
+                        vendaEmProcessamento = false;
+                        showNotification('Resposta inválida ao finalizar a venda.', 'danger');
                         return;
                     }
 
+                    const vendaId = response.venda_id || response.id || response.vendaId || response.venda?.id;
+                    const statusPagamento = response.status_pagamento;
+
+                    if (!vendaId) {
+                        vendaEmProcessamento = false;
+                        console.error('Resposta da venda sem ID:', response);
+                        showNotification('Venda finalizada, mas não foi possível localizar o ID da venda.', 'danger');
+                        return;
+                    }
+
+                    if (statusPagamento === 'aguardando_nao_fiscal') {
+                        // 2ª etapa legítima: fiscal confirmado, não fiscal ainda pendente
+                        if (Number(dados.valor_fiscal || 0) > 0) {
+                            handoffNaoFiscal = true;
+                            iniciarFluxoPosVendaComNaoFiscal(vendaId, {
+                                emitirFiscal: Boolean(dados.emitir_fiscal)
+                            });
+                            return;
+                        }
+
+                        vendaEmProcessamento = false;
+                        pagamentoFiscalAtual = null;
+                        imprimirCupomNaoFiscal(vendaId, {
+                            ...payload,
+                            itens: itensParaCupom
+                        }, total, desconto);
+                        finalizarPosVenda();
+                        showNotification('Venda não fiscal finalizada com sucesso.', 'success');
+                        return;
+                    }
+
+                    // status quitada (ou outro): NÃO abre modal de não fiscal
                     vendaEmProcessamento = false;
                     pagamentoFiscalAtual = null;
-                    imprimirCupomNaoFiscal(vendaId, {
-                        ...payload,
-                        itens: itensParaCupom
-                    }, total, desconto);
+
+                    const vendaQuitadaCompletamente = !vendaPrazoInfo && statusPagamento === 'quitada';
+
+                    if (vendaQuitadaCompletamente && dados.emitir_fiscal) {
+                        processarFiscalPosPagamentoPosVenda(vendaId, response);
+                    } else if (vendaQuitadaCompletamente || vendaPrazoInfo) {
+                        imprimirCupomNaoFiscal(vendaId, {
+                            ...payload,
+                            itens: itensParaCupom
+                        }, total, desconto);
+                    }
+
                     finalizarPosVenda();
-                    showNotification('Venda não fiscal finalizada com sucesso.', 'success');
-                    return;
+                    showNotification('Venda finalizada com sucesso.', 'success');
+                } catch (erroSucesso) {
+                    console.error('Erro ao processar resposta da venda:', erroSucesso);
+                    if (!handoffNaoFiscal) {
+                        vendaEmProcessamento = false;
+                    }
+                    showNotification(erroSucesso.message || 'Erro ao processar finalização da venda.', 'danger');
                 }
-
-                vendaEmProcessamento = false;
-                pagamentoFiscalAtual = null;
-
-                const vendaQuitadaCompletamente = !vendaPrazoInfo && statusPagamento === 'quitada';
-
-                if (vendaQuitadaCompletamente && dados.emitir_fiscal) {
-                    processarFiscalPosPagamentoPosVenda(vendaId, response);
-                } else if (vendaQuitadaCompletamente || vendaPrazoInfo) {
-                    imprimirCupomNaoFiscal(vendaId, {
-                        ...payload,
-                        itens: itensParaCupom
-                    }, total, desconto);
-                }
-
-                finalizarPosVenda();
-                showNotification('Venda finalizada com sucesso.', 'success');
             },
-            error: function(xhr) {
-                vendaEmProcessamento = false;
-
-                if (xhr.status === 409 && xhr.responseJSON?.pode_continuar) {
+            error: function(xhr, textStatus) {
+                if (xhr && xhr.status === 409 && xhr.responseJSON?.pode_continuar) {
                     const aviso = xhr.responseJSON.aviso || 'Cliente possui débitos em aberto.';
                     const totalEmAberto = Number(xhr.responseJSON.total_em_aberto || 0);
                     const parcelasVencidas = Number(xhr.responseJSON.parcelas_vencidas || 0);
@@ -4999,7 +5138,29 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
                     mostrarModalAvisoDebitoCliente(aviso, totalEmAberto, parcelasVencidas, function() {
                         payload.forcar = true;
                         enviarVenda(payload);
+                    }, function() {
+                        vendaEmProcessamento = false;
                     });
+                    return;
+                }
+
+                vendaEmProcessamento = false;
+
+                if (textStatus === 'timeout') {
+                    showNotification(
+                        'Tempo esgotado ao finalizar a venda. Verifique no histórico se a venda foi registrada antes de tentar novamente.',
+                        'danger'
+                    );
+                    return;
+                }
+
+                if (textStatus === 'abort') {
+                    showNotification('Requisição de finalização cancelada.', 'warning');
+                    return;
+                }
+
+                if (!xhr || xhr.status === 0) {
+                    showNotification('Falha de rede ao finalizar a venda. Tente novamente.', 'danger');
                     return;
                 }
 

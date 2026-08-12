@@ -58,6 +58,10 @@ const CDS_ERP_PAGE_SCRIPTS = Object.freeze({
         '/shared/js/configuracaoRede.js',
         '/erp/js/configuracoes.js'
     ],
+    'importacao-inicial-produtos': [
+        '/erp/js/importacao-inicial-estado.js',
+        '/erp/js/importacao-inicial-produtos.js'
+    ],
     usuarios: ['/erp/js/usuarios.js'],
     equipamentos: ['/erp/js/equipamentos.js'],
     'central-equipamentos': ['/erp/js/central-equipamentos.js'],
@@ -399,6 +403,10 @@ async function loadPage(page) {
             return typeof loadConfiguracoes === 'function'
                 ? loadConfiguracoes()
                 : $('#page-content').html('<div class="alert alert-danger">Erro ao carregar configurações.</div>');
+        case 'importacao-inicial-produtos':
+            return typeof loadImportacaoInicialProdutos === 'function'
+                ? loadImportacaoInicialProdutos()
+                : $('#page-content').html('<div class="alert alert-danger">Erro ao carregar Importação Inicial de Produtos.</div>');
         case 'usuarios':
             return typeof loadUsuarios === 'function'
                 ? loadUsuarios()
