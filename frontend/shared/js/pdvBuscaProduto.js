@@ -10,6 +10,8 @@
   const DEBOUNCE_MS = 220;
 
   let resultados = [];
+  /** Sugestões MIB (somente quando a busca operacional retorna zero). */
+  let sugestoes = [];
   /** Termo que gerou o array `resultados` atual (autoridade da lista). */
   let termoDosResultados = null;
   let indiceSelecionado = -1;
@@ -64,6 +66,11 @@
         || identificadoresNumericosIguais(produto.codigo_barras, t);
     }
 
+    const Texto = global.CdsBuscaProdutoTexto;
+    if (Texto && typeof Texto.produtoCorrespondeBuscaNome === 'function') {
+      return Texto.produtoCorrespondeBuscaNome(produto, t);
+    }
+
     const nome = String(produto.nome || '').toLowerCase();
     const codigo = String(produto.codigo || '').toLowerCase();
     const barras = String(produto.codigo_barras || '').toLowerCase();
@@ -92,11 +99,15 @@
     if (!termoAtual) return false;
     if (termoOrigem != null && String(termoOrigem) !== termoAtual) return false;
     if (termoDosResultados != null && termoDosResultados !== termoAtual) return false;
-    return produtoCorrespondeAoTermo(produto, termoAtual);
+    if (ehTermoSomenteDigitos(termoAtual)) {
+      return produtoCorrespondeAoTermo(produto, termoAtual);
+    }
+    return true;
   }
 
   function invalidarEstadoBusca() {
     resultados = [];
+    sugestoes = [];
     termoDosResultados = null;
     indiceSelecionado = -1;
     ultimoMipBusca = null;
@@ -221,11 +232,11 @@
   }
 
   /**
-   * Busca por nome / parcial via MIB — só quando MIP não resolve.
+   * Busca operacional determinística. MIB só como sugestão quando retorna zero.
    * Cancela a requisição HTTP anterior a cada nova digitação.
    */
   async function buscarConsultaNome(termo, signal) {
-    const url = `${obterApiUrl()}/produtos/consulta-pdv/buscar?q=${encodeURIComponent(termo)}&modo_fiscal=${obterModoFiscal()}&limite=${LIMITE_RESULTADOS}`;
+    const url = `${obterApiUrl()}/produtos/busca-operacional?q=${encodeURIComponent(termo)}&modo_fiscal=${obterModoFiscal()}&limite=${LIMITE_RESULTADOS}&sugestoes=1`;
     const response = await fetch(url, {
       headers: {
         Authorization: `Bearer ${localStorage.getItem('token') || ''}`
@@ -233,27 +244,20 @@
       signal
     });
     if (response.status === 499) {
-      return [];
+      return { itens: [], sugestoes: [] };
     }
-    const dados = await response.json().catch(() => []);
+    const dados = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new Error(dados?.error || 'Erro ao buscar produtos.');
     }
-    // MIB-RC2.0 — "Você quis dizer..."
-    try {
-      const raw = response.headers.get('X-MIB-Sugestao');
-      if (raw && typeof global.showNotification === 'function') {
-        const sug = JSON.parse(decodeURIComponent(raw));
-        if (sug?.mensagem && Array.isArray(sug.sugestoes) && sug.sugestoes.length) {
-          global.showNotification(
-            `${sug.mensagem} ${sug.sugestoes.slice(0, 3).join(', ')}`,
-            'info'
-          );
-        }
-      }
-    } catch (_) { /* ignore */ }
-    const lista = Array.isArray(dados) ? dados : [];
-    return filtrarResultadosParaTermo(lista, termo);
+    const itens = Array.isArray(dados)
+      ? dados
+      : (Array.isArray(dados.itens) ? dados.itens : []);
+    const listaSugestoes = Array.isArray(dados.sugestoes) ? dados.sugestoes : [];
+    return {
+      itens: filtrarResultadosParaTermo(itens, termo),
+      sugestoes: filtrarResultadosParaTermo(listaSugestoes, termo)
+    };
   }
 
   function notificarSelecaoMib(produtoId, extras) {
@@ -277,11 +281,53 @@
     }).catch(() => {});
   }
 
+  function produtoPdvSemEstoque(produto) {
+    if (typeof global.pdvValidarEstoqueVenda === 'function') {
+      return !global.pdvValidarEstoqueVenda(produto, 1).sucesso;
+    }
+    return estoqueDisponivel(produto) <= 0;
+  }
+
+  function renderizarItemAutocomplete(produto, index, extraClass) {
+    const ativo = extraClass ? '' : (index === indiceSelecionado ? ' ativo' : '');
+    const semEstoque = produtoPdvSemEstoque(produto);
+    const promocao = produto.tem_promocao === 1 || produto.tem_promocao === true;
+    const codigoExibicao = produto.plu
+      || produto.codigo_barras
+      || produto.codigo
+      || produto.id;
+    const nome = typeof global.escapeHtml === 'function'
+      ? global.escapeHtml(produto.nome || '-')
+      : String(produto.nome || '-');
+    const termoOrigemAttr = produto._termoOrigem != null
+      ? String(produto._termoOrigem)
+      : (termoDosResultados != null ? String(termoDosResultados) : '');
+
+    return `
+        <button
+          type="button"
+          class="pdv-autocomplete-item${ativo}${semEstoque ? ' sem-estoque' : ''}${extraClass ? ` ${extraClass}` : ''}"
+          data-index="${index}"
+          data-produto-id="${produto.id}"
+          data-termo-origem="${termoOrigemAttr.replace(/"/g, '&quot;')}"
+          ${extraClass ? 'data-sugestao="1"' : ''}
+          tabindex="-1"
+          ${semEstoque ? 'disabled aria-disabled="true"' : ''}
+        >
+          <span class="pdv-autocomplete-nome">${nome}${semEstoque ? ' <small class="pdv-autocomplete-sem-estoque">Sem estoque</small>' : ''}${promocao ? ' <small class="pdv-autocomplete-promo">PROMO</small>' : ''}</span>
+          <span class="pdv-autocomplete-meta">
+            <span class="pdv-autocomplete-codigo">${codigoExibicao}</span>
+            <strong class="pdv-autocomplete-preco">${formatarPrecoProduto(produto)}</strong>
+          </span>
+        </button>
+      `;
+  }
+
   function renderizarLista() {
     const lista = obterLista();
     if (!lista) return;
 
-    if (!resultados.length) {
+    if (!resultados.length && !sugestoes.length) {
       dropdownAberto = false;
       lista.innerHTML = '<p class="vazio">Nenhum produto encontrado.</p>';
       lista.classList.remove('aberta');
@@ -291,52 +337,20 @@
     dropdownAberto = true;
     lista.classList.add('aberta');
 
-    // Destaca o primeiro item habilitado para Tab/Enter funcionarem sem setas
-    if (indiceSelecionado < 0 || indiceSelecionado >= resultados.length) {
-      const primeiroOk = resultados.findIndex((p) => {
-        if (typeof global.pdvValidarEstoqueVenda === 'function') {
-          return !!global.pdvValidarEstoqueVenda(p, 1).sucesso;
-        }
-        return estoqueDisponivel(p) > 0;
-      });
-      indiceSelecionado = primeiroOk >= 0 ? primeiroOk : 0;
+    if (resultados.length && (indiceSelecionado < 0 || indiceSelecionado >= resultados.length)) {
+      indiceSelecionado = 0;
     }
 
-    lista.innerHTML = resultados.map((produto, index) => {
-      const ativo = index === indiceSelecionado ? ' ativo' : '';
-      const semEstoque = typeof global.pdvValidarEstoqueVenda === 'function'
-        ? !global.pdvValidarEstoqueVenda(produto, 1).sucesso
-        : estoqueDisponivel(produto) <= 0;
-      const promocao = produto.tem_promocao === 1 || produto.tem_promocao === true;
-      const codigoExibicao = produto.plu
-        || produto.codigo_barras
-        || produto.codigo
-        || produto.id;
-      const nome = typeof global.escapeHtml === 'function'
-        ? global.escapeHtml(produto.nome || '-')
-        : String(produto.nome || '-');
-      const termoOrigemAttr = produto._termoOrigem != null
-        ? String(produto._termoOrigem)
-        : (termoDosResultados != null ? String(termoDosResultados) : '');
+    let html = '';
+    if (resultados.length) {
+      html += resultados.map((produto, index) => renderizarItemAutocomplete(produto, index, '')).join('');
+    } else {
+      html += '<p class="vazio">Nenhum produto encontrado.</p>';
+      html += '<p class="pdv-autocomplete-sugestoes-titulo">Sugestões</p>';
+      html += sugestoes.map((produto, index) => renderizarItemAutocomplete(produto, index, 'sugestao')).join('');
+    }
 
-      return `
-        <button
-          type="button"
-          class="pdv-autocomplete-item${ativo}${semEstoque ? ' sem-estoque' : ''}"
-          data-index="${index}"
-          data-produto-id="${produto.id}"
-          data-termo-origem="${termoOrigemAttr.replace(/"/g, '&quot;')}"
-          tabindex="-1"
-          ${semEstoque ? 'disabled aria-disabled="true"' : ''}
-        >
-          <span class="pdv-autocomplete-nome">${nome}${promocao ? ' <small class="pdv-autocomplete-promo">PROMO</small>' : ''}</span>
-          <span class="pdv-autocomplete-meta">
-            <span class="pdv-autocomplete-codigo">${codigoExibicao}</span>
-            <strong class="pdv-autocomplete-preco">${formatarPrecoProduto(produto)}</strong>
-          </span>
-        </button>
-      `;
-    }).join('');
+    lista.innerHTML = html;
   }
 
   function fecharLista(mensagem) {
@@ -369,6 +383,11 @@
     if (!resultadoPertenceAoTermoAtual(produto, origem)) {
       notificar('Resultado desatualizado. Buscando novamente…', 'warning');
       if (termoAtual) buscarProdutos(termoAtual);
+      return;
+    }
+
+    if (produtoPdvSemEstoque(produto)) {
+      notificar('Produto encontrado, mas sem estoque.', 'warning');
       return;
     }
 
@@ -431,6 +450,7 @@
     }
     if (termoDosResultados != null && termoDosResultados !== termo) {
       resultados = [];
+      sugestoes = [];
       termoDosResultados = null;
       indiceSelecionado = -1;
     }
@@ -438,7 +458,8 @@
     const exatoApi = resultados.find((p) => {
       if (!(p.match_exato === 1 || p.match_exato === true)) return false;
       const origem = p._termoOrigem != null ? p._termoOrigem : termoDosResultados;
-      return origem === termo && produtoCorrespondeAoTermo(p, termo);
+      if (origem !== termo) return false;
+      return !ehTermoSomenteDigitos(termo) || produtoCorrespondeAoTermo(p, termo);
     });
     if (exatoApi) {
       adicionarProdutoSelecionado(exatoApi);
@@ -448,7 +469,7 @@
     if (dropdownAberto && indiceSelecionado >= 0 && resultados[indiceSelecionado]) {
       const sel = resultados[indiceSelecionado];
       const origem = sel._termoOrigem != null ? sel._termoOrigem : termoDosResultados;
-      if (origem === termo && produtoCorrespondeAoTermo(sel, termo)) {
+      if (origem === termo && (!ehTermoSomenteDigitos(termo) || produtoCorrespondeAoTermo(sel, termo))) {
         adicionarProdutoSelecionado(sel);
         return;
       }
@@ -490,6 +511,7 @@
     const reqId = ++requisicaoAtual;
     // Invalida lista/MIP anteriores imediatamente (não confirma stale enquanto busca)
     resultados = [];
+    sugestoes = [];
     termoDosResultados = null;
     indiceSelecionado = -1;
     ultimoMipBusca = null;
@@ -516,6 +538,7 @@
             if (!respostaAindaValida()) return null;
             ultimoMipBusca = { termo: termoDaBusca, resultado: mip };
             resultados = [produto];
+            sugestoes = [];
             termoDosResultados = termoDaBusca;
             indiceSelecionado = 0;
             renderizarLista();
@@ -525,17 +548,31 @@
 
         if (!respostaAindaValida()) return null;
         ultimoMipBusca = null;
-        return buscarConsultaNome(termoDaBusca, signal).then((produtos) => ({
+        return buscarConsultaNome(termoDaBusca, signal).then((payload) => ({
           resolvidoMip: false,
-          produtos
+          produtos: payload && Array.isArray(payload.itens) ? payload.itens : [],
+          sugestoes: payload && Array.isArray(payload.sugestoes) ? payload.sugestoes : []
         }));
       })
       .then((out) => {
         if (!out || out.resolvidoMip || !respostaAindaValida()) return;
-        const filtrados = (out.produtos || []).map((p) => ({
+        const itensOperacionais = Array.isArray(out.produtos) ? out.produtos.slice() : [];
+        const sugestoesMib = Array.isArray(out.sugestoes) ? out.sugestoes.slice() : [];
+        const Resolver = global.CdsResolverBuscaCadastroProdutos;
+        const decisao = Resolver && typeof Resolver.resolverListaPdv === 'function'
+          ? Resolver.resolverListaPdv({
+            itensOperacionais,
+            itensMib: sugestoesMib,
+            sugestoesMib,
+            fallbackItens: []
+          })
+          : (itensOperacionais.length
+            ? { itens: itensOperacionais, fonte: 'operacional', sugestoes: [] }
+            : { itens: [], fonte: 'operacional', sugestoes: sugestoesMib });
+        const produtos = decisao.itens || [];
+        const filtrados = produtos.map((p) => ({
           ...p,
           _termoOrigem: termoDaBusca,
-          // termo numérico: só match_exato se identificador exato
           match_exato: ehTermoSomenteDigitos(termoDaBusca)
             ? (produtoCorrespondeAoTermo(p, termoDaBusca) ? 1 : 0)
             : (p.match_exato === 1 || p.match_exato === true ? 1 : 0)
@@ -545,16 +582,36 @@
         });
 
         resultados = filtrados;
+        sugestoes = (decisao.sugestoes || []).map((p) => ({
+          ...p,
+          _termoOrigem: termoDaBusca,
+          _fonteBusca: 'mib-sugestao'
+        }));
         termoDosResultados = termoDaBusca;
-        const unicoExato = resultados.length === 1
-          && (resultados[0].match_exato === 1 || resultados[0].match_exato === true);
-        indiceSelecionado = unicoExato ? 0 : (resultados.length === 1 ? 0 : -1);
+        indiceSelecionado = filtrados.length
+          ? (Resolver && typeof Resolver.indiceDestaqueInicialPdv === 'function'
+            ? Resolver.indiceDestaqueInicialPdv(resultados)
+            : 0)
+          : -1;
         renderizarLista();
       })
       .catch((err) => {
         if (err && (err.name === 'AbortError' || err.code === 20)) return;
         if (!respostaAindaValida()) return;
         ultimoMipBusca = null;
+        if (!ehTermoSomenteDigitos(termoDaBusca)) {
+          const cache = global.produtosDisponiveis || [];
+          const locais = cache.filter((p) => produtoCorrespondeAoTermo(p, termoDaBusca))
+            .slice(0, LIMITE_RESULTADOS)
+            .map((p) => ({ ...p, _termoOrigem: termoDaBusca, match_exato: 0 }));
+          if (locais.length) {
+            resultados = locais;
+            termoDosResultados = termoDaBusca;
+            indiceSelecionado = locais.length === 1 ? 0 : -1;
+            renderizarLista();
+            return;
+          }
+        }
         fecharLista('Erro ao buscar produtos.');
         notificar(err.message, 'danger');
       });
@@ -570,6 +627,7 @@
     // Invalidar estado confirmável do termo anterior imediatamente
     if (termoDosResultados != null && termoDosResultados !== termo) {
       resultados = [];
+      sugestoes = [];
       termoDosResultados = null;
       indiceSelecionado = -1;
       ultimoMipBusca = null;
@@ -614,7 +672,7 @@
       return false;
     }
 
-    if (!produtoCorrespondeAoTermo(produto, termo)) {
+    if (ehTermoSomenteDigitos(termo) && !produtoCorrespondeAoTermo(produto, termo)) {
       notificar('Resultado desatualizado. Buscando novamente…', 'warning');
       if (termo) buscarProdutos(termo);
       return false;
@@ -712,8 +770,16 @@
     event.stopPropagation();
 
     const index = Number(botao.dataset.index);
-    if (!Number.isFinite(index) || !resultados[index]) return;
+    if (!Number.isFinite(index)) return;
 
+    if (botao.dataset.sugestao === '1') {
+      const produto = sugestoes[index];
+      if (!produto) return;
+      adicionarProdutoSelecionado(produto);
+      return;
+    }
+
+    if (!resultados[index]) return;
     indiceSelecionado = index;
     confirmarItemDaLista(index);
   }

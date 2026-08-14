@@ -20,9 +20,11 @@ const { criarSessao, obterSessao, atualizarSessao } = require('./sessionStore');
 const {
   MARKUP_PADRAO,
   MODOS,
+  MODOS_FISCAIS_IMPORTACAO,
   STATUS,
   calcularCustoUnitarioDeEmbalagem,
-  calcularPrecoPorMarkup
+  calcularPrecoPorMarkup,
+  validarModoFiscalImportacao
 } = require('./helpers');
 const validator = require('./validator');
 
@@ -34,7 +36,11 @@ function normalizarModo(modo) {
   return MODOS.CADASTRO_INICIAL;
 }
 
-async function validarArquivoBuffer(db, buffer, { nomeArquivo, modo } = {}) {
+async function validarArquivoBuffer(db, buffer, {
+  nomeArquivo,
+  modo,
+  modo_fiscal_importacao
+} = {}) {
   const modoNorm = normalizarModo(modo);
 
   if (modoNorm === MODOS.ATUALIZAR_QUANTIDADES) {
@@ -54,11 +60,18 @@ async function validarArquivoBuffer(db, buffer, { nomeArquivo, modo } = {}) {
     };
   }
 
+  // V1.0.18 — obrigatório no cadastro inicial (autoridade no backend)
+  const modoFiscal = validarModoFiscalImportacao(modo_fiscal_importacao);
+
   const dados = extrairDadosImportacao(buffer);
-  const validacao = await validarImportacao(db, dados, { nomeArquivo });
+  const validacao = await validarImportacao(db, dados, {
+    nomeArquivo,
+    modo_fiscal_importacao: modoFiscal
+  });
   const sessaoId = criarSessao({
     arquivo: nomeArquivo || null,
     modo: MODOS.CADASTRO_INICIAL,
+    modo_fiscal_importacao: modoFiscal,
     dados,
     validacao: { ...validacao, modo: MODOS.CADASTRO_INICIAL },
     resultado: null
@@ -66,6 +79,7 @@ async function validarArquivoBuffer(db, buffer, { nomeArquivo, modo } = {}) {
   return {
     sessao_id: sessaoId,
     modo: MODOS.CADASTRO_INICIAL,
+    modo_fiscal_importacao: modoFiscal,
     ...validacao
   };
 }
@@ -128,6 +142,11 @@ function statusSessao(sessaoId) {
     sessao_id: sessao.id,
     status: sessao.status,
     modo: sessao.modo || sessao.validacao?.modo || MODOS.CADASTRO_INICIAL,
+    modo_fiscal_importacao:
+      sessao.modo_fiscal_importacao
+      || sessao.validacao?.modo_fiscal_importacao
+      || null,
+    tratamento_fiscal: sessao.validacao?.tratamento_fiscal || null,
     arquivo: sessao.arquivo,
     resumo: sessao.validacao?.resumo || null,
     resultado: sessao.resultado || null,
@@ -150,6 +169,8 @@ module.exports = {
   executarAtualizacaoQuantidades,
   MARKUP_PADRAO,
   MODOS,
+  MODOS_FISCAIS_IMPORTACAO,
+  validarModoFiscalImportacao,
   STATUS,
   calcularCustoUnitarioDeEmbalagem,
   calcularPrecoPorMarkup,

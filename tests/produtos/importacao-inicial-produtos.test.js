@@ -411,7 +411,7 @@ describe('Importação Inicial — validação + importação + idempotência', 
     const buffer = gerarPlanilhaOficial112();
     const validacao = await svc.validarArquivoBuffer(db, buffer, {
       nomeArquivo: 'CDS_Importacao_Produtos_PRODUTOS_FISCAL.xlsx'
-    });
+    , modo_fiscal_importacao: 'FISCAL'});
     assert.equal(validacao.resumo.produtos_encontrados, 112);
     assert.equal(validacao.resumo.com_erro, 0);
     assert.ok(validacao.resumo.produtos_validos >= 112);
@@ -462,7 +462,7 @@ describe('Importação Inicial — validação + importação + idempotência', 
 
   it('segunda importação marca EXISTENTE e não duplica produto nem estoque', async () => {
     const buffer = gerarPlanilhaOficial112();
-    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'reimport.xlsx' });
+    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'reimport.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     assert.equal(validacao.resumo.prontos, 0);
     assert.ok(validacao.resumo.existentes >= 112);
 
@@ -494,7 +494,7 @@ describe('Importação Inicial — validação + importação + idempotência', 
 
   it('planilha com 348 produtos valida contagem e estoque na prévia', async () => {
     const buffer = gerarPlanilhaOficial348();
-    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'lote348.xlsx' });
+    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'lote348.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     assert.equal(validacao.resumo.produtos_encontrados, 348);
     assert.equal(validacao.resumo.com_erro, 0);
     assert.equal(validacao.resumo.estoque_inicial_total, 348); // 348 × 1 UN
@@ -518,7 +518,7 @@ describe('Importação Inicial — validação + importação + idempotência', 
         'Custo apresentação/origem': null
       })]
     });
-    const validacao = await svc.validarArquivoBuffer(dbRb, buffer, { nomeArquivo: 'rb.xlsx' });
+    const validacao = await svc.validarArquivoBuffer(dbRb, buffer, { nomeArquivo: 'rb.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     assert.equal(validacao.resumo.prontos, 1);
 
     await assert.rejects(
@@ -622,7 +622,7 @@ describe('V1.0.2 — Limpar Importação (reset de sessão UI)', () => {
     await criarSchema(db);
 
     const buffer = gerarPlanilhaOficial112();
-    const v1 = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'a.xlsx' });
+    const v1 = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'a.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     assert.equal(v1.resumo.produtos_encontrados, 112);
     assert.ok(obterSessao(v1.sessao_id));
 
@@ -643,7 +643,7 @@ describe('V1.0.2 — Limpar Importação (reset de sessão UI)', () => {
     const qtdDepois = await get(db, `SELECT COUNT(*) AS c FROM produtos`);
     assert.equal(qtdDepois.c, qtdAntes.c);
 
-    const v2 = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'a.xlsx' });
+    const v2 = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'a.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     assert.equal(v2.resumo.produtos_encontrados, 112);
 
     await new Promise((resolve) => db.close(() => resolve()));
@@ -701,7 +701,7 @@ describe('V1.0.4 — Atualizar Quantidades', () => {
     const v = await svc.validarArquivoBuffer(db, cadastro, {
       nomeArquivo: 'cadastro-base.xlsx',
       modo: 'CADASTRO_INICIAL'
-    });
+    , modo_fiscal_importacao: 'FISCAL'});
     await svc.importarSessao(db, v.sessao_id, { dbPath, pastaBackup });
   });
 
@@ -944,7 +944,7 @@ describe('V1.0.7 — ProdutoEmbalagemService + paridade', () => {
     const validacao = await svc.validarArquivoBuffer(db, buffer, {
       nomeArquivo: 'cabo.xlsx',
       modo: 'CADASTRO_INICIAL'
-    });
+    , modo_fiscal_importacao: 'FISCAL'});
     assert.equal(validacao.resumo.com_erro, 0);
     const linha = validacao.linhas[0];
     assert.equal(linha.estoque.estoque_inicial, 100);
@@ -1026,7 +1026,7 @@ describe('V1.0.7 — ProdutoEmbalagemService + paridade', () => {
       produtos: [linhaCabo()],
       apresentacoes: [linhaCaboApresentacao()]
     });
-    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'rb-apr.xlsx' });
+    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'rb-apr.xlsx' , modo_fiscal_importacao: 'FISCAL'});
 
     await assert.rejects(
       () => executarImportacao(db, validacao, {
@@ -1059,7 +1059,7 @@ describe('V1.0.7 — ProdutoEmbalagemService + paridade', () => {
       produtos: [linhaCabo()],
       apresentacoes: [linhaCaboApresentacao()]
     });
-    const vCad = await svc.validarArquivoBuffer(db, cadastro, { nomeArquivo: 'cad-cabo.xlsx' });
+    const vCad = await svc.validarArquivoBuffer(db, cadastro, { nomeArquivo: 'cad-cabo.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     await svc.importarSessao(db, vCad.sessao_id, { dbPath, pastaBackup });
 
     const estoqueAposCadastro = await get(db, `SELECT estoque_atual FROM produtos WHERE codigo = ?`, ['88001']);
@@ -1183,7 +1183,7 @@ describe('V1.0.8 — Enriquecimento de produto existente (apresentação)', () =
       produtos: [linha13100({ Marca: 'OUTRA MARCA XLSX' })],
       apresentacoes: [apresentacao13100()]
     });
-    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: '13100.xlsx' });
+    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: '13100.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     assert.equal(validacao.resumo.com_erro, 0);
     assert.equal(validacao.resumo.enriquecimentos, 1);
     assert.equal(validacao.resumo.apresentacoes_novas, 1);
@@ -1254,10 +1254,10 @@ describe('V1.0.8 — Enriquecimento de produto existente (apresentação)', () =
       produtos: [linha13100()],
       apresentacoes: [apresentacao13100()]
     });
-    const v1 = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: '13100-a.xlsx' });
+    const v1 = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: '13100-a.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     await svc.importarSessao(db, v1.sessao_id, { dbPath, pastaBackup });
 
-    const v2 = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: '13100-b.xlsx' });
+    const v2 = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: '13100-b.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     assert.equal(v2.linhas[0].status, STATUS.EXISTENTE);
     assert.equal(v2.resumo.enriquecimentos, 0);
 
@@ -1298,7 +1298,7 @@ describe('V1.0.8 — Enriquecimento de produto existente (apresentação)', () =
       produtos: [linha13100()],
       apresentacoes: [apresentacao13100()]
     });
-    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: '13100-mt.xlsx' });
+    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: '13100-mt.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     assert.equal(validacao.linhas[0].produto.unidade_base, 'mt');
     await svc.importarSessao(db, validacao.sessao_id, { dbPath, pastaBackup });
 
@@ -1346,7 +1346,7 @@ describe('V1.0.8 — Enriquecimento de produto existente (apresentação)', () =
       produtos: [linha13100()],
       apresentacoes: [apresentacao13100()]
     });
-    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: '13100-sync.xlsx' });
+    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: '13100-sync.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     // Sem estoque inicial prévio → ainda pode enriquecer estoque; apresentação é existente
     assert.ok(
       validacao.linhas[0].status === STATUS.EXISTENTE
@@ -1390,7 +1390,7 @@ describe('V1.0.8 — Enriquecimento de produto existente (apresentação)', () =
       produtos: [linha13100()],
       apresentacoes: [apresentacao13100()]
     });
-    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: '13100-rb.xlsx' });
+    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: '13100-rb.xlsx' , modo_fiscal_importacao: 'FISCAL'});
 
     await assert.rejects(
       () => executarImportacao(db, validacao, {
@@ -1540,7 +1540,7 @@ describe('V1.0.10 — Preço unitário (não preço da apresentação)', () => {
       }]
     });
 
-    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: '13105-fix.xlsx' });
+    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: '13105-fix.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     assert.equal(validacao.linhas[0].status, STATUS.EXISTENTE_APRESENTACAO_NOVA);
     assert.equal(Number(validacao.linhas[0].produto.custo_unitario), 2.5074);
     assert.equal(Number(validacao.linhas[0].produto.preco_venda), 5.0148);

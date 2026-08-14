@@ -31,7 +31,8 @@ const {
 } = require('../services/produtoImagemUpload');
 const { obterProdutoImagemService } = require('../services/ProdutoImagemService');
 const { obterProdutoEmbalagemService } = require('../services/produto-embalagem/ProdutoEmbalagemService');
-const { obterMib, normalizarNomeBusca } = require('../motores/mib');
+const { obterMib, obterSearchService, normalizarNomeBusca } = require('../motores/mib');
+const { criarBuscaOperacionalProdutosService } = require('../services/busca-operacional-produtos');
 
 let _pdvIdentificacaoService = null;
 
@@ -990,6 +991,63 @@ router.post('/mib/reset-learning', async (req, res) => {
     return res.json(await obterMibService().resetLearning());
   } catch (err) {
     return res.status(500).json({ error: err.message });
+  }
+});
+
+// Sprint 04 — busca operacional determinística (Cadastro + PDV Express).
+// MIB só entra como sugestão quando a busca operacional retorna zero.
+router.get('/busca-operacional', async (req, res) => {
+  const termo = String(req.query.q || '').trim();
+  const modoFiscal = isModoFiscalQuery(req.query.modo_fiscal);
+  const limite = Math.min(Math.max(parseInt(req.query.limite, 10) || 20, 1), 20);
+  const incluirSugestoes = String(req.query.sugestoes || '1') !== '0';
+
+  try {
+    const user = req.user || {};
+    const svc = criarBuscaOperacionalProdutosService(db, {
+      buscarSugestoesMib: async (query, opts) => {
+        const resultado = await obterSearchService(db).search({
+          entity: 'produto',
+          query,
+          limite: opts.limite || limite,
+          modoFiscal: opts.modoFiscal === true,
+          operador_id: user.id || req.operadorId || null,
+          filial_id: user.filial_id || null,
+          caixa_id: req.caixaId || null,
+          permissoes: user.permissoes || ['produtos', 'pdv'],
+          perfil: user.perfil,
+          role: user.role || 'admin',
+          origem: 'busca-operacional-sugestao',
+          user,
+          skipAuth: true
+        });
+        return resultado.itens || [];
+      }
+    });
+
+    const resultado = await svc.buscar({
+      q: termo,
+      limite,
+      modoFiscal,
+      incluirSugestoes
+    });
+
+    const mapear = (row, fonte) => ({
+      ...normalizarProdutoResposta(row, modoFiscal),
+      busca_match_tipo: row.busca_match_tipo || null,
+      busca_prioridade: row.busca_prioridade || null,
+      match_exato: row.match_exato === 1 || row.match_exato === true ? 1 : 0,
+      _fonteBusca: fonte
+    });
+
+    return res.json({
+      itens: (resultado.itens || []).map((row) => mapear(row, row._fonteBusca || 'operacional')),
+      sugestoes: (resultado.sugestoes || []).map((row) => mapear(row, 'mib-sugestao')),
+      meta: resultado.meta
+    });
+  } catch (err) {
+    console.error('Erro na busca operacional de produtos:', err && err.message ? err.message : err);
+    return res.status(500).json({ error: err.message || 'Falha na busca operacional' });
   }
 });
 

@@ -26,6 +26,7 @@ const CentralDashboardService = require('./services/CentralDashboardService');
 const CentralSincronizacaoService = require('./services/CentralSincronizacaoService');
 const CentralProcessamentoService = require('./services/CentralProcessamentoService');
 const CentralComprasBridgeService = require('./services/CentralComprasBridgeService');
+const CentralRevisaoPersistenteService = require('./services/CentralRevisaoPersistenteService');
 const CentralScoreDocumentoService = require('./services/CentralScoreDocumentoService');
 const CentralAlertasService = require('./services/CentralAlertasService');
 const CentralScoreFornecedorService = require('./services/CentralScoreFornecedorService');
@@ -107,11 +108,19 @@ class CentralEntradasOrchestrator {
       });
 
     /** @private */
+    this._revisaoPersistenteService = deps.revisaoPersistenteService
+      ?? new CentralRevisaoPersistenteService({
+        documentosRepository,
+        db: deps.db ?? null
+      });
+
+    /** @private */
     this._comprasBridgeService = deps.comprasBridgeService
       ?? new CentralComprasBridgeService({
         documentosRepository,
         historicoRepository,
-        transitionService: this._transitionService
+        transitionService: this._transitionService,
+        revisaoPersistenteService: this._revisaoPersistenteService
       });
 
     /** @private */
@@ -272,7 +281,12 @@ class CentralEntradasOrchestrator {
   }
 
   async listarDocumentos(filtros = {}) {
-    return this._documentoService.listar(filtros);
+    const resultado = await this._documentoService.listar(filtros);
+    try {
+      resultado.documentos = await this._revisaoPersistenteService
+        .enriquecerDocumentosComProgresso(resultado.documentos || []);
+    } catch { /* ignore enrichment */ }
+    return resultado;
   }
 
   async obterDocumento(id) {
@@ -285,6 +299,15 @@ class CentralEntradasOrchestrator {
 
     const historico = await this._historicoService.listarPorDocumento(id);
     const detalhe = paraDetalheCompletoDTO(documento, historico);
+
+    try {
+      const [enriquecido] = await this._revisaoPersistenteService
+        .enriquecerDocumentosComProgresso([detalhe.documento || documento]);
+      if (detalhe.documento && enriquecido?.revisaoProgresso) {
+        detalhe.documento.revisaoProgresso = enriquecido.revisaoProgresso;
+      }
+      detalhe.revisaoProgresso = enriquecido?.revisaoProgresso || null;
+    } catch { /* ignore */ }
 
     // RC7.4.2 — informações operacionais do Gate + Scheduler.
     try {
@@ -567,6 +590,25 @@ class CentralEntradasOrchestrator {
 
   async concluirRevisao(id, dados = {}) {
     return this._comprasBridgeService.concluirRevisao(id, dados);
+  }
+
+  obterOuCriarSessaoRevisao(id, opcoes = {}) {
+    return this._revisaoPersistenteService.obterOuCriarSessao(id, opcoes);
+  }
+
+  obterSessaoRevisao(id) {
+    return this._revisaoPersistenteService.obterSessao(id);
+  }
+
+  salvarDecisaoRevisao(id, itemIndex, dados = {}) {
+    return this._revisaoPersistenteService.salvarDecisao(id, itemIndex, dados);
+  }
+
+  reiniciarSessaoRevisao(id, opcoes = {}) {
+    return this._revisaoPersistenteService.obterOuCriarSessao(id, {
+      ...opcoes,
+      forcarNova: true
+    });
   }
 
   async obterPayloadCompra(id) {

@@ -160,11 +160,20 @@ class QueryOptimizer {
     const sql = `
       ${this._selectBase()}
       WHERE COALESCE(p.ativo, 1) = 1
-        AND p.codigo_barras = ?
+        AND (
+          p.codigo_barras = ?
+          OR EXISTS (
+            SELECT 1 FROM produto_identificadores pi
+            WHERE pi.produto_id = p.id
+              AND pi.tipo IN ('EAN8', 'EAN13', 'GTIN')
+              AND COALESCE(pi.ativo, 1) = 1
+              AND pi.codigo = ?
+          )
+        )
         ${fiscal}
       LIMIT ?
     `;
-    return this._all(sql, [hoje, hoje, termo, limite]);
+    return this._all(sql, [hoje, hoje, termo, termo, limite]);
   }
 
   async porPlu(termo, limite, fiscal, hoje) {

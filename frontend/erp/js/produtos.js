@@ -1538,15 +1538,40 @@ function montarOptionsFiltroCategorias(produtos) {
         .join('');
 }
 
+function consultaBuscaSoDigitos(termoBruto) {
+    return /^\d+$/.test(String(termoBruto || '').replace(/\s+/g, ''));
+}
+
+function tokensBuscaSignificativos(termoNormalizado) {
+    const vistos = new Set();
+    const out = [];
+    String(termoNormalizado || '')
+        .split(/[^a-z0-9]+/)
+        .filter(Boolean)
+        .forEach((t) => {
+            if (vistos.has(t)) return;
+            vistos.add(t);
+            if (t.length >= 3 || (t.length >= 2 && /\d/.test(t))) out.push(t);
+        });
+    return out;
+}
+
+function idsNumericosBuscaIguais(a, b) {
+    const da = String(a ?? '').replace(/\D/g, '');
+    const db = String(b ?? '').replace(/\D/g, '');
+    if (!da || !db) return false;
+    const na = da.replace(/^0+(?=\d)/, '') || '0';
+    const nb = db.replace(/^0+(?=\d)/, '') || '0';
+    return na === nb;
+}
+
 function filtrarListaProdutosUI(produtos) {
     const termoBruto = String($('#buscaProduto').val() || '').trim();
     const termo = normalizarTexto(termoBruto);
-    const termoDigits = termoBruto.replace(/\D/g, '');
+    const termoDigits = consultaBuscaSoDigitos(termoBruto) ? termoBruto.replace(/\D/g, '') : '';
     const categoriaId = String($('#filtroCategoriaProduto').val() || '');
 
     return (produtos || []).filter(p => {
-        // HOTFIX MIB-4.0.1 — com texto, a busca tipada vem do MIB; aqui só aplica categoria
-        // (e fallback local quando SearchSDK indisponível).
         const bateBusca = !termo || produtoCorrespondeBuscaInteligente(p, termo, termoDigits);
 
         const bateCategoria =
@@ -1561,8 +1586,37 @@ function filtrarListaProdutosFallbackLocal(produtos) {
     return filtrarListaProdutosUI(produtos);
 }
 
+function compactarMedidasBusca(texto) {
+    return String(texto || '').replace(/(^|[^0-9])0+(\d)/g, '$1$2');
+}
+
 function produtoCorrespondeBuscaInteligente(produto, termoNormalizado, termoDigits) {
     if (!termoNormalizado) return true;
+
+    const termoBruto = String($('#buscaProduto').val() || '').trim();
+    if (!termoDigits && window.CdsBuscaProdutoTexto && typeof window.CdsBuscaProdutoTexto.produtoCorrespondeBuscaNome === 'function') {
+        if (window.CdsBuscaProdutoTexto.produtoCorrespondeBuscaNome(produto, termoBruto || termoNormalizado)) {
+            return true;
+        }
+    }
+
+    if (termoDigits) {
+        const plu = String(produto.plu || '');
+        const codigo = String(produto.codigo || '');
+        const barras = String(produto.codigo_barras || '');
+        if (
+            idsNumericosBuscaIguais(plu, termoDigits)
+            || idsNumericosBuscaIguais(codigo, termoDigits)
+            || idsNumericosBuscaIguais(barras, termoDigits)
+            || String(produto.id || '') === termoDigits
+            || codigo.toLowerCase() === String(termoNormalizado)
+            || plu.toLowerCase() === String(termoNormalizado)
+            || barras.toLowerCase() === String(termoNormalizado)
+        ) {
+            return true;
+        }
+        return false;
+    }
 
     const camposTexto = [
         produto.nome,
@@ -1570,7 +1624,6 @@ function produtoCorrespondeBuscaInteligente(produto, termoNormalizado, termoDigi
         produto.descricao,
         produto.observacoes,
         produto.codigo,
-        produto.codigo_barras,
         produto.plu,
         produto.categoria,
         produto.categoria_nome,
@@ -1581,22 +1634,57 @@ function produtoCorrespondeBuscaInteligente(produto, termoNormalizado, termoDigi
     if (camposTexto.some((campo) => campo && normalizarTexto(campo).includes(termoNormalizado))) {
         return true;
     }
-
-    if (termoDigits) {
-        const plu = String(produto.plu || '').replace(/\D/g, '');
-        const codigo = String(produto.codigo || '').replace(/\D/g, '');
-        const barras = String(produto.codigo_barras || '').replace(/\D/g, '');
-        if (
-            (plu && plu.includes(termoDigits))
-            || (codigo && codigo.includes(termoDigits))
-            || (barras && barras.includes(termoDigits))
-            || String(produto.id || '') === termoDigits
-        ) {
-            return true;
-        }
+    const compactoFrase = camposTexto
+        .map((campo) => (campo ? normalizarTexto(campo).replace(/[^a-z0-9]/g, '') : ''))
+        .join('');
+    const fraseCompacta = String(termoNormalizado).replace(/[^a-z0-9]/g, '');
+    if (fraseCompacta && compactarMedidasBusca(compactoFrase).includes(compactarMedidasBusca(fraseCompacta))) {
+        return true;
     }
 
-    return false;
+    const fortes = tokensBuscaSignificativos(termoNormalizado);
+    if (!fortes.length) return false;
+
+    const compacto = [
+        produto.nome,
+        produto.nome_busca,
+        produto.descricao,
+        produto.marca,
+        produto.categoria,
+        produto.categoria_nome
+    ]
+        .map((campo) => (campo ? normalizarTexto(campo).replace(/[^a-z0-9]/g, '') : ''))
+        .join('');
+    const palavrasNome = String(produto.nome || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((w) => w.length >= 3);
+    const tokenNoProduto = (t) => {
+        const contem = (hay, tok) => {
+            const h = String(hay || '');
+            const k = String(tok || '');
+            if (!k) return false;
+            if (h.includes(k)) return true;
+            const semZero = k.replace(/^0+(?=\d)/, '');
+            if (semZero && semZero !== k && h.includes(semZero)) return true;
+            const hc = compactarMedidasBusca(h);
+            if (hc.includes(k) || (semZero && semZero !== k && hc.includes(semZero))) return true;
+            const kc = compactarMedidasBusca(k);
+            return kc !== k && hc.includes(kc);
+        };
+        if (/^\d+$/.test(t)) {
+            return idsNumericosBuscaIguais(produto.codigo, t)
+                || idsNumericosBuscaIguais(produto.codigo_barras, t)
+                || idsNumericosBuscaIguais(produto.plu, t)
+                || contem(compacto, t);
+        }
+        if (contem(compacto, t)) return true;
+        if (t.length < 3 || !/[a-z]/.test(t)) return false;
+        return palavrasNome.some((w) => w === t || w.startsWith(t) || t.startsWith(w));
+    };
+    return fortes.every(tokenNoProduto);
 }
 
 function formatarNomeProdutoComPlu(produto) {
@@ -1616,47 +1704,95 @@ function expandirNosArvoreParaLista(produtos) {
     });
 }
 
+function atualizarStatusBuscaOperacional(opcoes = {}) {
+    const $status = $('#busca-operacional-status');
+    if (!$status.length) return;
+    const termo = String($('#buscaProduto').val() || '').trim();
+    if (!termo || opcoes.origem === 'arvore') {
+        $status.hide().empty();
+        return;
+    }
+    const sugestoes = opcoes.sugestoes === true;
+    const qtd = Array.isArray(opcoes.itens) ? opcoes.itens.length : 0;
+    if (sugestoes) {
+        $status.html(
+            '<p class="cds-prod-busca-status__vazio mb-2">Nenhum produto encontrado.</p>'
+            + '<p class="cds-prod-busca-status__sugestoes-titulo mb-0">Sugestões</p>'
+        ).show();
+        return;
+    }
+    if (qtd === 0) {
+        $status.html('<p class="cds-prod-busca-status__vazio mb-0">Nenhum produto encontrado.</p>').show();
+        return;
+    }
+    $status.hide().empty();
+}
+
 function aplicarFiltrosProdutos(produtos, opcoes = {}) {
     const termo = String($('#buscaProduto').val() || '').trim();
     const categoriaId = String($('#filtroCategoriaProduto').val() || '');
     const origemMib = opcoes.origem === 'mib';
-    const fallbackLocal = opcoes.fallbackLocal === true;
+    const origemOperacional = opcoes.origem === 'operacional';
 
+    const Resolver = window.CdsResolverBuscaCadastroProdutos;
     let filtrados;
     if (!termo) {
-        // Restaura árvore original (apenas filtro de categoria, se houver)
-        filtrados = (produtos || []).filter((p) =>
-            !categoriaId || String(p.categoria_id || '') === categoriaId
-        );
-    } else if (origemMib) {
-        // Hits já vieram do MIB — só categoria
-        filtrados = (produtos || []).filter((p) =>
-            !categoriaId || String(p.categoria_id || '') === categoriaId
-        );
-    } else if (fallbackLocal) {
-        filtrados = filtrarListaProdutosFallbackLocal(produtos);
+        filtrados = Resolver && typeof Resolver.preservarHitsCadastro === 'function'
+            ? Resolver.preservarHitsCadastro(produtos, { buscaAtiva: false, categoriaId })
+            : (produtos || []).filter((p) =>
+                !categoriaId || String(p.categoria_id || '') === categoriaId
+            );
+    } else if (origemMib || origemOperacional) {
+        // Sprint 03/04: busca explícita tem prioridade sobre a árvore de categorias.
+        filtrados = Resolver && typeof Resolver.preservarHitsCadastro === 'function'
+            ? Resolver.preservarHitsCadastro(produtos, {
+                buscaAtiva: true,
+                origemMib,
+                origemOperacional,
+                categoriaId
+            })
+            : (produtos || []).slice();
+        if (origemMib && consultaBuscaSoDigitos(termo)) {
+            const digits = String(termo).replace(/\D/g, '');
+            filtrados = filtrados.filter((p) =>
+                produtoCorrespondeBuscaInteligente(p, normalizarTexto(termo), digits)
+            );
+        }
     } else {
-        // Sem termo tratado acima; categoria-only
-        filtrados = (produtos || []).filter((p) =>
-            !categoriaId || String(p.categoria_id || '') === categoriaId
-        );
+        filtrados = filtrarListaProdutosFallbackLocal(produtos);
     }
 
     const filtroAtivo = !!(termo || categoriaId);
+    const listaPlanaBusca = (origemMib || origemOperacional) && !!termo;
 
-    // Com busca/filtro ativo, abre os nós do resultado para o usuário ver os produtos.
+    if (listaPlanaBusca) {
+        $('#categorias-container').hide();
+        $('#tabela-produtos-container').show();
+        atualizarStatusBuscaOperacional({
+            origem: opcoes.origem,
+            sugestoes: opcoes.sugestoes === true,
+            itens: filtrados
+        });
+        $('#produtos-tbody').html(renderProdutosRows(filtrados, { buscaAtiva: true }));
+        return;
+    }
+
+    atualizarStatusBuscaOperacional({ origem: 'arvore' });
+
+    // Sem busca: árvore categoria → subcategoria → produtos.
     if (filtroAtivo) {
         expandirNosArvoreParaLista(filtrados);
     }
 
     $('#tabela-produtos-container').hide();
     $('#categorias-container').show();
-    renderizarArvoreListagemProdutos(filtrados);
+    renderizarArvoreListagemProdutos(filtrados, { preservarOrdem: origemMib || origemOperacional });
 }
 
 /** HOTFIX MIB-4.0.1 — estado da busca tipada via SearchSDK */
 const CDS_PRODUTOS_BUSCA_MIB = {
     debounceMs: 300,
+    debounceOperacionalMs: 180,
     timer: null,
     abort: null,
     seq: 0,
@@ -1682,17 +1818,26 @@ function setIndicadorBuscaProdutos(ativo) {
 function enriquecerHitsBuscaProdutos(itens) {
     const cache = window.produtosCache || window.produtosList || [];
     const byId = new Map(cache.map((p) => [Number(p.id), p]));
+    const Resolver = window.CdsResolverBuscaCadastroProdutos;
     return (itens || []).map((hit) => {
+        const ranking = Resolver && typeof Resolver.preservarCamposRankingMib === 'function'
+            ? Resolver.preservarCamposRankingMib(hit)
+            : {
+                mib_score: hit.mib_score,
+                mib_match_tipo: hit.mib_match_tipo,
+                mib_match_rank: hit.mib_match_rank,
+                _fonteBusca: hit._fonte || 'mib'
+            };
         const full = byId.get(Number(hit.id));
         if (full) {
-            return { ...full, mib_score: hit.mib_score, _fonteBusca: hit._fonte || 'mib' };
+            return { ...full, ...ranking };
         }
         return {
             ...hit,
+            ...ranking,
             categoria: hit.categoria || hit.categoria_nome || '',
             categoria_nome: hit.categoria_nome || hit.categoria || '',
-            subcategoria: hit.subcategoria || hit.subcategoria_nome || '',
-            _fonteBusca: hit._fonte || 'mib'
+            subcategoria: hit.subcategoria || hit.subcategoria_nome || ''
         };
     });
 }
@@ -1719,12 +1864,7 @@ async function executarBuscaProdutosViaMib(termo) {
     const sdk = obterSdkBuscaProdutos();
     const base = window.produtosCache || window.produtosList || [];
     const seq = ++CDS_PRODUTOS_BUSCA_MIB.seq;
-
-    if (!sdk || typeof sdk.search !== 'function') {
-        console.warn('[MIB-4.0.1] SearchSDK indisponível — fallback filtro local');
-        aplicarFiltrosProdutos(base, { fallbackLocal: true });
-        return;
-    }
+    const Resolver = window.CdsResolverBuscaCadastroProdutos;
 
     if (CDS_PRODUTOS_BUSCA_MIB.abort) {
         try { CDS_PRODUTOS_BUSCA_MIB.abort.abort(); } catch (_) { /* ignore */ }
@@ -1733,25 +1873,63 @@ async function executarBuscaProdutosViaMib(termo) {
     CDS_PRODUTOS_BUSCA_MIB.abort = controller;
     setIndicadorBuscaProdutos(true);
 
+    const respostaObsoleta = () => Resolver && typeof Resolver.deveIgnorarRespostaBusca === 'function'
+        ? Resolver.deveIgnorarRespostaBusca(seq, CDS_PRODUTOS_BUSCA_MIB.seq)
+        : seq !== CDS_PRODUTOS_BUSCA_MIB.seq;
+
     try {
         const modoFiscal = typeof modoFiscalQueryParam === 'function' ? modoFiscalQueryParam() : '0';
-        const resultado = await sdk.search({
-            entity: 'produto',
-            query: termo,
-            limite: 50,
-            modo_fiscal: modoFiscal,
-            origem: 'erp-cadastro-produtos'
-        }, { signal: controller ? controller.signal : undefined });
+        const apiBase = typeof API_URL !== 'undefined' ? API_URL : '/api';
+        const url = `${apiBase}/produtos/busca-operacional?q=${encodeURIComponent(termo)}&modo_fiscal=${modoFiscal}&limite=20&sugestoes=1`;
+        const resp = await fetch(url, {
+            headers: {
+                Authorization: `Bearer ${localStorage.getItem('token') || ''}`
+            },
+            signal: controller ? controller.signal : undefined
+        });
+        const dados = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            throw new Error(dados.error || `HTTP ${resp.status}`);
+        }
+        if (respostaObsoleta()) return;
 
-        if (seq !== CDS_PRODUTOS_BUSCA_MIB.seq) return;
+        const itensOp = enriquecerHitsBuscaProdutos(dados.itens || []);
+        CDS_PRODUTOS_BUSCA_MIB.ultimaMeta = dados.meta || null;
+        if (itensOp.length > 0) {
+            aplicarFiltrosProdutos(itensOp, { origem: 'operacional' });
+            return;
+        }
 
-        const itens = enriquecerHitsBuscaProdutos(resultado.itens || []);
-        CDS_PRODUTOS_BUSCA_MIB.ultimaMeta = resultado.meta || null;
-        aplicarFiltrosProdutos(itens, { origem: 'mib' });
+        let sugestoes = enriquecerHitsBuscaProdutos(dados.sugestoes || []);
+        const possuiSugestao = Resolver && typeof Resolver.mibPossuiResultadosValidos === 'function'
+            ? Resolver.mibPossuiResultadosValidos({ itens: sugestoes })
+            : sugestoes.length > 0;
+
+        if (!possuiSugestao && sdk && typeof sdk.search === 'function') {
+            const resultado = await sdk.search({
+                entity: 'produto',
+                query: termo,
+                limite: 20,
+                modo_fiscal: modoFiscal,
+                origem: 'erp-cadastro-produtos'
+            }, { signal: controller ? controller.signal : undefined });
+            if (respostaObsoleta()) return;
+            sugestoes = enriquecerHitsBuscaProdutos(resultado.itens || []);
+            CDS_PRODUTOS_BUSCA_MIB.ultimaMeta = resultado.meta || null;
+        }
+
+        const possuiMib = Resolver && typeof Resolver.mibPossuiResultadosValidos === 'function'
+            ? Resolver.mibPossuiResultadosValidos({ itens: sugestoes })
+            : sugestoes.length > 0;
+        if (possuiMib) {
+            aplicarFiltrosProdutos(sugestoes, { origem: 'mib', sugestoes: true });
+            return;
+        }
+        aplicarFiltrosProdutos([], { origem: 'operacional' });
     } catch (err) {
         if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) return;
-        console.warn('[MIB-4.0.1] SearchService falhou — fallback filtro local:', err && err.message ? err.message : err);
-        if (seq !== CDS_PRODUTOS_BUSCA_MIB.seq) return;
+        console.warn('[MIB-4.0.1] Busca operacional falhou — fallback filtro local:', err && err.message ? err.message : err);
+        if (respostaObsoleta()) return;
         aplicarFiltrosProdutos(base, { fallbackLocal: true });
     } finally {
         if (seq === CDS_PRODUTOS_BUSCA_MIB.seq) {
@@ -1773,7 +1951,7 @@ function agendarBuscaProdutosMib() {
     CDS_PRODUTOS_BUSCA_MIB.timer = setTimeout(() => {
         CDS_PRODUTOS_BUSCA_MIB.timer = null;
         executarBuscaProdutosViaMib(termo);
-    }, CDS_PRODUTOS_BUSCA_MIB.debounceMs);
+    }, CDS_PRODUTOS_BUSCA_MIB.debounceOperacionalMs || 180);
 }
 
 function onFiltroCategoriaProdutosChange() {
@@ -1935,9 +2113,11 @@ function montarArvoreProdutos(produtos) {
         .map((categoria) => {
             const subcategorias = Array.from(categoria.subcategoriasMap.values())
                 .map((sub) => {
-                    const produtosOrdenados = sub.produtos
-                        .slice()
-                        .sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'));
+                    const produtosOrdenados = window._produtosArvorePreservarOrdem
+                        ? sub.produtos.slice()
+                        : sub.produtos
+                            .slice()
+                            .sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'));
                     return {
                         key: sub.key,
                         nome: sub.nome,
@@ -2140,8 +2320,11 @@ function bindEventosArvoreListagemProdutos() {
     });
 }
 
-function renderizarArvoreListagemProdutos(produtos) {
+function renderizarArvoreListagemProdutos(produtos, opcoes = {}) {
     window._produtosArvoreListaAtual = produtos || [];
+    if (Object.prototype.hasOwnProperty.call(opcoes, 'preservarOrdem')) {
+        window._produtosArvorePreservarOrdem = opcoes.preservarOrdem === true;
+    }
     const $container = $('#categorias-container');
     $container.addClass('cds-prod-tree');
     $container.html(renderHtmlArvoreListagemProdutos(window._produtosArvoreListaAtual));
@@ -2267,6 +2450,7 @@ function renderProdutos(produtos) {
                 </div>
                 <div id="categorias-container" class="cds-prod-tree"></div>
                 <div class="table-responsive" id="tabela-produtos-container" style="display: none;">
+                    <div id="busca-operacional-status" class="cds-prod-busca-status" style="display: none;"></div>
                     <table class="table table-striped table-hover">
                         <thead>
                             <tr>
@@ -2385,9 +2569,10 @@ function toggleProdutosCategoriaMenu(categoriaId) {
     renderizarArvoreListagemProdutos(window._produtosArvoreListaAtual || window.produtosCache || []);
 }
 
-function renderProdutosRows(produtos) {
+function renderProdutosRows(produtos, opcoes = {}) {
     if (!produtos || produtos.length === 0) {
-        return '<tr><td colspan="8" class="text-center">Nenhum produto cadastrado</td></tr>';
+        const msg = opcoes.buscaAtiva ? 'Nenhum produto encontrado.' : 'Nenhum produto cadastrado';
+        return `<tr><td colspan="8" class="text-center">${msg}</td></tr>`;
     }
 
     return produtos.map((p) => renderProdutoRow(p)).join('');
@@ -3091,9 +3276,37 @@ function showProdutoModal(produto = null, opcoes = {}) {
     // ...
 }
 
+/** Cache do padrão fiscal da empresa (CFOP/CSOSN/origem/CEST de novos produtos). */
+let CDS_PADRAO_FISCAL_EMPRESA = null;
+
+function obterCfopPadraoEmpresa() {
+    return String(CDS_PADRAO_FISCAL_EMPRESA?.cfop_padrao || '').trim();
+}
+
+function aplicarCfopPadraoEmpresaNoFormulario() {
+    const cfop = obterCfopPadraoEmpresa();
+    if (!cfop || !$('#cfop').length) return cfop;
+    if (String($('#cfop').val() || '').trim() !== cfop) {
+        $('#cfop').val(cfop);
+    }
+    return cfop;
+}
+
+/** Cadastro originado da NF-e: CFOP da empresa prevalece sobre o da nota. */
+function resolverCfopSalvarNovoProduto(cfopFormulario) {
+    if ($('#produtoId').val()) return cfopFormulario;
+    const veioDaNota = !!$('#produtoModal').data('miipPrefillXml');
+    const padrao = obterCfopPadraoEmpresa();
+    if (veioDaNota && padrao) {
+        aplicarCfopPadraoEmpresaNoFormulario();
+        return padrao;
+    }
+    return cfopFormulario;
+}
+
 async function aplicarPadraoFiscalNovoProduto() {
     if ($('#produtoId').val()) {
-        return;
+        return CDS_PADRAO_FISCAL_EMPRESA;
     }
 
     try {
@@ -3103,10 +3316,11 @@ async function aplicarPadraoFiscalNovoProduto() {
         });
 
         if (!response.ok) {
-            return;
+            return CDS_PADRAO_FISCAL_EMPRESA;
         }
 
         const padrao = await response.json();
+        CDS_PADRAO_FISCAL_EMPRESA = padrao || CDS_PADRAO_FISCAL_EMPRESA;
         if (padrao.cfop_padrao) {
             $('#cfop').val(padrao.cfop_padrao);
         }
@@ -3122,11 +3336,15 @@ async function aplicarPadraoFiscalNovoProduto() {
         if (padrao.cest_padrao) {
             $('#cest').val(padrao.cest_padrao);
         }
+        return padrao;
     } catch (err) {
         console.warn('Não foi possível carregar padrão fiscal da empresa:', err);
+        return CDS_PADRAO_FISCAL_EMPRESA;
     }
 }
 window.aplicarPadraoFiscalNovoProduto = aplicarPadraoFiscalNovoProduto;
+window.obterCfopPadraoEmpresa = obterCfopPadraoEmpresa;
+window.aplicarCfopPadraoEmpresaNoFormulario = aplicarCfopPadraoEmpresaNoFormulario;
 
 function inicializarEspelhoCodigoBarras(produto, isEdit) {
     const $modal = $('#produtoModal');
@@ -4390,7 +4608,7 @@ async function saveProduto() {
         controlar_validade: $('#controlar_validade').is(':checked') ? 1 : 0,
         controla_estoque: $('#controla_estoque').is(':checked') ? 1 : 0,
         ncm: ($('#ncm').val() || '').trim(),
-        cfop: ($('#cfop').val() || '').trim(),
+        cfop: resolverCfopSalvarNovoProduto(($('#cfop').val() || '').trim()),
         csosn: ($('#csosn').val() || '').trim(),
         origem: $('#origem').val() !== '' ? parseInt($('#origem').val(), 10) : 0,
         cest: ($('#cest').val() || '').trim(),

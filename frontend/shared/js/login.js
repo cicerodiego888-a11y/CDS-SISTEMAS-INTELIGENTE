@@ -16,26 +16,67 @@ const API_URL = (() => {
 const CDS_LOGIN_ULTIMO_USER_KEY = 'cds_login_ultimo_usuario';
 const CDS_LOGIN_ULTIMO_PASS_KEY = 'cds_login_ultima_senha';
 
+function persistirChaveLogin(chave, valor) {
+  const texto = String(valor == null ? '' : valor);
+  try { localStorage.setItem(chave, texto); } catch (_) { /* ignore */ }
+  try { sessionStorage.setItem(chave, texto); } catch (_) { /* ignore */ }
+}
+
+function lerChaveLogin(chave) {
+  try {
+    const local = localStorage.getItem(chave);
+    if (local != null && local !== '') return local;
+  } catch (_) { /* ignore */ }
+  try {
+    return sessionStorage.getItem(chave) || '';
+  } catch (_) {
+    return '';
+  }
+}
+
 function salvarUltimoAcessoLogin(username, password) {
   try {
     const user = String(username || '').trim();
     if (!user) return;
-    localStorage.setItem(CDS_LOGIN_ULTIMO_USER_KEY, user);
-    localStorage.setItem(CDS_LOGIN_ULTIMO_PASS_KEY, String(password || ''));
+    persistirChaveLogin(CDS_LOGIN_ULTIMO_USER_KEY, user);
+    if (password != null && String(password) !== '') {
+      persistirChaveLogin(CDS_LOGIN_ULTIMO_PASS_KEY, String(password));
+    }
   } catch (_) { /* ignore quota / private mode */ }
+}
+
+function obterUltimoAcessoLogin() {
+  return {
+    username: lerChaveLogin(CDS_LOGIN_ULTIMO_USER_KEY),
+    password: lerChaveLogin(CDS_LOGIN_ULTIMO_PASS_KEY)
+  };
 }
 
 function carregarUltimoAcessoLogin() {
   try {
-    const username = localStorage.getItem(CDS_LOGIN_ULTIMO_USER_KEY) || '';
-    const password = localStorage.getItem(CDS_LOGIN_ULTIMO_PASS_KEY) || '';
+    const { username, password } = obterUltimoAcessoLogin();
     if (!username && !password) return false;
-    if (username) $('#username').val(username);
-    if (password) $('#password').val(password);
+    const $user = $('#username');
+    const $pass = $('#password');
+    if (username && $user.length && $user.val() !== username) $user.val(username);
+    if (password && $pass.length && $pass.val() !== password) $pass.val(password);
     return true;
   } catch (_) {
     return false;
   }
+}
+
+function lembrarCamposDigitadosLogin() {
+  const username = String($('#username').val() || '').trim();
+  const password = String($('#password').val() || '');
+  if (!username) return;
+  salvarUltimoAcessoLogin(username, password);
+}
+
+function agendarRestauracaoUltimoAcessoLogin() {
+  [0, 80, 250, 600, 1200].forEach((ms) => {
+    setTimeout(() => carregarUltimoAcessoLogin(), ms);
+  });
 }
 
 (function redirectIfLoggedIn() {
@@ -94,6 +135,7 @@ $('#loginForm').on('submit', function (e) {
   e.preventDefault();
   const username = $('#username').val().trim();
   const password = $('#password').val();
+  salvarUltimoAcessoLogin(username, password);
   const loginStartedAt = (window.CdsObsRum && typeof window.CdsObsRum.now === 'function')
     ? window.CdsObsRum.now()
     : Date.now();
@@ -227,8 +269,12 @@ function aplicarAutofillPrimeiroAcesso() {
     url: `${API_URL}/auth/primeiro-acesso`,
     method: 'GET',
     success: function (data) {
+      const ultimo = obterUltimoAcessoLogin();
+      if (ultimo.username) {
+        carregarUltimoAcessoLogin();
+        return;
+      }
       if (!data || !data.primeiro_acesso) {
-        // Não é primeiro acesso — mantém/preenche último login salvo
         carregarUltimoAcessoLogin();
         return;
       }
@@ -255,9 +301,12 @@ $(document).ready(function () {
   $('*').css('pointer-events', '');
   $('body, html').css('pointer-events', 'auto');
 
-  // Preenche imediatamente com o último acesso; primeiro acesso pode sobrescrever
   carregarUltimoAcessoLogin();
+  agendarRestauracaoUltimoAcessoLogin();
   aplicarAutofillPrimeiroAcesso();
+
+  $('#username, #password').on('input change blur', lembrarCamposDigitadosLogin);
+  $(window).on('pagehide beforeunload', lembrarCamposDigitadosLogin);
 
   setTimeout(() => {
     if (!$('#username').val()) {

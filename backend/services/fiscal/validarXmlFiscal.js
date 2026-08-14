@@ -12,6 +12,11 @@ function tag(xml, name) {
   return m ? m[1] : null;
 }
 
+function bloco(xml, name) {
+  const m = String(xml || '').match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)</${name}>`));
+  return m ? m[1] : '';
+}
+
 function hasGroup(xml, name) {
   return new RegExp(`<${name}[\\s>]`).test(String(xml || ''));
 }
@@ -26,20 +31,26 @@ function somaTags(xml, name) {
   return round2(s);
 }
 
+/**
+ * Totais fiscais vêm de <ICMSTot>, nunca do primeiro <vProd> de <det>.
+ * vTroco fica em <pag>, não no ICMSTot.
+ */
 function extrairTotais(xml) {
+  const icmsTot = bloco(xml, 'ICMSTot');
+  const fonte = icmsTot || String(xml || '');
   return {
-    vProd: round2(Number(tag(xml, 'vProd') || 0)),
-    vDesc: round2(Number(tag(xml, 'vDesc') || 0)),
-    vFrete: round2(Number(tag(xml, 'vFrete') || 0)),
-    vSeg: round2(Number(tag(xml, 'vSeg') || 0)),
-    vOutro: round2(Number(tag(xml, 'vOutro') || 0)),
-    vIPI: round2(Number(tag(xml, 'vIPI') || 0)),
-    vST: round2(Number(tag(xml, 'vST') || 0)),
-    vII: round2(Number(tag(xml, 'vII') || 0)),
-    vPIS: round2(Number(tag(xml, 'vPIS') || 0)),
-    vCOFINS: round2(Number(tag(xml, 'vCOFINS') || 0)),
-    vIPIDevol: round2(Number(tag(xml, 'vIPIDevol') || 0)),
-    vNF: round2(Number(tag(xml, 'vNF') || 0)),
+    vProd: round2(Number(tag(fonte, 'vProd') || 0)),
+    vDesc: round2(Number(tag(fonte, 'vDesc') || 0)),
+    vFrete: round2(Number(tag(fonte, 'vFrete') || 0)),
+    vSeg: round2(Number(tag(fonte, 'vSeg') || 0)),
+    vOutro: round2(Number(tag(fonte, 'vOutro') || 0)),
+    vIPI: round2(Number(tag(fonte, 'vIPI') || 0)),
+    vST: round2(Number(tag(fonte, 'vST') || 0)),
+    vII: round2(Number(tag(fonte, 'vII') || 0)),
+    vPIS: round2(Number(tag(fonte, 'vPIS') || 0)),
+    vCOFINS: round2(Number(tag(fonte, 'vCOFINS') || 0)),
+    vIPIDevol: round2(Number(tag(fonte, 'vIPIDevol') || 0)),
+    vNF: round2(Number(tag(fonte, 'vNF') || 0)),
     vTroco: round2(Number(tag(xml, 'vTroco') || 0))
   };
 }

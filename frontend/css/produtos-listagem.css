@@ -345,3 +345,26 @@
     -webkit-overflow-scrolling: touch;
   }
 }
+
+.cds-prod-busca-status {
+  margin: 0 0 0.75rem;
+  padding: 0.7rem 0.9rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.cds-prod-busca-status__vazio {
+  margin: 0;
+  color: #334155;
+  font-weight: 600;
+}
+
+.cds-prod-busca-status__sugestoes-titulo {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #64748b;
+}

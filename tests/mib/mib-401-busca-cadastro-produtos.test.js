@@ -189,6 +189,8 @@ async function main() {
     const src = fs.readFileSync(path.join(__dirname, '../../frontend/erp/js/produtos.js'), 'utf8');
     assert.ok(src.includes('filtrarListaProdutosFallbackLocal') || src.includes('fallbackLocal'));
     assert.ok(src.includes('produtoCorrespondeBuscaInteligente'));
+    assert.ok(src.includes('tokensBuscaSignificativos'), 'AND de tokens significativos');
+    assert.ok(src.includes('consultaBuscaSoDigitos'), 'dígitos só em consulta numérica');
   });
 
   MibService.resetInstance();

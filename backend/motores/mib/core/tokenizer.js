@@ -2,6 +2,7 @@
 
 const { normalizarNomeBusca } = require('./normalizarNomeBusca');
 const { filtrarStopWords } = require('./stopWords');
+const { textoContemToken } = require('./compararTextoBusca');
 
 /**
  * Tokeniza termo de busca: remove acentos, separa palavras, remove stop words.
@@ -32,7 +33,7 @@ function contarTokensMatch(produto, tokensNorm) {
   const nb = String(produto.nome_busca || '');
   let n = 0;
   for (const t of tokensNorm) {
-    if (t && nb.includes(t)) n += 1;
+    if (t && (nb.includes(t) || textoContemToken(nb, t))) n += 1;
   }
   return n;
 }

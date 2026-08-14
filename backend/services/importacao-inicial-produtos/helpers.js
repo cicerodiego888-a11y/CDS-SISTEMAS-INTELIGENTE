@@ -14,6 +14,61 @@ const MODOS = Object.freeze({
   CADASTRO_INICIAL: 'CADASTRO_INICIAL',
   ATUALIZAR_QUANTIDADES: 'ATUALIZAR_QUANTIDADES'
 });
+
+/** V1.0.18 — tratamento fiscal da carga (somente produtos novos). */
+const MODOS_FISCAIS_IMPORTACAO = Object.freeze({
+  FISCAL: 'FISCAL',
+  NAO_FISCAL: 'NAO_FISCAL'
+});
+
+/**
+ * Valida e normaliza modo_fiscal_importacao.
+ * Não assume default — ausente/inválido lança erro.
+ * @param {*} valor
+ * @returns {'FISCAL'|'NAO_FISCAL'}
+ */
+function validarModoFiscalImportacao(valor) {
+  if (valor == null || valor === '') {
+    const err = new Error('Selecione se esta importação é Fiscal ou Não Fiscal.');
+    err.status = 400;
+    err.codigo = 'MODO_FISCAL_AUSENTE';
+    throw err;
+  }
+  // Não aceitar boolean como representação principal
+  if (typeof valor === 'boolean' || valor === 0 || valor === 1 || valor === '0' || valor === '1'
+    || valor === true || valor === false) {
+    const err = new Error('modo_fiscal_importacao inválido.');
+    err.status = 400;
+    err.codigo = 'MODO_FISCAL_INVALIDO';
+    throw err;
+  }
+  const normalizado = String(valor)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, '_');
+  if (normalizado === MODOS_FISCAIS_IMPORTACAO.FISCAL) {
+    return MODOS_FISCAIS_IMPORTACAO.FISCAL;
+  }
+  if (normalizado === MODOS_FISCAIS_IMPORTACAO.NAO_FISCAL) {
+    return MODOS_FISCAIS_IMPORTACAO.NAO_FISCAL;
+  }
+  const err = new Error('modo_fiscal_importacao inválido.');
+  err.status = 400;
+  err.codigo = 'MODO_FISCAL_INVALIDO';
+  throw err;
+}
+
+function itemFiscalDeModoImportacao(modoFiscal) {
+  return modoFiscal === MODOS_FISCAIS_IMPORTACAO.NAO_FISCAL ? 0 : 1;
+}
+
+function rotuloModoFiscalImportacao(modoFiscal) {
+  return modoFiscal === MODOS_FISCAIS_IMPORTACAO.NAO_FISCAL
+    ? 'NÃO FISCAL — SEM NF'
+    : 'FISCAL — COM NF';
+}
 const STATUS = Object.freeze({
   PRONTO: 'PRONTO',
   ATENCAO: 'ATENCAO',
@@ -609,6 +664,7 @@ function mapearLinhaProduto(row) {
     ncm: texto(get('ncm')),
     cest: texto(get('cest')),
     observacoes: texto(get('observacoes', 'observacao', 'obs')),
+    // fiscal_rotulo é informativo do XLSX; item_fiscal efetivo vem do validator (modo ou banco)
     fiscal_rotulo: texto(get('fiscal', 'classificacao')),
     fiscal: true,
     item_fiscal: 1
@@ -681,6 +737,10 @@ function mapearLinhaApresentacao(row) {
 module.exports = {
   MARKUP_PADRAO,
   MODOS,
+  MODOS_FISCAIS_IMPORTACAO,
+  validarModoFiscalImportacao,
+  itemFiscalDeModoImportacao,
+  rotuloModoFiscalImportacao,
   STATUS,
   chaveHeader,
   valorPorAliases,

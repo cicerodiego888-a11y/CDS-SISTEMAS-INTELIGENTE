@@ -1,6 +1,7 @@
 'use strict';
 
 const CatalogSnapshot = require('../catalog/CatalogSnapshot');
+const { produtoCasaFraseBusca } = require('../core/compararTextoBusca');
 
 /**
  * HotCache — produtos quentes em memória (mais vendidos, pesquisados, últimos, favoritos).
@@ -62,7 +63,7 @@ class HotCache {
           || codigo === raw || barras === raw || plu === raw;
       } else {
         ok = codigo === raw || barras === raw || plu === raw
-          || nb.startsWith(termo) || nb.includes(termo)
+          || nb.startsWith(termo) || produtoCasaFraseBusca(p, termo)
           || codigo.includes(termo) || barras.includes(termo);
       }
       if (ok) {

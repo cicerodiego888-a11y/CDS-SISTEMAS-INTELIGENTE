@@ -1403,6 +1403,18 @@
     $('#miipCentralContador').text(
       `${resolvidas + 1} / ${totalPend} · ${abertas} pendente${abertas === 1 ? '' : 's'}`
     );
+    const prog = sessao.progressoPersistido;
+    const concluidos = prog?.concluidos != null
+      ? prog.concluidos
+      : (sessao.resolvidas.length + sessao.ignoradas.length);
+    const totalItens = prog?.total != null ? prog.total : (sessao.itens?.length || totalPend);
+    const $prog = $('#miipCentralProgressoPersistente');
+    if ($prog.length) {
+      $prog.html(
+        `<span class="miip-central-progresso-label">Revisão em andamento</span>`
+        + `<strong>${concluidos} de ${totalItens} produtos revisados</strong>`
+      );
+    }
     aplicarModoFocoDom();
   }
 
@@ -1427,14 +1439,16 @@
               <div>
                 <h5 class="modal-title"><i class="fas fa-robot"></i> Central de Revisão Inteligente <small class="fw-normal opacity-75">MIIP V2</small></h5>
                 <small id="miipCentralContador" class="text-muted"></small>
+                <div id="miipCentralProgressoPersistente" class="miip-central-progresso-persistente small"></div>
+                <span id="miipCentralPersistenciaBadge" class="miip-central-persistencia-badge miip-central-persistencia-badge--neutro" aria-live="polite"></span>
               </div>
               <div class="d-flex align-items-center gap-2">
                 ${renderAcoesRapidasDocumento()}
                 <button type="button" class="btn btn-sm btn-outline-light" id="miipCentralBtnModoFoco"
                   title="Ocultar cards auxiliares e focar na revisão"
                   aria-pressed="false">Modo Foco</button>
-                <button type="button" class="btn btn-sm btn-outline-light" id="miipCentralBtnCancelar" title="ESC — Cancelar revisão">
-                  <i class="fas fa-times"></i> Cancelar (ESC)
+                <button type="button" class="btn btn-sm btn-outline-light" id="miipCentralBtnCancelar" title="ESC — Pausar revisão (progresso salvo)">
+                  <i class="fas fa-pause"></i> Pausar (ESC)
                 </button>
               </div>
             </div>
@@ -1460,7 +1474,7 @@
                     <span><kbd>Ctrl</kbd>+<kbd>D</kbd> Comparação</span>
                     <span><kbd>Ctrl</kbd>+<kbd>H</kbd> Histórico</span>
                     <span><kbd>Ctrl</kbd>+<kbd>I</kbd> Identificadores</span>
-                    <span><kbd>Esc</kbd> Cancelar</span>
+                    <span><kbd>Esc</kbd> Pausar</span>
                   </div>
                 </section>
               </div>
@@ -1535,11 +1549,74 @@
     }
   }
 
+  function correlationIdRevisao() {
+    if (!estado) return null;
+    if (!estado.correlationId) {
+      estado.correlationId = `miip-rev-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    }
+    return estado.correlationId;
+  }
+
+  function atualizarBadgePersistencia(texto, tom) {
+    const el = document.getElementById('miipCentralPersistenciaBadge');
+    if (!el) return;
+    el.textContent = texto || '';
+    el.className = `miip-central-persistencia-badge miip-central-persistencia-badge--${tom || 'neutro'}`;
+  }
+
+  /**
+   * Persiste decisão no backend antes de avançar (revisão retomável).
+   * @returns {Promise<boolean>}
+   */
+  function persistirDecisaoItem(indice, decisao, produtoId, item) {
+    const documentoId = estado?.opcoes?.documento?.id;
+    const apiUrl = estado?.opcoes?.apiUrl || (typeof API_URL !== 'undefined' ? API_URL : '/api');
+    if (!documentoId) {
+      return Promise.resolve(true);
+    }
+
+    atualizarBadgePersistencia('Salvando…', 'salvando');
+    const usuario = estado.opcoes.obterUsuario ? estado.opcoes.obterUsuario() : null;
+    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
+
+    return fetch(`${apiUrl}/central-entradas/${documentoId}/revisar/itens/${indice}/decisao`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify({
+        decisao,
+        produto_id: produtoId != null ? Number(produtoId) : null,
+        item: item || null,
+        usuario_id: usuario?.id ?? null,
+        correlation_id: correlationIdRevisao()
+      })
+    }).then(async (response) => {
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || `Erro HTTP ${response.status}`);
+      }
+      if (data.progresso) {
+        estado.sessao.progressoPersistido = data.progresso;
+      }
+      atualizarBadgePersistencia('Salvo', 'ok');
+      console.info('[MIIP] salvar decisão do item', { indice, decisao, documentoId, ok: true });
+      return true;
+    }).catch((error) => {
+      atualizarBadgePersistencia('Falha ao salvar', 'erro');
+      console.error('[MIIP] salvar decisão do item', { indice, decisao, documentoId, error: error.message });
+      notificar('Não foi possível salvar esta decisão. Tente novamente.', 'danger');
+      return false;
+    });
+  }
+
   function aplicarConfirmacao(pendencia, produtoId, produto, aprendeuExplicito) {
     if (!pendencia || !produtoId) {
       notificar('Selecione um produto para continuar.', 'warning');
       return;
     }
+    if (estado._persistindoDecisao) return;
 
     const item = estado.sessao.itens[pendencia.indice];
     if (item) {
@@ -1565,17 +1642,26 @@
       }
     }
 
-    if (!estado.sessao.resolvidas.includes(pendencia.indice)) {
-      estado.sessao.resolvidas.push(pendencia.indice);
-      estado.sessao.confirmadosManualmente += 1;
-      atualizarIndicadoresAposResolucao(pendencia);
-    }
+    const decisao = aprendeuExplicito === false ? 'CADASTRAR' : 'CONFIRMAR';
+    estado._persistindoDecisao = true;
 
-    const promessa = aprendeuExplicito === false
+    const promessaAprendizado = aprendeuExplicito === false
       ? Promise.resolve(false)
-      : enviarAprendizado(pendencia, produtoId, produto);
+      : enviarAprendizado(pendencia, produtoId, produto).catch(() => false);
 
-    promessa.then((aprendeu) => {
+    Promise.all([
+      persistirDecisaoItem(pendencia.indice, decisao, produtoId, item),
+      promessaAprendizado
+    ]).then(([salvo, aprendeu]) => {
+      estado._persistindoDecisao = false;
+      if (!salvo) return;
+
+      if (!estado.sessao.resolvidas.includes(pendencia.indice)) {
+        estado.sessao.resolvidas.push(pendencia.indice);
+        estado.sessao.confirmadosManualmente += 1;
+        atualizarIndicadoresAposResolucao(pendencia);
+      }
+
       if (aprendeu) {
         estado.sessao.aprendizados += 1;
         mostrarAprendizado();
@@ -1588,22 +1674,41 @@
 
       proximaAberta(estado.sessao, 1);
       renderTelaRevisao();
+    }).catch(() => {
+      estado._persistindoDecisao = false;
     });
   }
 
   function ignorarAtual() {
     const pendencia = estado.sessao.pendencias[estado.sessao.indiceAtual];
     if (!pendencia || !pendenciaAberta(estado.sessao, pendencia)) return;
-    estado.sessao.ignoradas.push(pendencia.indice);
-    atualizarIndicadoresAposResolucao(pendencia);
+    if (estado._persistindoDecisao) return;
 
-    if (contarAbertas(estado.sessao) === 0) {
-      encerrarRevisaoAutomaticamente('ultimo_item_ignorado');
-      return;
-    }
+    const item = estado.sessao.itens[pendencia.indice] || pendencia.produtoXML || {};
+    estado._persistindoDecisao = true;
 
-    proximaAberta(estado.sessao, 1);
-    renderTelaRevisao();
+    persistirDecisaoItem(pendencia.indice, 'IGNORAR', null, {
+      ...item,
+      miip_revisao_status: 'ignorado'
+    }).then((salvo) => {
+      estado._persistindoDecisao = false;
+      if (!salvo) return;
+
+      if (!estado.sessao.ignoradas.includes(pendencia.indice)) {
+        estado.sessao.ignoradas.push(pendencia.indice);
+        atualizarIndicadoresAposResolucao(pendencia);
+      }
+
+      if (contarAbertas(estado.sessao) === 0) {
+        encerrarRevisaoAutomaticamente('ultimo_item_ignorado');
+        return;
+      }
+
+      proximaAberta(estado.sessao, 1);
+      renderTelaRevisao();
+    }).catch(() => {
+      estado._persistindoDecisao = false;
+    });
   }
 
   function abrirBuscaProduto() {
@@ -2003,7 +2108,14 @@
     if (item.codigo_barras || item.gtin) marcarCampoAutofill('#codigo_barras', 'Importado da NF-e');
     if (item.ncm) marcarCampoAutofill('#ncm', 'Importado da NF-e');
     if (item.cest) marcarCampoAutofill('#cest', 'Importado da NF-e');
-    if (item.cfop) marcarCampoAutofill('#cfop', 'Importado da NF-e');
+    const cfopEmpresa = (typeof window.obterCfopPadraoEmpresa === 'function')
+      ? window.obterCfopPadraoEmpresa()
+      : '';
+    if (cfopEmpresa) {
+      marcarCampoAutofill('#cfop', 'Padrão fiscal da empresa');
+    } else if (item.cfop) {
+      marcarCampoAutofill('#cfop', 'Importado da NF-e');
+    }
     if (item.csosn || item.cst) marcarCampoAutofill('#csosn', 'Importado da NF-e');
     if (mie && mie.compra_por_embalagem) {
       marcarCampoAutofill('#compra_por_embalagem', 'Sugerido pelo Motor MIE');
@@ -2166,6 +2278,27 @@
     return { ativar: false, mie, aprendizado: false };
   }
 
+  function aplicarCfopPadraoEmpresaNoCadastro(xml) {
+    const cfopEmpresa = (typeof window.obterCfopPadraoEmpresa === 'function')
+      ? window.obterCfopPadraoEmpresa()
+      : '';
+    if (cfopEmpresa) {
+      setCampoTexto('#cfop', cfopEmpresa);
+      if (typeof window.aplicarCfopPadraoEmpresaNoFormulario === 'function') {
+        window.aplicarCfopPadraoEmpresaNoFormulario();
+      }
+      return;
+    }
+    if (typeof window.aplicarPadraoFiscalNovoProduto === 'function') {
+      Promise.resolve(window.aplicarPadraoFiscalNovoProduto()).then(() => {
+        const padrao = (typeof window.obterCfopPadraoEmpresa === 'function')
+          ? window.obterCfopPadraoEmpresa()
+          : '';
+        if (padrao) setCampoTexto('#cfop', padrao);
+      });
+    }
+  }
+
   function preencherCamposCadastroProduto(item) {
     const xml = item || {};
     const nome = String(xml.produto_nome || xml.descricao || xml.nome || '').trim();
@@ -2181,7 +2314,7 @@
 
     setCampoTexto('#ncm', xml.ncm);
     setCampoTexto('#cest', xml.cest);
-    setCampoTexto('#cfop', xml.cfop);
+    aplicarCfopPadraoEmpresaNoCadastro(xml);
     setCampoTexto('#csosn', xml.csosn || xml.cst);
     if (xml.origem != null && xml.origem !== '' && $('#origem').length) {
       $('#origem').val(Number(xml.origem) || 0);
@@ -2346,6 +2479,10 @@
 
       showProdutoModal(null);
 
+      if (typeof window.aplicarPadraoFiscalNovoProduto === 'function') {
+        window.aplicarPadraoFiscalNovoProduto().catch(() => {});
+      }
+
       const el = document.getElementById('produtoModal');
       if (!el) {
         notificar('Não foi possível abrir o cadastro de produto.', 'danger');
@@ -2385,6 +2522,9 @@
         setTimeout(aplicarPrefill, 120);
         setTimeout(() => {
           aplicarPrefill();
+          if (typeof window.aplicarCfopPadraoEmpresaNoFormulario === 'function') {
+            window.aplicarCfopPadraoEmpresaNoFormulario();
+          }
           focarCampoCadastroAposMiip();
         }, 350);
       };
@@ -2492,7 +2632,136 @@
     liberarCacheUltimasComprasRevisao();
     fecharModal();
     estado = null;
-    if (typeof cb === 'function') cb();
+    // Sessão permanece EM_ANDAMENTO no backend — progresso não é apagado.
+    if (typeof cb === 'function') cb({ pausada: true });
+  }
+
+  /**
+   * Aplica decisões já persistidas na sessão local (retomada).
+   */
+  function aplicarDecisoesPersistidas(sessao, opcoesSessao) {
+    const decisoes = opcoesSessao?.dadosImportacao?.decisoes
+      || opcoesSessao?.decisoes
+      || [];
+    const itensParse = opcoesSessao?.dadosImportacao?.itensParse;
+    if (Array.isArray(itensParse) && itensParse.length && Array.isArray(sessao.itens)) {
+      itensParse.forEach((it, idx) => {
+        if (sessao.itens[idx] && it && typeof it === 'object') {
+          Object.assign(sessao.itens[idx], it);
+        }
+      });
+    }
+
+    (decisoes || []).forEach((d) => {
+      const idx = Number(d.itemIndex);
+      if (!Number.isInteger(idx) || idx < 0) return;
+      const decisao = String(d.decisao || '').toUpperCase();
+      if (decisao === 'IGNORAR' || decisao === 'IGNORADO') {
+        if (!sessao.ignoradas.includes(idx)) sessao.ignoradas.push(idx);
+        if (sessao.itens[idx]) {
+          sessao.itens[idx].miip_revisao_status = 'ignorado';
+          sessao.itens[idx].miip_revisao_decisao = 'IGNORAR';
+        }
+      } else {
+        if (!sessao.resolvidas.includes(idx)) {
+          sessao.resolvidas.push(idx);
+          sessao.confirmadosManualmente += 1;
+        }
+        if (sessao.itens[idx]) {
+          sessao.itens[idx].miip_revisao_status = 'confirmado';
+          sessao.itens[idx].miip_revisao_decisao = decisao || 'CONFIRMAR';
+          if (d.produtoDestinoId != null) {
+            sessao.itens[idx].produto_id = Number(d.produtoDestinoId);
+          }
+        }
+      }
+    });
+
+    // Também restaura a partir do parse (itens já mesclados no backend)
+    (sessao.itens || []).forEach((item, idx) => {
+      const st = String(item?.miip_revisao_status || item?.miip_revisao_decisao || '').toUpperCase();
+      if (!st) return;
+      if (st === 'IGNORAR' || st === 'IGNORADO') {
+        if (!sessao.ignoradas.includes(idx)) sessao.ignoradas.push(idx);
+      } else if (['CONFIRMAR', 'CONFIRMADO', 'CADASTRAR', 'ASSOCIAR', 'CONCLUIDO'].includes(st)) {
+        if (!sessao.resolvidas.includes(idx) && !sessao.ignoradas.includes(idx)) {
+          sessao.resolvidas.push(idx);
+        }
+      }
+    });
+
+    if (opcoesSessao?.progresso) {
+      sessao.progressoPersistido = opcoesSessao.progresso;
+    }
+
+    // Posiciona no primeiro pendente
+    const primeiro = opcoesSessao?.progresso?.primeiroPendente;
+    if (primeiro != null && Number.isInteger(Number(primeiro))) {
+      const alvo = Number(primeiro);
+      const pos = sessao.pendencias.findIndex((p) => Number(p.indice) === alvo);
+      if (pos >= 0) sessao.indiceAtual = pos;
+    } else {
+      proximaAberta(sessao, 0);
+      // se índice atual já está aberto, ok; senão busca próximo
+      if (!pendenciaAberta(sessao, sessao.pendencias[sessao.indiceAtual])) {
+        proximaAberta(sessao, 1);
+      }
+    }
+  }
+
+  function iniciar(opcoes) {
+    if (!opcoes?.dadosImportacao?.miip_importacao?.usarMiipImportacaoXML) {
+      if (typeof opcoes.onConcluir === 'function') {
+        opcoes.onConcluir({ itens: opcoes.dadosImportacao?.itens || [], estatisticas: {} });
+      }
+      return;
+    }
+
+    const sessao = montarSessao(opcoes.dadosImportacao);
+
+    estado = {
+      opcoes: {
+        apiUrl: opcoes.apiUrl || (typeof API_URL !== 'undefined' ? API_URL : '/api'),
+        produtos: opcoes.produtos || [],
+        obterUsuario: opcoes.obterUsuario || (() => null),
+        abrirCadastroProduto: opcoes.abrirCadastroProduto || null,
+        onConcluir: opcoes.onConcluir,
+        onCancelar: opcoes.onCancelar,
+        documento: opcoes.documento || null,
+        acoesDocumento: opcoes.acoesDocumento || null,
+        sessaoPersistente: opcoes.sessaoPersistente || null
+      },
+      sessao,
+      inteligencia: null,
+      modal: null,
+      _encerrando: false,
+      _persistindoDecisao: false,
+      correlationId: opcoes.correlationId || null
+    };
+
+    if (opcoes.sessaoPersistente) {
+      aplicarDecisoesPersistidas(sessao, opcoes.sessaoPersistente);
+    }
+
+    estado.inteligencia = montarInteligenciaNaAbertura(
+      { ...opcoes, dadosImportacao: opcoes.dadosImportacao, produtos: opcoes.produtos },
+      sessao
+    );
+
+    // RC7.5 — sem pendências: conclui e devolve à Central (sem UI de Compra).
+    if (estado.sessao.pendencias.length === 0 || contarAbertas(estado.sessao) === 0) {
+      encerrarRevisaoAutomaticamente(
+        estado.sessao.pendencias.length === 0 ? 'xml_sem_pendencias' : 'todas_pendencias_resolvidas'
+      );
+      return;
+    }
+
+    abrirModal();
+    renderTelaRevisao();
+    if (opcoes.sessaoPersistente?.recuperada) {
+      notificar('Revisão retomada do ponto em que parou.', 'info');
+      atualizarBadgePersistencia('Salvo', 'ok');
+    }
   }
 
   function onKeydown(event) {
@@ -2676,48 +2945,6 @@
     // RC3.7.6.4 — cache em memória só durante a revisão
     snap.cacheUltimasCompras = {};
     return snap;
-  }
-
-  function iniciar(opcoes) {
-    if (!opcoes?.dadosImportacao?.miip_importacao?.usarMiipImportacaoXML) {
-      if (typeof opcoes.onConcluir === 'function') {
-        opcoes.onConcluir({ itens: opcoes.dadosImportacao?.itens || [], estatisticas: {} });
-      }
-      return;
-    }
-
-    const sessao = montarSessao(opcoes.dadosImportacao);
-
-    estado = {
-      opcoes: {
-        apiUrl: opcoes.apiUrl || (typeof API_URL !== 'undefined' ? API_URL : '/api'),
-        produtos: opcoes.produtos || [],
-        obterUsuario: opcoes.obterUsuario || (() => null),
-        abrirCadastroProduto: opcoes.abrirCadastroProduto || null,
-        onConcluir: opcoes.onConcluir,
-        onCancelar: opcoes.onCancelar,
-        documento: opcoes.documento || null,
-        acoesDocumento: opcoes.acoesDocumento || null
-      },
-      sessao,
-      inteligencia: null,
-      modal: null,
-      _encerrando: false
-    };
-
-    estado.inteligencia = montarInteligenciaNaAbertura(
-      { ...opcoes, dadosImportacao: opcoes.dadosImportacao, produtos: opcoes.produtos },
-      sessao
-    );
-
-    // RC7.5 — sem pendências: conclui e devolve à Central (sem UI de Compra).
-    if (estado.sessao.pendencias.length === 0) {
-      encerrarRevisaoAutomaticamente('xml_sem_pendencias');
-      return;
-    }
-
-    abrirModal();
-    renderTelaRevisao();
   }
 
   global.MiipCentralRevisao = {

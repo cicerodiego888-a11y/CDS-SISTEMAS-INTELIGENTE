@@ -274,6 +274,14 @@
   cursor: not-allowed;
 }
 
+.pdv-autocomplete-sem-estoque {
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #b45309;
+  text-transform: uppercase;
+}
+
 .pdv-autocomplete-nome {
   font-weight: 700;
   color: #0f172a;
@@ -2422,4 +2430,18 @@ html[data-pdv-scale="140"] .pdv-profissional.pdv-fullscreen {
 html[data-pdv-scale="125"] .pdv-atalhos,
 html[data-pdv-scale="140"] .pdv-atalhos {
   max-height: 4.8rem;
+}
+
+.pdv-autocomplete-sugestoes-titulo {
+  margin: 8px 4px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.pdv-autocomplete-item.sugestao {
+  border-style: dashed;
+  background: #f8fafc;
 }

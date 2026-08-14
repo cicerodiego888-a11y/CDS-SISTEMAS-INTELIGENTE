@@ -29,6 +29,7 @@ before(() => {
     getElementById() { return null; }
   };
   // eslint-disable-next-line global-require
+  require('../../frontend/shared/js/buscaProdutoTexto.js');
   require('../../frontend/shared/js/pdvBuscaProduto.js');
   helpers = global.PdvBuscaProduto && global.PdvBuscaProduto._test;
   assert.ok(helpers, 'PdvBuscaProduto._test deve estar exportado');
@@ -128,8 +129,8 @@ describe('RC14.15.15 — proteções de fonte (stale / Enter / MIP)', () => {
     assert.match(src, /Resultado desatualizado/);
     assert.match(src, /identificadoresNumericosIguais/);
     assert.match(src, /filtrarResultadosParaTermo/);
-    // não confirma match_exato sem origem === termo
-    assert.match(src, /origem === termo && produtoCorrespondeAoTermo/);
+    assert.match(src, /origem === termo && \(!ehTermoSomenteDigitos\(termo\) \|\| produtoCorrespondeAoTermo/);
+    assert.match(src, /ehTermoSomenteDigitos\(termoAtual\)/);
     assert.doesNotMatch(src, /plu\.includes\(termo\)/);
   });
 
@@ -160,6 +161,29 @@ describe('RC14.15.15 — proteções de fonte (stale / Enter / MIP)', () => {
     const milho = FIXTURES[0];
     assert.equal(helpers.produtoCorrespondeAoTermo(milho, '39'), true);
     assert.equal(helpers.produtoCorrespondeAoTermo(milho, '3'), false);
+  });
+});
+
+describe('busca PDV por nome completo (02M / FUSÃO)', () => {
+  it('FITA 02M encontra cadastro 2M com acento', () => {
+    const produto = {
+      id: 80,
+      codigo: '80',
+      nome: 'FITA ISOLANTE 19MM X 2M PT AUTO FUSAO SCOTCH',
+      plu: '',
+      codigo_barras: ''
+    };
+    assert.equal(
+      helpers.produtoCorrespondeAoTermo(produto, 'FITA ISOLANTE 19MM X 02M PT AUTO FUSÃO SCOTCH'),
+      true
+    );
+    assert.equal(helpers.produtoCorrespondeAoTermo(produto, 'ANTIRRESPINGO DE SOLDA'), false);
+  });
+
+  it('confirmação por nome não exige includes literal do termo', () => {
+    const src = fs.readFileSync(path.join(ROOT, 'frontend/shared/js/pdvBuscaProduto.js'), 'utf8');
+    assert.match(src, /if \(ehTermoSomenteDigitos\(termoAtual\)\)/);
+    assert.match(src, /produtosDisponiveis/);
   });
 });
 

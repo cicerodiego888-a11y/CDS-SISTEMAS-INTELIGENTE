@@ -1,6 +1,6 @@
 /**
- * Configurações → Avançadas → Implantação → Importação Inicial de Produtos (V1.0.4)
- * Modos: CADASTRO_INICIAL | ATUALIZAR_QUANTIDADES (mesma tela)
+ * Configurações → Avançadas → Implantação → Importação Inicial de Produtos (V1.0.18)
+ * Modos: CADASTRO_INICIAL | ATUALIZAR_QUANTIDADES + modo_fiscal_importacao
  */
 'use strict';
 
@@ -10,17 +10,34 @@ const ImportacaoEstadoApi = (typeof window !== 'undefined' && window.ImportacaoI
 
 const MODO_CADASTRO = 'CADASTRO_INICIAL';
 const MODO_QUANTIDADES = 'ATUALIZAR_QUANTIDADES';
+const MODO_FISCAL = 'FISCAL';
+const MODO_NAO_FISCAL = 'NAO_FISCAL';
 
 function criarEstadoVazioImportacao(modo) {
   if (ImportacaoEstadoApi) return ImportacaoEstadoApi.criarEstadoVazioImportacao(modo);
   return {
     modo: modo || MODO_CADASTRO,
+    modo_fiscal_importacao: null,
     arquivoNome: null,
     sessaoId: null,
     resumo: null,
     linhas: [],
     resultado: null
   };
+}
+
+function rotuloModoFiscalImportacaoUi(modoFiscal) {
+  if (ImportacaoEstadoApi?.rotuloModoFiscal) {
+    return ImportacaoEstadoApi.rotuloModoFiscal(modoFiscal);
+  }
+  return modoFiscal === MODO_NAO_FISCAL
+    ? 'NÃO FISCAL — SEM NF'
+    : 'FISCAL — COM NF';
+}
+
+function obterModoFiscalSelecionadoUi() {
+  const marcado = document.querySelector('input[name="modoFiscalImportacao"]:checked');
+  return marcado ? String(marcado.value || '').toUpperCase() : null;
 }
 
 function resetarEstadoImportacaoInicial(estadoAnterior) {
@@ -95,6 +112,9 @@ function textoBotaoAcaoPrincipal(disabledHint) {
 function aplicarLimpezaUiImportacaoInicial() {
   const input = document.getElementById('arquivoImportacaoProdutos');
   if (input) input.value = '';
+
+  $('input[name="modoFiscalImportacao"]').prop('checked', false);
+  $('#avisoModoFiscalImportacao').addClass('d-none').text('');
 
   $('#btnValidarImportacaoProdutos')
     .prop('disabled', true)
@@ -189,6 +209,7 @@ function atualizarTextosModoImportacao() {
       : 'Importe uma base de produtos para implantação inicial do cliente. Formato V1: XLSX. Importa produtos e registra o estoque inicial informado no arquivo.'
   );
   $('#avisoModoQuantidades').toggleClass('d-none', !qtd);
+  atualizarVisibilidadeTratamentoFiscal();
   $('#hintArquivoImportacao').text(
     qtd
       ? 'Ex.: CDS_Atualizacao_Quantidades_PRIMEIRA_IMPORTACAO.xlsx (aba QUANTIDADES)'
@@ -277,6 +298,7 @@ function solicitarTrocaModoImportacao(novoModo) {
     const { estado } = trocarModoImportacao(importacaoInicialState, novoModo);
     importacaoInicialState = estado;
     aplicarLimpezaUiImportacaoInicial();
+    atualizarVisibilidadeTratamentoFiscal();
     showNotification(
       novoModo === MODO_QUANTIDADES
         ? 'Modo: Atualizar Quantidades'
@@ -351,6 +373,25 @@ function loadImportacaoInicialProdutos() {
       Ele somente registra as quantidades dos produtos já existentes.
     </div>
 
+    <div class="card mb-3" id="cardTratamentoFiscalImportacao">
+      <div class="card-header"><i class="fas fa-balance-scale"></i> Tratamento fiscal da importação</div>
+      <div class="card-body">
+        <p class="text-muted small mb-3">
+          Define o tratamento fiscal dos produtos NOVOS desta importação.
+          Produtos já cadastrados preservam sua classificação fiscal atual.
+        </p>
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="radio" name="modoFiscalImportacao" id="modoFiscalImportacaoFiscal" value="FISCAL">
+          <label class="form-check-label fw-semibold" for="modoFiscalImportacaoFiscal">FISCAL — COM NF</label>
+        </div>
+        <div class="form-check">
+          <input class="form-check-input" type="radio" name="modoFiscalImportacao" id="modoFiscalImportacaoNaoFiscal" value="NAO_FISCAL">
+          <label class="form-check-label fw-semibold" for="modoFiscalImportacaoNaoFiscal">NÃO FISCAL — SEM NF</label>
+        </div>
+        <div class="text-danger small mt-2 d-none" id="avisoModoFiscalImportacao"></div>
+      </div>
+    </div>
+
     <div class="card mb-3">
       <div class="card-header"><i class="fas fa-upload"></i> 1. Selecionar arquivo</div>
       <div class="card-body">
@@ -419,6 +460,11 @@ function loadImportacaoInicialProdutos() {
   $('#btnModoCadastroInicial').on('click', () => solicitarTrocaModoImportacao(MODO_CADASTRO));
   $('#btnModoAtualizarQuantidades').on('click', () => solicitarTrocaModoImportacao(MODO_QUANTIDADES));
 
+  $('input[name="modoFiscalImportacao"]').on('change', function onModoFiscalChange() {
+    importacaoInicialState.modo_fiscal_importacao = obterModoFiscalSelecionadoUi();
+    $('#avisoModoFiscalImportacao').addClass('d-none').text('');
+  });
+
   $('#arquivoImportacaoProdutos').on('change', function onFileChange() {
     const file = this.files && this.files[0];
     importacaoInicialState.arquivoNome = file ? file.name : null;
@@ -436,6 +482,12 @@ function loadImportacaoInicialProdutos() {
   $('#btnValidarImportacaoProdutos').on('click', validarArquivoImportacaoInicial);
   $('#btnImportarProdutosFinal').on('click', confirmarImportacaoInicialProdutos);
   $('#btnLimparImportacaoProdutos').on('click', confirmarLimparImportacaoInicial);
+  atualizarVisibilidadeTratamentoFiscal();
+}
+
+function atualizarVisibilidadeTratamentoFiscal() {
+  const qtd = isModoQuantidades();
+  $('#cardTratamentoFiscalImportacao').toggleClass('d-none', qtd);
 }
 
 async function validarArquivoImportacaoInicial() {
@@ -446,9 +498,26 @@ async function validarArquivoImportacaoInicial() {
     return;
   }
 
+  let modoFiscal = null;
+  if (!isModoQuantidades()) {
+    modoFiscal = obterModoFiscalSelecionadoUi();
+    if (!modoFiscal || (modoFiscal !== MODO_FISCAL && modoFiscal !== MODO_NAO_FISCAL)) {
+      $('#avisoModoFiscalImportacao')
+        .removeClass('d-none')
+        .text('Selecione se esta importação é Fiscal ou Não Fiscal.');
+      showNotification('Selecione se esta importação é Fiscal ou Não Fiscal.', 'warning');
+      return;
+    }
+    importacaoInicialState.modo_fiscal_importacao = modoFiscal;
+    $('#avisoModoFiscalImportacao').addClass('d-none').text('');
+  }
+
   const form = new FormData();
   form.append('arquivo', file);
   form.append('modo', importacaoInicialState.modo || MODO_CADASTRO);
+  if (modoFiscal) {
+    form.append('modo_fiscal_importacao', modoFiscal);
+  }
 
   $('#btnValidarImportacaoProdutos').prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Validando...');
   try {
@@ -466,6 +535,9 @@ async function validarArquivoImportacaoInicial() {
     importacaoInicialState.resumo = data.resumo;
     importacaoInicialState.linhas = data.linhas || [];
     if (data.modo) importacaoInicialState.modo = data.modo;
+    if (data.modo_fiscal_importacao) {
+      importacaoInicialState.modo_fiscal_importacao = data.modo_fiscal_importacao;
+    }
 
     renderResumoValidacaoImportacao(data, file.name);
     renderCabecalhoPreviewImportacao();
@@ -521,14 +593,25 @@ function renderResumoValidacaoImportacao(data, nomeArquivo) {
   const unEstoque = escapeHtmlImport(r.estoque_inicial_unidade || 'UN');
   const enriquecimentos = Number(r.enriquecimentos || 0);
   const aprNovas = Number(r.apresentacoes_novas || 0);
+  const modoFiscal = data.modo_fiscal_importacao
+    || r.modo_fiscal_importacao
+    || importacaoInicialState.modo_fiscal_importacao;
+  const tratamento = escapeHtmlImport(
+    data.tratamento_fiscal || r.tratamento_fiscal || rotuloModoFiscalImportacaoUi(modoFiscal)
+  );
   $('#resumoValidacaoImportacao').removeClass('d-none').html(`
     <div class="alert alert-light border mb-0">
       <div><strong>Arquivo:</strong> ${escapeHtmlImport(data.arquivo || nomeArquivo)}</div>
+      <div class="mt-2"><strong>TRATAMENTO FISCAL:</strong> ${tratamento}</div>
       <div class="row g-2 mt-2">
         <div class="col-md-3"><strong>Produtos encontrados:</strong> ${r.produtos_encontrados || 0}</div>
         <div class="col-md-3"><strong>Produtos válidos:</strong> ${r.produtos_validos || 0}</div>
         <div class="col-md-3"><strong>Com erro:</strong> ${r.com_erro || 0}</div>
         <div class="col-md-3"><strong>Possíveis duplicados:</strong> ${r.possiveis_duplicados || 0}</div>
+        <div class="col-md-3"><strong>Produtos novos:</strong> ${r.produtos_novos != null ? r.produtos_novos : (r.prontos || 0)}</div>
+        <div class="col-md-3"><strong>Produtos existentes:</strong> ${r.produtos_existentes != null ? r.produtos_existentes : ((r.existentes || 0) + enriquecimentos)}</div>
+        <div class="col-md-3"><strong>Produtos fiscais novos:</strong> ${r.produtos_fiscais_novos || 0}</div>
+        <div class="col-md-3"><strong>Produtos não fiscais novos:</strong> ${r.produtos_nao_fiscais_novos || 0}</div>
         <div class="col-md-3"><strong>Estoque inicial:</strong> ${estoqueTotal} ${unEstoque}</div>
         <div class="col-md-3"><strong>Existentes a enriquecer:</strong> ${enriquecimentos}</div>
         <div class="col-md-3"><strong>Apresentações novas:</strong> ${aprNovas}</div>
@@ -560,6 +643,10 @@ function renderPreviewImportacaoInicial() {
   const html = linhas.map((l, idx) => {
     const p = l.produto || {};
     const e = l.estoque || {};
+    const isFiscal = Number(p.item_fiscal) !== 0;
+    const badgeFiscal = isFiscal
+      ? '<span class="badge bg-primary">Fiscal</span>'
+      : '<span class="badge bg-secondary">Não Fiscal</span>';
     return `<tr>
       <td>${badgeStatusImport(l.status)}</td>
       <td>${escapeHtmlImport(p.nome)}</td>
@@ -572,7 +659,7 @@ function renderPreviewImportacaoInicial() {
       <td>${escapeHtmlImport(e.qtd_origem_label || '—')}</td>
       <td>${escapeHtmlImport(e.conversao_label || '—')}</td>
       <td>${escapeHtmlImport(e.estoque_inicial_label || '—')}</td>
-      <td><span class="badge bg-primary">FISCAL</span></td>
+      <td>${badgeFiscal}</td>
       <td><button type="button" class="btn btn-outline-secondary btn-sm" data-idx="${idx}" onclick="verDetalheImportacaoInicial(${idx})">Ver detalhes</button></td>
     </tr>`;
   }).join('');
@@ -641,7 +728,11 @@ function verDetalheImportacaoInicial(idx) {
               <dt class="col-sm-4">Custo</dt><dd class="col-sm-8">${moedaImport(p.custo_unitario)}</dd>
               <dt class="col-sm-4">Markup</dt><dd class="col-sm-8">${Number(p.markup || 0).toFixed(2)}%</dd>
               <dt class="col-sm-4">Preço</dt><dd class="col-sm-8">${moedaImport(p.preco_venda)}</dd>
-              <dt class="col-sm-4">Fiscal</dt><dd class="col-sm-8">SIM (item_fiscal = 1)</dd>
+              <dt class="col-sm-4">Fiscal</dt><dd class="col-sm-8">${Number(p.item_fiscal) === 0
+                ? 'NÃO FISCAL (item_fiscal = 0)'
+                : 'FISCAL (item_fiscal = 1)'}${p.fiscal_fonte === 'EXISTENTE'
+                ? ' — classificação do banco'
+                : ' — modo desta importação'}</dd>
               <dt class="col-sm-4">Referência</dt><dd class="col-sm-8">${escapeHtmlImport(p.referencia_fabricante || '—')}</dd>
               <dt class="col-sm-4">Código origem</dt><dd class="col-sm-8">${escapeHtmlImport(p.codigo_origem || '—')}</dd>
               <dt class="col-sm-4">Observações</dt><dd class="col-sm-8">${escapeHtmlImport(p.observacoes || '—')}</dd>
@@ -713,6 +804,23 @@ function confirmarImportacaoInicialProdutos() {
     const estoque = Number(r.estoque_inicial_total || 0);
     const un = escapeHtmlImport(r.estoque_inicial_unidade || 'UN');
     const aprNovas = Number(r.apresentacoes_novas || 0);
+    const modoFiscal = importacaoInicialState.modo_fiscal_importacao
+      || r.modo_fiscal_importacao
+      || MODO_FISCAL;
+    const tratamento = rotuloModoFiscalImportacaoUi(modoFiscal);
+    const avisoFiscal = modoFiscal === MODO_NAO_FISCAL
+      ? `<div class="alert alert-secondary py-2">
+           <p class="mb-1"><strong>Tratamento fiscal desta importação:</strong></p>
+           <p class="mb-1">${escapeHtmlImport(tratamento)}</p>
+           <p class="mb-1">Produtos NOVOS serão cadastrados como NÃO FISCAL.</p>
+           <p class="mb-0">Produtos EXISTENTES manterão sua classificação fiscal atual.</p>
+         </div>`
+      : `<div class="alert alert-primary py-2">
+           <p class="mb-1"><strong>Tratamento fiscal desta importação:</strong></p>
+           <p class="mb-1">${escapeHtmlImport(tratamento)}</p>
+           <p class="mb-1">Produtos NOVOS serão cadastrados como FISCAL.</p>
+           <p class="mb-0">Produtos EXISTENTES manterão sua classificação fiscal atual.</p>
+         </div>`;
     const avisoEnriquecimento = enriquecimentos > 0
       ? `<p class="mb-2 text-primary">Existem produtos já cadastrados que receberão apresentações comerciais novas.</p>
          <ul class="mb-2">
@@ -731,6 +839,7 @@ function confirmarImportacaoInicialProdutos() {
               <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
+              ${avisoFiscal}
               ${avisoEnriquecimento}
               <ul class="mb-2">
                 <li>Produtos: <strong>${total}</strong></li>

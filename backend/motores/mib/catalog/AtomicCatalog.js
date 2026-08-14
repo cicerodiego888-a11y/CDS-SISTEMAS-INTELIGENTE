@@ -8,7 +8,18 @@ const SQL_CATALOGO = `
     p.nome,
     COALESCE(NULLIF(TRIM(p.nome_busca), ''), '') AS nome_busca,
     p.codigo,
-    p.codigo_barras,
+    COALESCE(
+      NULLIF(TRIM(p.codigo_barras), ''),
+      (
+        SELECT pi.codigo FROM produto_identificadores pi
+        WHERE pi.produto_id = p.id
+          AND pi.tipo IN ('EAN8', 'EAN13', 'GTIN')
+          AND COALESCE(pi.ativo, 1) = 1
+          AND COALESCE(pi.principal, 0) = 1
+        ORDER BY CASE pi.tipo WHEN 'EAN13' THEN 1 WHEN 'GTIN' THEN 2 ELSE 3 END, pi.id DESC
+        LIMIT 1
+      )
+    ) AS codigo_barras,
     (
       SELECT pi.codigo FROM produto_identificadores pi
       WHERE pi.produto_id = p.id

@@ -51,8 +51,10 @@ function itemFiscal({ valor_fiscal, quantidade_fiscal = 1, preco_unitario }) {
 }
 
 function extrairIcmsTot(xml) {
+  const bloco = xml.match(/<ICMSTot>([\s\S]*?)<\/ICMSTot>/);
+  const fonte = bloco ? bloco[1] : xml;
   const pegar = (tag) => {
-    const m = xml.match(new RegExp(`<${tag}>([^<]+)</${tag}>`));
+    const m = fonte.match(new RegExp(`<${tag}>([^<]+)</${tag}>`));
     return m ? Number(m[1]) : null;
   };
   return {

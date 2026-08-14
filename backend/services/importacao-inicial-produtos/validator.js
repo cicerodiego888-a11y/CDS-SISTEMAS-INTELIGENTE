@@ -16,7 +16,10 @@ const {
   calcularCustoTotalEstoqueInicial,
   flagOpcional,
   classificarApresentacoesArquivo,
-  normalizarUnidadeBaseCadastro
+  normalizarUnidadeBaseCadastro,
+  validarModoFiscalImportacao,
+  itemFiscalDeModoImportacao,
+  rotuloModoFiscalImportacao
 } = require('./helpers');
 
 function dbAll(db, sql, params = []) {
@@ -204,7 +207,7 @@ function montarEstoquePreview(produto, pricing) {
 async function carregarIndicesExistentes(db) {
   const produtos = await dbAll(db, `
     SELECT p.id, p.codigo, p.nome, p.codigo_barras, p.marca_id, p.preco_compra, p.preco_venda,
-           p.unidade, p.estoque_atual, p.saldo_fiscal,
+           p.unidade, p.estoque_atual, p.saldo_fiscal, p.item_fiscal,
            m.nome AS marca_nome
     FROM produtos p
     LEFT JOIN marcas m ON m.id = p.marca_id
@@ -326,7 +329,9 @@ function statusBloqueiaImportacao(status) {
   return status === STATUS.ERRO || status === STATUS.CODIGO_DUPLICADO_ARQUIVO;
 }
 
-async function validarImportacao(db, dadosExtraidos, { nomeArquivo } = {}) {
+async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_importacao } = {}) {
+  const modoFiscal = validarModoFiscalImportacao(modo_fiscal_importacao);
+  const itemFiscalNovos = itemFiscalDeModoImportacao(modoFiscal);
   const indices = await carregarIndicesExistentes(db);
   const duplicidadesArquivo = mapearDuplicidadesCodigoArquivo(dadosExtraidos.produtos);
   const linhas = [];
@@ -337,6 +342,8 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo } = {}) {
   let atencao = 0;
   let estoqueInicialTotal = 0;
   let apresentacoesNovasTotal = 0;
+  let novosFiscais = 0;
+  let novosNaoFiscais = 0;
 
   for (let idx = 0; idx < (dadosExtraidos.produtos || []).length; idx += 1) {
     const produtoRaw = dadosExtraidos.produtos[idx];
@@ -453,6 +460,21 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo } = {}) {
 
     if (statusBloqueiaImportacao(status)) erros += 1;
 
+    // V1.0.18 — item_fiscal: novos seguem o modo; existentes preservam o banco
+    let itemFiscalLinha;
+    let fiscalFonte;
+    if (match?.produto) {
+      itemFiscalLinha = Number(match.produto.item_fiscal) === 0 ? 0 : 1;
+      fiscalFonte = 'EXISTENTE';
+    } else {
+      itemFiscalLinha = itemFiscalNovos;
+      fiscalFonte = 'MODO_IMPORTACAO';
+      if (!match && status === STATUS.PRONTO) {
+        if (itemFiscalLinha === 1) novosFiscais += 1;
+        else novosNaoFiscais += 1;
+      }
+    }
+
     const apresentacaoLabel = pricing.apresentacao_principal
       ? `${pricing.apresentacao_principal.tipo} ${pricing.apresentacao_principal.quantidade} ${pricing.apresentacao_principal.unidade}`
       : '—';
@@ -463,8 +485,9 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo } = {}) {
       mensagens,
       produto: {
         ...produtoRaw,
-        item_fiscal: 1,
-        fiscal: true,
+        item_fiscal: itemFiscalLinha,
+        fiscal: itemFiscalLinha === 1,
+        fiscal_fonte: fiscalFonte,
         markup: pricing.markup,
         custo_unitario: pricing.custo_unitario,
         preco_venda: pricing.preco_venda,
@@ -484,6 +507,8 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo } = {}) {
 
   return {
     arquivo: nomeArquivo || null,
+    modo_fiscal_importacao: modoFiscal,
+    tratamento_fiscal: rotuloModoFiscalImportacao(modoFiscal),
     resumo: {
       produtos_encontrados: linhas.length,
       produtos_validos: prontos + existentes + enriquecimentos + atencao,
@@ -496,7 +521,13 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo } = {}) {
       atencao,
       erros,
       estoque_inicial_total: estoqueInicialTotal,
-      estoque_inicial_unidade: 'UN'
+      estoque_inicial_unidade: 'UN',
+      modo_fiscal_importacao: modoFiscal,
+      tratamento_fiscal: rotuloModoFiscalImportacao(modoFiscal),
+      produtos_novos: prontos,
+      produtos_existentes: existentes + enriquecimentos + atencao,
+      produtos_fiscais_novos: novosFiscais,
+      produtos_nao_fiscais_novos: novosNaoFiscais
     },
     linhas,
     pode_importar: erros === 0 && importaveis > 0

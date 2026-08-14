@@ -124,6 +124,22 @@ class CentralEntradasService {
     return this._orchestrator.concluirRevisao(id, dados);
   }
 
+  obterOuCriarSessaoRevisao(id, opcoes = {}) {
+    return this._orchestrator.obterOuCriarSessaoRevisao(id, opcoes);
+  }
+
+  obterSessaoRevisao(id) {
+    return this._orchestrator.obterSessaoRevisao(id);
+  }
+
+  salvarDecisaoRevisao(id, itemIndex, dados = {}) {
+    return this._orchestrator.salvarDecisaoRevisao(id, itemIndex, dados);
+  }
+
+  reiniciarSessaoRevisao(id, opcoes = {}) {
+    return this._orchestrator.reiniciarSessaoRevisao(id, opcoes);
+  }
+
   obterPayloadCompra(id) {
     return this._orchestrator.obterPayloadCompra(id);
   }

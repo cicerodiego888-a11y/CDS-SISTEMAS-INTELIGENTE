@@ -43,7 +43,7 @@
         </header>
 
         <section class="lx-card" aria-label="Acesso">
-            <form id="loginForm" autocomplete="on" novalidate>
+            <form id="loginForm" autocomplete="off" novalidate>
                 <div class="lx-field">
                     <label for="username">Usuário</label>
                     <div class="lx-input-wrap">
@@ -57,7 +57,9 @@
                             autofocus
                             tabindex="1"
                             placeholder="Usuário"
-                            autocomplete="username"
+                            autocomplete="off"
+                            data-lpignore="true"
+                            data-1p-ignore="true"
                         >
                     </div>
                 </div>
@@ -74,7 +76,9 @@
                             required
                             tabindex="2"
                             placeholder="Senha"
-                            autocomplete="current-password"
+                            autocomplete="off"
+                            data-lpignore="true"
+                            data-1p-ignore="true"
                         >
                     </div>
                 </div>

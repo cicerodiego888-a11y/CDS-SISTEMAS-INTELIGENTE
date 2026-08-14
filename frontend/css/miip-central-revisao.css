@@ -38,6 +38,47 @@
   color: #fff;
 }
 
+.miip-central-progresso-persistente {
+  margin-top: 0.25rem;
+  opacity: 0.95;
+}
+
+.miip-central-progresso-persistente .miip-central-progresso-label {
+  display: block;
+  opacity: 0.8;
+  font-size: 0.75rem;
+}
+
+.miip-central-persistencia-badge {
+  display: inline-block;
+  margin-top: 0.35rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.miip-central-persistencia-badge--neutro {
+  background: rgba(255, 255, 255, 0.12);
+  color: #e2e8f0;
+}
+
+.miip-central-persistencia-badge--salvando {
+  background: rgba(251, 191, 36, 0.25);
+  color: #fde68a;
+}
+
+.miip-central-persistencia-badge--ok {
+  background: rgba(34, 197, 94, 0.28);
+  color: #bbf7d0;
+}
+
+.miip-central-persistencia-badge--erro {
+  background: rgba(239, 68, 68, 0.28);
+  color: #fecaca;
+}
+
 .miip-central-header .modal-title i {
   margin-right: 0.45rem;
 }

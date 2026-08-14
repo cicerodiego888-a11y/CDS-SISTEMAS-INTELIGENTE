@@ -46,9 +46,11 @@ router.post('/validar', (req, res) => {
     }
     try {
       const modo = req.body?.modo || req.query?.modo || 'CADASTRO_INICIAL';
+      const modoFiscal = req.body?.modo_fiscal_importacao ?? req.query?.modo_fiscal_importacao;
       const resultado = await importacao.validarArquivoBuffer(db, req.file.buffer, {
         nomeArquivo: req.file.originalname,
-        modo
+        modo,
+        modo_fiscal_importacao: modoFiscal
       });
       return res.json({
         sucesso: true,

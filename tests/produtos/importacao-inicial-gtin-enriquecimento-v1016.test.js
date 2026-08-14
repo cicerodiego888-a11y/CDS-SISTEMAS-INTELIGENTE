@@ -164,7 +164,7 @@ describe('V1.0.16 — enriquecimento GTIN em produto existente', () => {
         'GTIN/EAN': '7891799529031'
       })]
     });
-    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'gtin-enr.xlsx' });
+    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'gtin-enr.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     assert.equal(validacao.linhas[0].status, STATUS.EXISTENTE_APRESENTACAO_NOVA);
     assert.equal(validacao.linhas[0].enriquecimento.corrigir_codigo_barras, true);
     assert.equal(validacao.pode_importar, true);
@@ -195,7 +195,7 @@ describe('V1.0.16 — enriquecimento GTIN em produto existente', () => {
     const buffer = svc.gerarXlsxFixture({
       produtos: [linhaProduto('2002', 'PROD IGUAL', { 'GTIN/EAN': '7891111111111' })]
     });
-    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'igual.xlsx' });
+    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'igual.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     assert.equal(validacao.linhas[0].status, STATUS.EXISTENTE);
     assert.equal(validacao.pode_importar, false);
   });
@@ -209,7 +209,7 @@ describe('V1.0.16 — enriquecimento GTIN em produto existente', () => {
     const buffer = svc.gerarXlsxFixture({
       produtos: [linhaProduto('2003', 'PROD DIF', { 'GTIN/EAN': '7892222222222' })]
     });
-    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'dif.xlsx' });
+    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'dif.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     assert.equal(validacao.linhas[0].status, STATUS.EXISTENTE);
 
     const resultado = await executarImportacao(db, validacao, { dbPath, pastaBackup });
@@ -227,7 +227,7 @@ describe('V1.0.16 — enriquecimento GTIN em produto existente', () => {
     const buffer = svc.gerarXlsxFixture({
       produtos: [linhaProduto('2004', 'SEM GTIN ARQ')]
     });
-    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'sem.xlsx' });
+    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'sem.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     assert.equal(validacao.linhas[0].status, STATUS.EXISTENTE);
     assert.ok(!validacao.linhas[0].enriquecimento?.corrigir_codigo_barras);
   });
@@ -239,7 +239,7 @@ describe('V1.0.16 — enriquecimento GTIN em produto existente', () => {
         'Qtd documento': 1
       })]
     });
-    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'novo.xlsx' });
+    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'novo.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     assert.equal(validacao.linhas[0].status, STATUS.PRONTO);
     assert.equal(validacao.linhas[0].produto.codigo_barras, '7893333333333');
 
@@ -254,7 +254,7 @@ describe('V1.0.16 — enriquecimento GTIN em produto existente', () => {
         'GTIN/EAN': '7891799529031'
       })]
     });
-    const v2 = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'gtin-enr-2.xlsx' });
+    const v2 = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'gtin-enr-2.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     assert.equal(v2.linhas[0].status, STATUS.EXISTENTE);
     assert.equal(v2.pode_importar, false);
 
@@ -277,7 +277,7 @@ describe('V1.0.16 — enriquecimento GTIN em produto existente', () => {
     const buffer = svc.gerarXlsxFixture({
       produtos: [linhaProduto('2007', 'FISCAL UM', { 'GTIN/EAN': '7894444444444' })]
     });
-    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'f1.xlsx' });
+    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'f1.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     await executarImportacao(db, validacao, { dbPath, pastaBackup, importId: validacao.sessao_id });
     const row = await get(db, 'SELECT item_fiscal, codigo_barras FROM produtos WHERE id = ?', [id]);
     assert.equal(row.item_fiscal, 1);
@@ -294,7 +294,7 @@ describe('V1.0.16 — enriquecimento GTIN em produto existente', () => {
     const buffer = svc.gerarXlsxFixture({
       produtos: [linhaProduto('2008', 'NAO FISCAL', { 'GTIN/EAN': '7895555555555' })]
     });
-    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'f0.xlsx' });
+    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'f0.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     await executarImportacao(db, validacao, { dbPath, pastaBackup, importId: validacao.sessao_id });
     const row = await get(db, 'SELECT item_fiscal, codigo_barras FROM produtos WHERE id = ?', [id]);
     assert.equal(row.item_fiscal, 0);

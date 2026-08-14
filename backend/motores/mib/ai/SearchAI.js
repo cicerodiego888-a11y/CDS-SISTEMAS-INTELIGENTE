@@ -3,6 +3,60 @@
 const { tokenizar } = require('../core/tokenizer');
 const { levenshtein, similaridade } = require('../core/levenshtein');
 const { normalizarNomeBusca } = require('../core/normalizarNomeBusca');
+const CatalogSnapshot = require('../catalog/CatalogSnapshot');
+const { textoContemToken, haystackBuscaProduto } = require('../core/compararTextoBusca');
+
+/**
+ * Tokens que realmente restringem a busca.
+ * Ignora "1", "tc", "sp" quando o termo já tem palavras longas —
+ * esses curtos casam como substring em quase qualquer nome_busca concatenado.
+ */
+function tokensSignificativos(tokens) {
+  const unicos = [];
+  const vistos = new Set();
+  for (const raw of tokens || []) {
+    const t = String(raw || '');
+    if (!t || vistos.has(t)) continue;
+    vistos.add(t);
+    unicos.push(t);
+  }
+  const fortes = unicos.filter((t) => t.length >= 3 || (t.length >= 2 && /\d/.test(t)));
+  return { unicos, fortes, exigidos: fortes.length ? fortes : unicos };
+}
+
+/**
+ * INTER casa INTERRUPTOR (e o inverso) sem aceitar "sp" dentro de "antirrespigo".
+ * Token só dígitos NÃO usa prefixo no nome — senão EAN 789… casa "789" no título
+ * e a busca nunca chega no código de barras.
+ */
+function tokenCompativelNoProduto(produto, token, alts) {
+  const t = String(token || '');
+  if (!t) return false;
+
+  const hay = haystackBuscaProduto(produto);
+  if (/^\d+$/.test(t)) {
+    return CatalogSnapshot.idsNumericosIguais(produto.codigo, t)
+      || CatalogSnapshot.idsNumericosIguais(produto.codigo_barras, t)
+      || CatalogSnapshot.idsNumericosIguais(produto.plu, t)
+      || textoContemToken(hay, t);
+  }
+
+  if (textoContemToken(hay, t)) return true;
+  for (const e of alts || []) {
+    if (e && e !== t && textoContemToken(hay, e)) return true;
+  }
+  if (t.length < 3 || !/[a-z]/.test(t)) return false;
+  const palavras = String(produto?.nome || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length >= 3);
+  for (const w of palavras) {
+    if (w === t || w.startsWith(t) || t.startsWith(w)) return true;
+  }
+  return false;
+}
 
 /**
  * SearchAI — correção, abreviações, apelidos e sugestões.
@@ -130,6 +184,8 @@ class SearchAI {
 
   /**
    * Filtra catálogo por tokens/sinônimos.
+   * Com várias palavras, exige TODAS as significativas (AND).
+   * Token curto sozinho ("tc", "ph") continua OR — inclusive via sinônimo.
    */
   buscarPorTokens(tokensExpandidos, opcoes = {}) {
     if (!tokensExpandidos?.length) return [];
@@ -137,33 +193,53 @@ class SearchAI {
     const modoFiscal = opcoes.modoFiscal === true;
     const snapshot = this.catalog.ativo ? this.catalog.ativo() : null;
     const lista = snapshot?.lista || [];
+    const originais = (opcoes.tokensOriginais && opcoes.tokensOriginais.length)
+      ? opcoes.tokensOriginais
+      : tokensExpandidos;
+    const { exigidos } = tokensSignificativos(originais);
+    if (!exigidos.length) return [];
     const out = [];
 
     for (const p of lista) {
       if (modoFiscal && Number(p.item_fiscal) !== 1) continue;
-      const nb = p.nome_busca || '';
       let hits = 0;
       let sinonimo = false;
-      for (const t of tokensExpandidos) {
-        if (t && nb.includes(t)) {
+      let ok = true;
+      for (const t of exigidos) {
+        if (tokenCompativelNoProduto(p, t, [])) {
           hits += 1;
-          // se token não está no termo original compactado, veio de sinônimo
-          if (opcoes.tokensOriginais && !opcoes.tokensOriginais.includes(t)) {
-            sinonimo = true;
-          }
+          continue;
         }
+        const alts = this._sinonimosDoToken(t, tokensExpandidos, originais);
+        if (tokenCompativelNoProduto(p, t, alts)) {
+          hits += 1;
+          sinonimo = true;
+          continue;
+        }
+        ok = false;
+        break;
       }
-      if (hits > 0) {
-        out.push({
-          ...p,
-          preco_venda: p.preco,
-          _matchTipo: { sinonimo, tokens: hits },
-          match_exato: 0
-        });
-      }
+      if (!ok) continue;
+      out.push({
+        ...p,
+        preco_venda: p.preco,
+        _matchTipo: { sinonimo, tokens: hits },
+        match_exato: 0
+      });
       if (out.length >= limite * 4) break;
     }
     return out;
+  }
+
+  _sinonimosDoToken(token, tokensExpandidos, originais) {
+    const t = String(token || '');
+    if (!t) return [];
+    if (this.sinonimos && typeof this.sinonimos.expandir === 'function') {
+      return this.sinonimos.expandir([t]).filter((e) => e && e !== t);
+    }
+    const orig = new Set(originais || []);
+    return (tokensExpandidos || []).filter((e) => e && e !== t && !orig.has(e)
+      && (e.includes(t) || t.includes(e)));
   }
 
   /**
@@ -198,5 +274,8 @@ class SearchAI {
     return exp.filter((t) => t !== termoNorm);
   }
 }
+
+SearchAI.tokensSignificativos = tokensSignificativos;
+SearchAI.tokenCompativelNoProduto = tokenCompativelNoProduto;
 
 module.exports = SearchAI;

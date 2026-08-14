@@ -3091,7 +3091,9 @@ function renderGridCentralEntradas() {
                     <div class="central-rc40-doc-meta" title="NF">${escapeHtmlCentralEntradas(numero)}</div>
                     <div class="central-rc40-doc-meta" title="Emissão">${escapeHtmlCentralEntradas(emissao)}</div>
                     <div class="fw-semibold" title="Valor">${escapeHtmlCentralEntradas(formatarMoedaCentral(doc.valorTotal))}</div>
-                    <div>${badge}</div>
+                    <div>${badge}${doc.revisaoProgresso && Number(doc.revisaoProgresso.concluidos) > 0
+                        ? `<div class="small text-muted mt-1">${escapeHtmlCentralEntradas(`${doc.revisaoProgresso.concluidos}/${doc.revisaoProgresso.total} revisados`)}</div>`
+                        : ''}</div>
                     <div class="central-rc40-acao central-rc40-acao--${escapeHtmlCentralEntradas(acao.tom)}"
                         ${acao.acao === 'portal-nfe' ? `data-portal-nfe-id="${doc.id}" data-portal-nfe-chave="${escapeHtmlCentralEntradas(doc.chave || '')}"` : ''}
                         ${acao.acao === 'copiar-chave' ? `data-copiar-chave-id="${doc.id}" data-copiar-chave="${escapeHtmlCentralEntradas(doc.chave || '')}"` : ''}>
@@ -3135,6 +3137,9 @@ function renderGridCentralEntradas() {
                     <td>
                         ${renderBadgeStatusCentral(doc.status, doc.statusLabel)}
                         ${miipBadge}
+                        ${doc.revisaoProgresso && Number(doc.revisaoProgresso.concluidos) > 0
+                            ? `<div class="small text-muted">${escapeHtmlCentralEntradas(`${doc.revisaoProgresso.concluidos}/${doc.revisaoProgresso.total} revisados`)}</div>`
+                            : ''}
                     </td>
                 </tr>
             `;
@@ -3315,9 +3320,21 @@ function renderAcoesPipelineCentral(doc) {
         </button>`;
     }
     if (aguardandoRevisao && typeof MiipCentralRevisao !== 'undefined') {
-        acoesHtml += `<button type="button" class="btn btn-warning btn-sm w-100 mb-2" id="centralBtnRevisarMiip" data-doc-id="${doc.id}" title="Abrir Central de Revisão MIIP">
-            <i class="fas fa-search me-1"></i> Abrir Central de Revisão
+        const prog = doc.revisaoProgresso || centralEntradasState.detalheAtual?.revisaoProgresso || {};
+        const temProgresso = Number(prog.concluidos) > 0;
+        const labelProg = (prog.total != null)
+            ? `${Number(prog.concluidos || 0)}/${Number(prog.total || 0)} produtos`
+            : '';
+        const labelBtn = temProgresso ? 'Continuar revisão' : 'Abrir Central de Revisão';
+        acoesHtml += `<button type="button" class="btn btn-warning btn-sm w-100 mb-2" id="centralBtnRevisarMiip" data-doc-id="${doc.id}" title="${escapeHtmlCentralEntradas(labelBtn)}">
+            <i class="fas fa-search me-1"></i> ${escapeHtmlCentralEntradas(labelBtn)}
+            ${labelProg ? `<small class="d-block opacity-75">${escapeHtmlCentralEntradas(labelProg)}</small>` : ''}
         </button>`;
+        if (temProgresso) {
+            acoesHtml += `<button type="button" class="btn btn-outline-secondary btn-sm w-100 mb-2" id="centralBtnReiniciarRevisaoMiip" data-doc-id="${doc.id}" title="Descarta o progresso da sessão atual e inicia do zero">
+                <i class="fas fa-undo me-1"></i> Reiniciar revisão
+            </button>`;
+        }
     }
 
     return progressoHtml + (acoesHtml || '');
@@ -3722,8 +3739,13 @@ function renderCtaImportarCompraCentral(doc) {
     const acao = UX.resolverProximaAcaoOperacional?.(doc) || {};
 
     if (acao.acao === 'revisar' && typeof MiipCentralRevisao !== 'undefined') {
+        const prog = doc.revisaoProgresso || {};
+        const temProgresso = Number(prog.concluidos) > 0;
+        const label = temProgresso
+            ? `Continuar revisão (${Number(prog.concluidos)}/${Number(prog.total || 0)})`
+            : 'Abrir Revisão';
         return `<button type="button" class="btn btn-warning central-ux1-btn-importar" id="centralBtnRevisarMiip" data-doc-id="${doc.id}" title="Abrir revisão de produtos">
-            <i class="fas fa-user-check me-1"></i> Abrir Revisão
+            <i class="fas fa-user-check me-1"></i> ${escapeHtmlCentralEntradas(label)}
         </button>`;
     }
 
@@ -3981,10 +4003,39 @@ async function carregarProdutosParaRevisaoCentral() {
     return response.json().catch(() => []);
 }
 
-async function abrirCentralRevisaoMiip(documentoId, dadosImportacao) {
+async function abrirCentralRevisaoMiip(documentoId, dadosImportacao, opcoesAbertura = {}) {
     if (typeof MiipCentralRevisao === 'undefined') {
         showNotification('Central de Revisão MIIP não disponível.', 'danger');
         return;
+    }
+
+    const correlationId = opcoesAbertura.correlationId
+        || `miip-rev-${documentoId}-${Date.now()}`;
+    let sessaoPersistente = null;
+
+    try {
+        console.info('[MIIP] abrir sessão de revisão', { documentoId, correlationId });
+        sessaoPersistente = await centralEntradasFetch(`/${documentoId}/revisar/sessao`, {
+            method: 'POST',
+            body: JSON.stringify({
+                usuario_id: obterUsuarioLogadoCentral()?.id,
+                correlation_id: correlationId,
+                reiniciar: opcoesAbertura.reiniciar === true
+            })
+        });
+    } catch (error) {
+        console.error('[MIIP] abrir sessão de revisão', error);
+        showNotification('Não foi possível iniciar/retomar a sessão de revisão: ' + error.message, 'danger');
+        return;
+    }
+
+    // Preferir itens já mesclados do parse da sessão (progresso persistido)
+    const itensSessao = sessaoPersistente?.dadosImportacao?.itensParse;
+    if (Array.isArray(itensSessao) && itensSessao.length && dadosImportacao) {
+        dadosImportacao = {
+            ...dadosImportacao,
+            itens: itensSessao
+        };
     }
 
     const produtos = await carregarProdutosParaRevisaoCentral();
@@ -4000,6 +4051,8 @@ async function abrirCentralRevisaoMiip(documentoId, dadosImportacao) {
         apiUrl: API_URL,
         produtos,
         obterUsuario: obterUsuarioLogadoCentral,
+        correlationId,
+        sessaoPersistente,
         documento: {
             id: documentoId,
             chave: docAtual.chave || dadosImportacao?.chave_acesso || '',
@@ -4023,19 +4076,40 @@ async function abrirCentralRevisaoMiip(documentoId, dadosImportacao) {
                 if (input) input.click();
             }
         },
-        // Cadastro: modal empilhado + prefill do XML (miip-central-revisao.js).
         onConcluir: async function (resultado) {
+            let finalizouOk = false;
             try {
+                console.info('[MIIP] concluir revisão', { documentoId, correlationId });
                 const itens = resultado?.itens || dadosImportacao.itens;
                 await centralEntradasFetch(`/${documentoId}/revisar/concluir`, {
                     method: 'POST',
-                    body: JSON.stringify({ itens, usuario_id: obterUsuarioLogadoCentral()?.id })
+                    body: JSON.stringify({
+                        itens,
+                        usuario_id: obterUsuarioLogadoCentral()?.id,
+                        correlation_id: correlationId
+                    })
                 });
+                finalizouOk = true;
                 showNotification('Documento pronto para lançamento.', 'success');
+            } catch (error) {
+                console.error('[MIIP] concluir revisão', error);
+                showNotification('Erro ao finalizar revisão: ' + error.message, 'danger');
+                return;
+            }
+
+            try {
+                console.info('[MIIP] refresh Central', { documentoId });
                 await Promise.all([
                     carregarDashboardCentral(),
                     carregarDocumentosCentral()
                 ]);
+            } catch (error) {
+                console.warn('[MIIP] refresh Central', error);
+                showNotification('Revisão salva, mas a Central não atualizou automaticamente. Atualize a lista.', 'warning');
+            }
+
+            try {
+                console.info('[MIIP] navegação', { documentoId });
                 const docAtualizado = centralEntradasState.documentos?.find((d) => Number(d.id) === Number(documentoId))
                     || { status: 'PRONTA_IMPORTACAO', parseDisponivel: true };
                 await selecionarDocumentoCentral(documentoId);
@@ -4045,10 +4119,19 @@ async function abrirCentralRevisaoMiip(documentoId, dadosImportacao) {
                     parseDisponivel: docAtualizado.parseDisponivel !== false
                 });
             } catch (error) {
-                showNotification('Erro ao concluir revisão: ' + error.message, 'danger');
+                console.warn('[MIIP] navegação', error);
+                if (finalizouOk) {
+                    showNotification('Revisão concluída. Selecione o documento na lista se necessário.', 'info');
+                }
             }
         },
-        onCancelar: function () {
+        onCancelar: function (meta) {
+            if (meta?.pausada) {
+                showNotification('Revisão pausada. O progresso foi mantido — use Continuar revisão para retomar.', 'info');
+                carregarDocumentosCentral().catch(() => {});
+                selecionarDocumentoCentral(documentoId).catch(() => {});
+                return;
+            }
             showNotification('Revisão MIIP cancelada.', 'warning');
         }
     });
@@ -4486,11 +4569,11 @@ async function solicitarXmlCompletoCentral(documentoId) {
     }
 }
 
-async function abrirRevisaoMiipCentral(documentoId) {
+async function abrirRevisaoMiipCentral(documentoId, opcoesAbertura = {}) {
     try {
         const payload = await centralEntradasFetch(`/${documentoId}/payload-compra`);
         if (payload.dadosCompra) {
-            await abrirCentralRevisaoMiip(documentoId, payload.dadosCompra);
+            await abrirCentralRevisaoMiip(documentoId, payload.dadosCompra, opcoesAbertura);
         }
     } catch (error) {
         showNotification('Erro ao abrir revisão: ' + error.message, 'danger');
@@ -4950,6 +5033,16 @@ function bindEventosCentralEntradas() {
     $(document).on('click.centralEntradas', '#centralBtnRevisarMiip', function () {
         const id = Number($(this).data('doc-id'));
         if (id) abrirRevisaoMiipCentral(id);
+    });
+
+    $(document).on('click.centralEntradas', '#centralBtnReiniciarRevisaoMiip', function () {
+        const id = Number($(this).data('doc-id'));
+        if (!id) return;
+        const ok = window.confirm(
+            'Reiniciar a revisão descartará o progresso desta sessão e começará do primeiro produto.\n\nDeseja continuar?'
+        );
+        if (!ok) return;
+        abrirRevisaoMiipCentral(id, { reiniciar: true });
     });
 
     $(document).on('click.centralEntradas', '#centralBtnAbrirCompra', function () {

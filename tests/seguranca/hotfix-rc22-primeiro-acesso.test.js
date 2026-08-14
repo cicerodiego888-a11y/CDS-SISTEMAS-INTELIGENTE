@@ -51,6 +51,10 @@ describe('Hotfix RC2.2 — auth e UI', () => {
     assert.match(loginJs, /primeiro-acesso\/trocar-senha/);
     assert.match(loginJs, /mostrarPainelPrimeiroAcesso/);
     assert.match(loginJs, /1234/);
+    assert.match(loginJs, /salvarUltimoAcessoLogin/);
+    assert.match(loginJs, /lembrarCamposDigitadosLogin/);
+    assert.match(loginJs, /agendarRestauracaoUltimoAcessoLogin/);
+    assert.match(loginJs, /ultimo\.username/);
 
     const html = fs.readFileSync(
       path.resolve(__dirname, '../../frontend/shared/login.html'),
@@ -60,6 +64,7 @@ describe('Hotfix RC2.2 — auth e UI', () => {
     assert.match(html, /Primeiro acesso/);
     assert.match(html, /Nova senha/);
     assert.match(html, /Confirmar senha/);
+    assert.match(html, /autocomplete="off"/);
   });
 
   it('não altera núcleos proibidos (smoke)', () => {

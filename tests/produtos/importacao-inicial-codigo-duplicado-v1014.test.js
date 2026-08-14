@@ -149,7 +149,7 @@ describe('V1.0.14 — codigo_origem duplicado no XLSX', () => {
 
     const validacao = await svc.validarArquivoBuffer(db, buffer, {
       nomeArquivo: 'dup-5986221100.xlsx'
-    });
+    , modo_fiscal_importacao: 'FISCAL'});
 
     assert.equal(validacao.pode_importar, false);
     assert.ok(validacao.resumo.com_erro >= 2);
@@ -181,7 +181,7 @@ describe('V1.0.14 — codigo_origem duplicado no XLSX', () => {
         linhaProduto('1003', 'PRODUTO C')
       ]
     });
-    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'ok.xlsx' });
+    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'ok.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     assert.equal(validacao.resumo.com_erro, 0);
     assert.equal(validacao.resumo.prontos, 3);
     assert.equal(validacao.pode_importar, true);
@@ -205,7 +205,7 @@ describe('V1.0.14 — codigo_origem duplicado no XLSX', () => {
         linhaProduto('637701012', 'BROCA SEM ZERO')
       ]
     });
-    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'zeros.xlsx' });
+    const validacao = await svc.validarArquivoBuffer(db, buffer, { nomeArquivo: 'zeros.xlsx' , modo_fiscal_importacao: 'FISCAL'});
     assert.equal(validacao.resumo.com_erro, 0);
     assert.equal(validacao.linhas[0].produto.codigo_origem, '0637701012');
     assert.equal(validacao.linhas[1].produto.codigo_origem, '637701012');
@@ -232,7 +232,7 @@ describe('V1.0.14 — codigo_origem duplicado no XLSX', () => {
 
     const validacao = await validarImportacao(db, dados, {
       nomeArquivo: 'CDS_CADASTRAR_2_IMPORTACAO.xlsx'
-    });
+    , modo_fiscal_importacao: 'FISCAL'});
     assert.equal(validacao.pode_importar, false);
     assert.ok(validacao.resumo.com_erro >= 2);
 

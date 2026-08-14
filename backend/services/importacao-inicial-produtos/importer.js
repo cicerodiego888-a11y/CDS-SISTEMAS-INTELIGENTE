@@ -180,10 +180,12 @@ async function registrarEstoqueInicial(db, {
     custoTotal
   });
 
+  // Estoque inicial segue o item_fiscal da linha (novo=modo; existente=banco)
+  const itemFiscal = Number(p.item_fiscal) === 0 ? 0 : 1;
   await aplicarAjusteAsync(db, {
     produtoId,
-    ajusteFiscal: qtd,
-    ajusteNaoFiscal: 0,
+    ajusteFiscal: itemFiscal === 1 ? qtd : 0,
+    ajusteNaoFiscal: itemFiscal === 0 ? qtd : 0,
     motivo,
     usuarioId: usuarioId || null,
     usuarioNome: usuarioNome || 'Importação Inicial'
@@ -250,7 +252,7 @@ async function inserirProduto(db, linha, cache, usuarioId) {
       0,
       0,
       0,
-      1,
+      Number(p.item_fiscal) === 0 ? 0 : 1,
       0,
       0,
       0,

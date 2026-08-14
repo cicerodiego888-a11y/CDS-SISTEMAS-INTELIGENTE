@@ -1477,14 +1477,27 @@ function processarFiscalPosPagamentoPosVenda(vendaId, resultado) {
     setTimeout(() => emitirNFCeVenda(vendaId), 300);
 }
 
+function pdvVendaRespostaQuitada(response) {
+    return String(response && response.status_pagamento ? response.status_pagamento : '')
+        .toLowerCase()
+        .trim() === 'quitada';
+}
+
 function iniciarFluxoPosVendaComNaoFiscal(vendaId, opcoes = {}) {
     const processarFiscalPosPagamento =
         opcoes.processarFiscalPosPagamento || processarFiscalPosPagamentoPosVenda;
 
-    showNotification('Pagamento fiscal confirmado. Cobre o valor não fiscal.', 'info');
-
     obterSaldoPagamentoNaoFiscalVenda(vendaId)
         .then(function(info) {
+            if (pdvVendaRespostaQuitada(info) || Number(info.saldo_pendente) <= 0) {
+                finalizarPosVenda();
+                vendaEmProcessamento = false;
+                showNotification('Venda finalizada com sucesso.', 'success');
+                return;
+            }
+
+            showNotification('Pagamento fiscal confirmado. Cobre o valor não fiscal.', 'info');
+
             const valorPendente = Number(
                 info.saldo_pendente ??
                 info.valor_nao_fiscal ??
@@ -5058,6 +5071,13 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
     function enviarVenda(payload) {
         payload = getTerminalRequestData(payload);
         let handoffNaoFiscal = false;
+        let posVendaEncerrada = false;
+
+        function encerrarPosVendaUmaVez() {
+            if (posVendaEncerrada) return;
+            posVendaEncerrada = true;
+            finalizarPosVenda();
+        }
 
         $.ajax({
             url: `${API_URL}/vendas`,
@@ -5075,6 +5095,7 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
 
                     const vendaId = response.venda_id || response.id || response.vendaId || response.venda?.id;
                     const statusPagamento = response.status_pagamento;
+                    const vendaQuitada = pdvVendaRespostaQuitada(response);
 
                     if (!vendaId) {
                         vendaEmProcessamento = false;
@@ -5083,7 +5104,7 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
                         return;
                     }
 
-                    if (statusPagamento === 'aguardando_nao_fiscal') {
+                    if (statusPagamento === 'aguardando_nao_fiscal' && !vendaQuitada) {
                         // 2ª etapa legítima: fiscal confirmado, não fiscal ainda pendente
                         if (Number(dados.valor_fiscal || 0) > 0) {
                             handoffNaoFiscal = true;
@@ -5099,16 +5120,17 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
                             ...payload,
                             itens: itensParaCupom
                         }, total, desconto);
-                        finalizarPosVenda();
+                        encerrarPosVendaUmaVez();
                         showNotification('Venda não fiscal finalizada com sucesso.', 'success');
                         return;
                     }
 
                     // status quitada (ou outro): NÃO abre modal de não fiscal
+                    // Parte não fiscal (valor_nao_fiscal > 0) NÃO mantém o PDV aberto se já quitou.
                     vendaEmProcessamento = false;
                     pagamentoFiscalAtual = null;
 
-                    const vendaQuitadaCompletamente = !vendaPrazoInfo && statusPagamento === 'quitada';
+                    const vendaQuitadaCompletamente = !vendaPrazoInfo && vendaQuitada;
 
                     if (vendaQuitadaCompletamente && dados.emitir_fiscal) {
                         processarFiscalPosPagamentoPosVenda(vendaId, response);
@@ -5119,7 +5141,7 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
                         }, total, desconto);
                     }
 
-                    finalizarPosVenda();
+                    encerrarPosVendaUmaVez();
                     showNotification('Venda finalizada com sucesso.', 'success');
                 } catch (erroSucesso) {
                     console.error('Erro ao processar resposta da venda:', erroSucesso);

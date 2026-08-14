@@ -100,6 +100,9 @@ test('MIIP prefill tem pergunta embalagem e campos fiscais', () => {
   assert.match(src, /csosn/);
   assert.match(src, /descricao_complementar/);
   assert.match(src, /Produto adquirido por embalagem/);
+  assert.match(src, /aplicarCfopPadraoEmpresaNoCadastro/);
+  assert.match(src, /Padrão fiscal da empresa/);
+  assert.doesNotMatch(src, /setCampoTexto\('#cfop', xml\.cfop\)/);
 });
 
 test('UI financeiro condições + compras (cadastro permanece no Financeiro)', () => {

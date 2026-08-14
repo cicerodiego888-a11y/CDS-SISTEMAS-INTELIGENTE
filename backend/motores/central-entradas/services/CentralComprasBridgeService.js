@@ -6,7 +6,10 @@
  * @class CentralComprasBridgeService
  */
 
-const { DocumentoFiscalStatus } = require('../core/DocumentoFiscalStatus');
+const {
+  DocumentoFiscalStatus,
+  normalizarStatus
+} = require('../core/DocumentoFiscalStatus');
 const { validarTransicao } = require('../core/MaquinaEstadosDocumento');
 const { paraDocumentoDetalheDTO } = require('../utils/centralEntradasMapper');
 const CentralDocumentosRepository = require('../repositories/CentralDocumentosRepository');
@@ -27,6 +30,27 @@ class CentralComprasBridgeService {
         documentosRepository: this._documentosRepository,
         historicoRepository: deps.historicoRepository
       });
+    /** @private */
+    this._revisaoPersistenteService = deps.revisaoPersistenteService
+      ?? deps.revisaoService
+      ?? null;
+  }
+
+  /**
+   * @private
+   * @returns {import('./CentralRevisaoPersistenteService')|null}
+   */
+  _obterRevisaoService() {
+    if (this._revisaoPersistenteService) return this._revisaoPersistenteService;
+    try {
+      const CentralRevisaoPersistenteService = require('./CentralRevisaoPersistenteService');
+      this._revisaoPersistenteService = new CentralRevisaoPersistenteService({
+        documentosRepository: this._documentosRepository
+      });
+      return this._revisaoPersistenteService;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -183,60 +207,141 @@ class CentralComprasBridgeService {
    * @returns {Promise<Object>}
    */
   async concluirRevisao(documentoId, dados = {}) {
-    const documento = await this._documentosRepository.buscarPorId(documentoId);
-    if (!documento) {
-      const erro = new Error('Documento não encontrado');
-      erro.statusCode = 404;
-      throw erro;
-    }
+    const correlationId = dados.correlationId ?? dados.correlation_id ?? null;
+    const usuarioId = dados.usuarioId ?? dados.usuario_id ?? null;
+    let etapa = 'buscar';
 
-    if (documento.status !== DocumentoFiscalStatus.AGUARDANDO_REVISAO) {
-      const erro = new Error(`Revisão só pode ser concluída em AGUARDANDO_REVISAO (atual: ${documento.status})`);
-      erro.statusCode = 400;
-      throw erro;
-    }
-
-    const parseAtual = documento.parseJson || {};
-    const itensAtualizados = Array.isArray(dados.itens) ? dados.itens : parseAtual.itens;
-
-    const parseAtualizado = {
-      ...parseAtual,
-      itens: itensAtualizados
-    };
-
-    await this._documentosRepository.atualizar(documentoId, {
-      parseJson: parseAtualizado,
-      processadoEm: new Date().toISOString()
-    });
-
-    await this._transitionService.transicionar(
-      documentoId,
-      DocumentoFiscalStatus.AGUARDANDO_REVISAO,
-      DocumentoFiscalStatus.REVISADA,
-      {
-        detalhe: 'Central de Revisão MIIP concluída',
-        usuarioId: dados.usuarioId
+    try {
+      const documento = await this._documentosRepository.buscarPorId(documentoId);
+      if (!documento) {
+        const erro = new Error('Documento não encontrado');
+        erro.statusCode = 404;
+        throw erro;
       }
-    );
 
-    await this._transitionService.transicionar(
-      documentoId,
-      DocumentoFiscalStatus.REVISADA,
-      DocumentoFiscalStatus.PRONTA_PARA_COMPRA,
-      {
-        detalhe: 'Documento liberado para Compras',
-        usuarioId: dados.usuarioId
+      const statusCanonico = normalizarStatus(documento.status);
+      const itensParse = Array.isArray(documento.parseJson?.itens)
+        ? documento.parseJson.itens
+        : [];
+
+      console.log('[CentralRevisao][concluir] start', {
+        correlationId,
+        documentoId,
+        usuarioId,
+        statusAnterior: documento.status,
+        qtyItens: itensParse.length
+      });
+
+      const revisaoService = this._obterRevisaoService();
+
+      // IDEMPOTENCY — já pronta: não re-transiciona / não duplica histórico
+      if (statusCanonico === DocumentoFiscalStatus.PRONTA_IMPORTACAO) {
+        etapa = 'sessao';
+        if (revisaoService) {
+          const ativa = await revisaoService.buscarSessaoAtiva(documentoId);
+          if (ativa) {
+            await revisaoService.marcarSessaoConcluida(ativa.id);
+          }
+        }
+
+        return {
+          sucesso: true,
+          documento: paraDocumentoDetalheDTO(documento),
+          parse: documento.parseJson || null,
+          proximaAcao: 'abrir_compra',
+          idempotente: true
+        };
       }
-    );
 
-    const atualizado = await this._documentosRepository.buscarPorId(documentoId);
+      etapa = 'validar';
+      if (statusCanonico !== DocumentoFiscalStatus.EM_REVISAO) {
+        const erro = new Error(
+          `Revisão só pode ser concluída em EM_REVISAO (atual: ${documento.status})`
+        );
+        erro.statusCode = 400;
+        throw erro;
+      }
 
-    return {
-      sucesso: true,
-      documento: paraDocumentoDetalheDTO(atualizado),
-      parse: parseAtualizado,
-      proximaAcao: 'abrir_compra'
-    };
+      const parseAtual = documento.parseJson || {};
+      let itensAtualizados = Array.isArray(parseAtual.itens) ? parseAtual.itens.slice() : [];
+      const permitirParcial = dados.permitirParcial === true;
+      const itensLegado = Array.isArray(dados.itens) ? dados.itens : null;
+
+      etapa = 'sessao';
+      let sessaoAtiva = null;
+      if (revisaoService) {
+        const merge = await revisaoService.mesclarDecisoesNaSessao(documentoId, itensAtualizados);
+        sessaoAtiva = merge.sessao;
+        itensAtualizados = merge.itens;
+
+        if (sessaoAtiva && !permitirParcial) {
+          const total = Number(sessaoAtiva.totalItens || 0);
+          const legadoOk = Array.isArray(itensLegado) && itensLegado.length >= total;
+          if (!merge.completo && !legadoOk) {
+            const erro = new Error(
+              `Revisão incompleta: ${sessaoAtiva.itensConcluidos || 0}/${total} itens decididos`
+            );
+            erro.statusCode = 400;
+            throw erro;
+          }
+        }
+      }
+
+      // Legado: se dados.itens cobre o documento, prevalece
+      if (Array.isArray(itensLegado) && itensLegado.length) {
+        itensAtualizados = itensLegado;
+      }
+
+      const parseAtualizado = {
+        ...parseAtual,
+        itens: itensAtualizados
+      };
+
+      etapa = 'salvar_parse';
+      await this._documentosRepository.atualizar(documentoId, {
+        parseJson: parseAtualizado,
+        processadoEm: new Date().toISOString()
+      });
+
+      etapa = 'transicionar';
+      await this._transitionService.transicionar(
+        documentoId,
+        DocumentoFiscalStatus.EM_REVISAO,
+        DocumentoFiscalStatus.PRONTA_IMPORTACAO,
+        {
+          detalhe: 'Central de Revisão MIIP concluída — liberado para importação/compras',
+          usuarioId
+        }
+      );
+
+      etapa = 'sessao';
+      if (revisaoService && sessaoAtiva) {
+        await revisaoService.marcarSessaoConcluida(sessaoAtiva.id);
+      } else if (revisaoService) {
+        const ativa = await revisaoService.buscarSessaoAtiva(documentoId);
+        if (ativa) await revisaoService.marcarSessaoConcluida(ativa.id);
+      }
+
+      etapa = 'historico';
+      const atualizado = await this._documentosRepository.buscarPorId(documentoId);
+
+      return {
+        sucesso: true,
+        documento: paraDocumentoDetalheDTO(atualizado),
+        parse: parseAtualizado,
+        proximaAcao: 'abrir_compra',
+        correlationId
+      };
+    } catch (err) {
+      console.error('[CentralRevisao][concluir]', {
+        etapa,
+        correlationId,
+        documentoId,
+        message: err?.message,
+        stack: err?.stack
+      });
+      throw err;
+    }
   }
 
   /**

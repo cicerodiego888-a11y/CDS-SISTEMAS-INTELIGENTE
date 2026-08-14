@@ -2170,6 +2170,72 @@ function criarTabelas() {
       else console.log('Tabela central_entradas_historico criada/verificada');
     });
 
+    // Revisão MIIP persistente / resumível (sessão + decisões por item)
+    db.run(`
+      CREATE TABLE IF NOT EXISTS central_entradas_revisao_sessoes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        documento_id INTEGER NOT NULL,
+        usuario_id INTEGER,
+        status TEXT NOT NULL DEFAULT 'EM_ANDAMENTO',
+        total_itens INTEGER NOT NULL DEFAULT 0,
+        itens_concluidos INTEGER NOT NULL DEFAULT 0,
+        item_atual INTEGER NOT NULL DEFAULT 0,
+        correlation_id TEXT,
+        criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+        atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+        concluido_em DATETIME,
+        FOREIGN KEY (documento_id) REFERENCES central_entradas_documentos(id)
+      )
+    `, (err) => {
+      if (err) console.error('Erro ao criar tabela central_entradas_revisao_sessoes:', err);
+      else console.log('Tabela central_entradas_revisao_sessoes criada/verificada');
+    });
+
+    db.run(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_central_revisao_sessao_doc_ativa
+        ON central_entradas_revisao_sessoes(documento_id)
+        WHERE status = 'EM_ANDAMENTO'
+    `, (err) => {
+      if (err) console.error('Erro ao criar índice idx_central_revisao_sessao_doc_ativa:', err);
+    });
+
+    db.run(`
+      CREATE INDEX IF NOT EXISTS idx_central_revisao_sessao_doc
+        ON central_entradas_revisao_sessoes(documento_id)
+    `, (err) => {
+      if (err) console.error('Erro ao criar índice idx_central_revisao_sessao_doc:', err);
+    });
+
+    db.run(`
+      CREATE TABLE IF NOT EXISTS central_entradas_revisao_itens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sessao_id INTEGER NOT NULL,
+        documento_id INTEGER NOT NULL,
+        item_index INTEGER NOT NULL,
+        produto_origem TEXT,
+        produto_destino_id INTEGER,
+        decisao TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'CONCLUIDO',
+        dados_json TEXT,
+        usuario_id INTEGER,
+        criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+        atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (sessao_id) REFERENCES central_entradas_revisao_sessoes(id),
+        FOREIGN KEY (documento_id) REFERENCES central_entradas_documentos(id),
+        UNIQUE(sessao_id, item_index)
+      )
+    `, (err) => {
+      if (err) console.error('Erro ao criar tabela central_entradas_revisao_itens:', err);
+      else console.log('Tabela central_entradas_revisao_itens criada/verificada');
+    });
+
+    db.run(`
+      CREATE INDEX IF NOT EXISTS idx_central_revisao_itens_doc
+        ON central_entradas_revisao_itens(documento_id)
+    `, (err) => {
+      if (err) console.error('Erro ao criar índice idx_central_revisao_itens_doc:', err);
+    });
+
     db.run(`
       CREATE TABLE IF NOT EXISTS central_entradas_nsu (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

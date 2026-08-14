@@ -186,13 +186,31 @@ class SearchEngine {
 
     const chaveCache = `${modoFiscal ? 'F' : 'N'}|${opcoes.operador_id || 0}|${limite}|${termoNorm}`;
 
+    const obterPreferido = () => {
+      if (!interpretado.preferidoId || !this.config.get('ativarAprendizado')) return null;
+      const pref = this.catalog.atomic.get(interpretado.preferidoId);
+      if (!pref) return null;
+      if (modoFiscal && Number(pref.item_fiscal) !== 1) return null;
+      return pref;
+    };
+
     const finalizar = (itens, meta) => {
       if (signal.cancelled) {
         const err = new Error('MIB_CANCELLED');
         err.code = 'MIB_CANCELLED';
         throw err;
       }
-      const ranqueados = this.ranking.ordenar(itens, {
+      const candidatos = Array.isArray(itens) ? itens.slice() : [];
+      const preferido = obterPreferido();
+      if (preferido && !candidatos.some((p) => Number(p.id) === Number(preferido.id))) {
+        candidatos.unshift({
+          ...preferido,
+          preco_venda: preferido.preco,
+          match_exato: 0,
+          _matchTipo: { preferencia: true }
+        });
+      }
+      const ranqueados = this.ranking.ordenar(candidatos, {
         ...rankCtx,
         estrategia: meta.estrategia
       })
@@ -202,7 +220,7 @@ class SearchEngine {
           match_exato: p.match_exato || (p.mib_score >= 90 ? 1 : 0)
         }));
 
-      if (meta.fonte !== 'cache' && meta.fonte !== 'hotcache') {
+      if (meta.fonte !== 'cache' && meta.fonte !== 'hotcache' && ranqueados.length > 0) {
         this.cache.set(chaveCache, ranqueados, meta);
       }
 
@@ -256,18 +274,8 @@ class SearchEngine {
         return finalizar([], { fonte: 'vazio', estrategia: null });
       }
 
-      // 0) Preferência automática do operador
-      if (interpretado.preferidoId && this.config.get('ativarAprendizado')) {
-        const pref = this.catalog.atomic.get(interpretado.preferidoId);
-        if (pref && (!modoFiscal || Number(pref.item_fiscal) === 1)) {
-          return finalizar([{
-            ...pref,
-            preco_venda: pref.preco,
-            match_exato: 0,
-            _matchTipo: { preferencia: true }
-          }], { fonte: 'aprendizado', estrategia: 'preferencia' });
-        }
-      }
+      // 0) Preferência aprendida NÃO encerra a busca: entra no ranking
+      // como desempate. Um NOME_EXATO precisa poder superá-la.
 
       // 1) HotCache
       const hot = this.hotCache.buscar(termoNorm, termoRaw, { limite, modoFiscal });
@@ -324,8 +332,11 @@ class SearchEngine {
             nome_busca: p.nome_busca || normalizarTermoBusca(p.nome)
           }))
         });
-        if (filtrados.length > 0 || prev.itens.length < limite) {
-          return finalizar(filtrados.length ? filtrados : [], {
+        // Só reaproveita o prefixo quando ainda há hits. Lista vazia NÃO
+        // encerra a busca: o nome completo (02M vs 2M, acento, marca)
+        // pode existir no catálogo mesmo que o recorte anterior não o tivesse.
+        if (filtrados.length > 0) {
+          return finalizar(filtrados, {
             fonte: 'incremental',
             estrategia: 'incremental'
           });
@@ -335,8 +346,10 @@ class SearchEngine {
       await this.catalog.garantir();
       if (signal.cancelled) throw Object.assign(new Error('MIB_CANCELLED'), { code: 'MIB_CANCELLED' });
 
-      // 4) Tokens + sinônimos
-      if (interpretado.tokensExpandidos.length > 0) {
+      // 4) Tokens + sinônimos — EAN/PLU/código interno vão ao catálogo, não ao nome
+      const soDigitos = /^\d+$/.test(termoRaw.replace(/\s+/g, ''))
+        || /^\d+$/.test(String(termoNorm || ''));
+      if (!soDigitos && interpretado.tokensExpandidos.length > 0) {
         const porToken = this.searchAI.buscarPorTokens(interpretado.tokensExpandidos, {
           limite,
           modoFiscal,

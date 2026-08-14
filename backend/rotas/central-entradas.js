@@ -908,15 +908,80 @@ router.post('/:id/recuperar-portal-nacional/importar', (req, res, next) => {
   }
 });
 
+router.get('/:id/revisar/sessao', async (req, res) => {
+  try {
+    const resultado = await centralEntradasService.obterSessaoRevisao(req.params.id);
+    return res.json(resultado);
+  } catch (error) {
+    const code = error.statusCode || 500;
+    return res.status(code).json({ error: error.message, sucesso: false });
+  }
+});
+
+router.post('/:id/revisar/sessao', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const usuarioId = req.usuario?.id ?? body.usuario_id ?? body.usuarioId ?? null;
+    const correlationId = body.correlation_id ?? body.correlationId ?? null;
+    const reiniciar = body.reiniciar === true || body.forcarNova === true;
+
+    const resultado = reiniciar
+      ? await centralEntradasService.reiniciarSessaoRevisao(req.params.id, {
+        usuarioId,
+        correlationId
+      })
+      : await centralEntradasService.obterOuCriarSessaoRevisao(req.params.id, {
+        usuarioId,
+        correlationId
+      });
+
+    return res.json(resultado);
+  } catch (error) {
+    const code = error.statusCode || 500;
+    return res.status(code).json({ error: error.message, sucesso: false });
+  }
+});
+
+router.post('/:id/revisar/itens/:indice/decisao', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const resultado = await centralEntradasService.salvarDecisaoRevisao(
+      req.params.id,
+      req.params.indice,
+      {
+        decisao: body.decisao,
+        produtoId: body.produto_id ?? body.produtoId,
+        item: body.item,
+        usuarioId: req.usuario?.id ?? body.usuario_id ?? body.usuarioId ?? null,
+        correlationId: body.correlation_id ?? body.correlationId ?? null
+      }
+    );
+    return res.json(resultado);
+  } catch (error) {
+    const code = error.statusCode || 500;
+    return res.status(code).json({ error: error.message, sucesso: false });
+  }
+});
+
 router.post('/:id/revisar/concluir', async (req, res) => {
   try {
-    const { itens, usuario_id: usuarioId } = req.body || {};
+    const body = req.body || {};
+    const { itens, usuario_id: usuarioIdBody } = body;
+    const correlationId = body.correlation_id ?? body.correlationId ?? null;
     const resultado = await centralEntradasService.concluirRevisao(req.params.id, {
       itens,
-      usuarioId
+      usuarioId: req.usuario?.id ?? usuarioIdBody ?? body.usuarioId ?? null,
+      correlationId,
+      permitirParcial: body.permitirParcial === true
     });
     return res.json(resultado);
   } catch (error) {
+    console.error('[CentralRevisao][concluir][rota]', {
+      documentoId: req.params.id,
+      correlationId: req.body?.correlation_id ?? req.body?.correlationId ?? null,
+      message: error?.message,
+      stack: error?.stack
+    });
     const code = error.statusCode || 500;
     return res.status(code).json({ error: error.message });
   }

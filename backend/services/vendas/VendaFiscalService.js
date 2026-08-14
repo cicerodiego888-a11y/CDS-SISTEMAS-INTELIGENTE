@@ -156,22 +156,41 @@ async function emitirFiscalSeSolicitado(vendaId, emitirFiscal, venda) {
   }
 }
 
-async function responderVendaComFiscal(res, payload) {
+/**
+ * Status da resposta HTTP = status já persistido.
+ * Não recalcula com recebimentos NF vazios (`[]`), o que forçava
+ * `aguardando_nao_fiscal` em venda mista já quitada.
+ */
+function resolverStatusPagamentoResposta(payload = {}) {
+  const persistido = String(payload.statusPagamento || 'quitada').trim() || 'quitada';
+  if (persistido === 'quitada') {
+    return 'quitada';
+  }
+
   const { resolverStatusPagamentoVenda } = require('./VendaPagamentoService');
+  const recebimentosNaoFiscal = Array.isArray(payload.recebimentosNaoFiscal)
+    ? payload.recebimentosNaoFiscal
+    : [];
+
+  return resolverStatusPagamentoVenda(
+    Number(payload.valorNaoFiscal || 0),
+    recebimentosNaoFiscal,
+    persistido,
+    { valorFiscal: Number(payload.valorFiscal || 0) }
+  );
+}
+
+async function responderVendaComFiscal(res, payload) {
   const valorFiscal = Number(payload.valorFiscal || 0);
   const valorNaoFiscal = Number(payload.valorNaoFiscal || 0);
-  const statusPagamento = resolverStatusPagamentoVenda(
-    valorNaoFiscal,
-    [],
-    payload.statusPagamento || 'quitada',
-    { valorFiscal }
-  );
+  const statusPagamento = resolverStatusPagamentoResposta(payload);
 
   const respostaBase = {
     id: payload.vendaId,
     venda_id: payload.vendaId,
     codigo: payload.codigo,
     message: payload.message,
+    status: payload.statusVenda || 'concluida',
     status_pagamento: statusPagamento,
     valor_fiscal: valorFiscal,
     valor_nao_fiscal: valorNaoFiscal
@@ -280,5 +299,6 @@ module.exports = {
   vincularNfceTransacoesVenda,
   emitirFiscalSeSolicitado,
   responderVendaComFiscal,
+  resolverStatusPagamentoResposta,
   registrarPoliticaSnapshotReprocessamento
 };

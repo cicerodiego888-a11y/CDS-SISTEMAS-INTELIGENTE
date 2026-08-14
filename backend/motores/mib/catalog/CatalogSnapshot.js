@@ -1,6 +1,7 @@
 'use strict';
 
 const { normalizarNomeBusca } = require('../core/normalizarNomeBusca');
+const { produtoCasaFraseBusca, textoContemFraseCompacta } = require('../core/compararTextoBusca');
 
 /**
  * Snapshot imutável do catálogo (lock-free para leitores).
@@ -58,8 +59,8 @@ class CatalogSnapshot {
     const base = Array.isArray(opcoes.base) ? opcoes.base : this._lista;
     const modoFiscal = opcoes.modoFiscal === true;
     const out = [];
-    // Termo só dígitos: identificador EXATO (não plu.includes / codigo.includes)
     const soDigitos = /^\d+$/.test(termo);
+    const termoComZeroMedida = !soDigitos && /(?:^|[^0-9])0+\d/.test(termo);
 
     for (const p of base) {
       if (modoFiscal && Number(p.item_fiscal) !== 1) continue;
@@ -67,7 +68,6 @@ class CatalogSnapshot {
       const codigo = String(p.codigo || '').toLowerCase();
       const barras = String(p.codigo_barras || '').toLowerCase();
       const plu = String(p.plu || '').toLowerCase();
-      const marca = normalizarNomeBusca(p.marca || '');
 
       let ok = false;
       if (soDigitos) {
@@ -77,18 +77,25 @@ class CatalogSnapshot {
           || codigo === termo
           || barras === termo
           || plu === termo;
-      } else if (
-        codigo === termo
-        || barras === termo
-        || plu === termo
-        || nb.startsWith(termo)
-        || nb.includes(termo)
-        || codigo.includes(termo)
-        || barras.includes(termo)
-        || plu.includes(termo)
-        || (marca && marca.includes(termo))
-      ) {
-        ok = true;
+      } else {
+        ok = codigo === termo
+          || barras === termo
+          || plu === termo
+          || nb.startsWith(termo)
+          || nb.includes(termo)
+          || codigo.includes(termo)
+          || barras.includes(termo)
+          || plu.includes(termo);
+        if (!ok && nb && termoComZeroMedida) {
+          ok = textoContemFraseCompacta(nb, termo);
+        }
+        if (!ok && p.marca) {
+          const marca = normalizarNomeBusca(p.marca);
+          ok = marca.includes(termo) || textoContemFraseCompacta(marca, termo);
+        }
+        if (!ok && (!nb || termoComZeroMedida)) {
+          ok = produtoCasaFraseBusca(p, termo);
+        }
       }
 
       if (ok) {
