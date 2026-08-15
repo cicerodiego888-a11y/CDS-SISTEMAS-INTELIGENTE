@@ -71,7 +71,8 @@ router.post('/importar', express.json(), async (req, res) => {
     }
     const resultado = await importacao.importarSessao(db, sessaoId, {
       usuarioId: req.user?.id || null,
-      usuarioNome: req.user?.nome || null
+      usuarioNome: req.user?.nome || null,
+      politica_pendentes: req.body?.politica_pendentes
     });
     const modoQtd = resultado.modo === 'ATUALIZAR_QUANTIDADES';
     return res.json({

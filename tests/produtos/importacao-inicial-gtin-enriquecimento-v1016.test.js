@@ -16,6 +16,7 @@ const { STATUS } = require('../../backend/services/importacao-inicial-produtos/h
 const { executarImportacao } = require('../../backend/services/importacao-inicial-produtos/importer');
 const { extrairDadosImportacao } = require('../../backend/services/importacao-inicial-produtos/xlsxReader');
 const { validarImportacao } = require('../../backend/services/importacao-inicial-produtos/validator');
+const { seedParCategoriaSub } = require('./helpers-seed-catalogo-importacao');
 
 function openDb(filePath) {
   return new Promise((resolve, reject) => {
@@ -92,6 +93,7 @@ async function criarSchema(db) {
     estoque_total_antes REAL DEFAULT 0, estoque_total_depois REAL DEFAULT 0,
     criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
+  await seedParCategoriaSub(db, run, get, 'Ferramentas', 'Geral');
 }
 
 function linhaProduto(codigo, nome, overrides = {}) {
@@ -120,13 +122,15 @@ async function inserirProdutoBase(db, {
   precoCompra = 10,
   precoVenda = 20
 }) {
+  const cat = await get(db, `SELECT id FROM categorias WHERE nome = 'Ferramentas'`);
+  const sub = await get(db, `SELECT id FROM subcategorias WHERE nome = 'Geral' AND categoria_id = ?`, [cat.id]);
   const r = await run(
     db,
     `INSERT INTO produtos (
-      codigo, nome, unidade, preco_compra, lucro_percentual, preco_venda,
+      codigo, nome, categoria_id, subcategoria_id, unidade, preco_compra, lucro_percentual, preco_venda,
       estoque_atual, saldo_fiscal, saldo_nao_fiscal, item_fiscal, codigo_barras, controla_estoque
-    ) VALUES (?, ?, 'un', ?, 100, ?, 0, 0, 0, ?, ?, 1)`,
-    [codigo, nome, precoCompra, precoVenda, itemFiscal, codigoBarras]
+    ) VALUES (?, ?, ?, ?, 'un', ?, 100, ?, 0, 0, 0, ?, ?, 1)`,
+    [codigo, nome, cat.id, sub.id, precoCompra, precoVenda, itemFiscal, codigoBarras]
   );
   return r.lastID;
 }

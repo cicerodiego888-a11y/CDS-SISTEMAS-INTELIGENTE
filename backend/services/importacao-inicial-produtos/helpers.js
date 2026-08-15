@@ -78,11 +78,58 @@ const STATUS = Object.freeze({
   EXISTENTE: 'EXISTENTE',
   /** Produto existe; há apresentação nova ou complemento (estoque/unidade) a aplicar */
   EXISTENTE_APRESENTACAO_NOVA: 'EXISTENTE_APRESENTACAO_NOVA',
+  /** Produto existe; somar estoque e/ou atualizar custo/preço informados */
+  EXISTENTE_ATUALIZAR: 'EXISTENTE_ATUALIZAR',
   OK: 'OK',
   NAO_ENCONTRADO: 'NAO_ENCONTRADO',
   APRESENTACAO_NAO_ENCONTRADA: 'APRESENTACAO_NAO_ENCONTRADA',
-  JA_PROCESSADO: 'JA_PROCESSADO'
+  JA_PROCESSADO: 'JA_PROCESSADO',
+  PENDENTE_CLASSIFICACAO: 'PENDENTE_CLASSIFICACAO',
+  CATEGORIA_NAO_ENCONTRADA: 'CATEGORIA_NAO_ENCONTRADA',
+  SUBCATEGORIA_INCOMPATIVEL: 'SUBCATEGORIA_INCOMPATIVEL'
 });
+
+function linhaBloqueiaPorClassificacao(linha) {
+  if (!linha) return false;
+  if (linha.status === STATUS.PENDENTE_CLASSIFICACAO) return true;
+  const cl = linha.classificacao || {};
+  return linha.status === STATUS.ATENCAO && cl.status === 'PENDENTE_CLASSIFICACAO';
+}
+
+function linhaAtencaoPermiteImportar(linha) {
+  if (!linha || linha.status !== STATUS.ATENCAO) return false;
+  const cl = linha.classificacao || {};
+  const conf = String(cl.confianca || '');
+  const classificada = cl.status === 'CLASSIFICADO' || cl.status === 'PRESERVADO';
+  return classificada && (conf === 'ALTA' || conf === 'MÉDIA');
+}
+
+const POLITICA_PENDENTES = Object.freeze({
+  IGNORAR: 'IGNORAR',
+  IMPORTAR_SEM_CLASSIFICACAO: 'IMPORTAR_SEM_CLASSIFICACAO'
+});
+
+function validarPoliticaPendentes(valor, { obrigatorio = false } = {}) {
+  if (valor == null || String(valor).trim() === '') {
+    if (obrigatorio) {
+      const err = new Error(
+        'Selecione o destino dos produtos sem classificação (politica_pendentes).'
+      );
+      err.status = 400;
+      throw err;
+    }
+    return null;
+  }
+  const v = String(valor).trim().toUpperCase();
+  if (v !== POLITICA_PENDENTES.IGNORAR && v !== POLITICA_PENDENTES.IMPORTAR_SEM_CLASSIFICACAO) {
+    const err = new Error(
+      'politica_pendentes inválida. Use IGNORAR ou IMPORTAR_SEM_CLASSIFICACAO.'
+    );
+    err.status = 400;
+    throw err;
+  }
+  return v;
+}
 
 /**
  * Identifica apresentação existente.
@@ -286,6 +333,19 @@ function numero(valor) {
   const n = Number(normalizado);
   return Number.isFinite(n) ? n : null;
 }
+
+/** True se a planilha trouxe número (vazio = não alterar em produto existente). */
+function campoNumericoInformado(valor) {
+  return valor !== null && valor !== undefined && valor !== '' && Number.isFinite(Number(valor));
+}
+
+function valoresNumericosDivergem(informado, atual, eps = 0.0001) {
+  if (!campoNumericoInformado(informado)) return false;
+  if (!Number.isFinite(Number(atual))) return true;
+  return Math.abs(Number(informado) - Number(atual)) > eps;
+}
+
+const LABEL_NAO_ALTERAR = '— não alterar —';
 
 function arredondarCasas(valor, casas = 2) {
   const n = Number(valor);
@@ -560,12 +620,24 @@ function mapearLinhaQuantidade(row) {
     )),
     unidade_base: texto(get('unidade_base', 'unidade')) || 'UN',
     unidade_origem: texto(get('unidade_origem')) || '',
-    quantidade_documento: numero(get('quantidade_documento', 'qtd_documento', 'qtd')),
+    quantidade_documento: numero(get('quantidade_documento', 'qtd_documento', 'qtd', 'quantidade')),
     fator_conversao: fator,
     quantidade_estoque_inicial: numero(get(
       'quantidade_estoque_inicial',
       'estoque_inicial',
       'qtd_estoque_inicial'
+    )),
+    custo_informado: numero(get(
+      'custo_unitario',
+      'custo',
+      'preco_compra',
+      'custo_un'
+    )),
+    preco_informado: numero(get(
+      'preco_venda_unitario',
+      'preco_venda',
+      'preco',
+      'preco_un'
     )),
     referencia_fabricante: texto(get('referencia_fabricante', 'referencia', 'ref')),
     origem: texto(get('origem')),
@@ -653,7 +725,7 @@ function mapearLinhaProduto(row) {
       texto(get('unidade_base', 'unidade', 'un')) || 'UN'
     ),
     unidade_origem: texto(get('unidade_origem')),
-    quantidade_documento: numero(get('quantidade_documento', 'qtd_documento')),
+    quantidade_documento: numero(get('quantidade_documento', 'qtd_documento', 'qtd', 'quantidade')),
     custo_informado: custoInformado,
     custo_apresentacao: custoApresentacao,
     markup,
@@ -742,10 +814,17 @@ module.exports = {
   itemFiscalDeModoImportacao,
   rotuloModoFiscalImportacao,
   STATUS,
+  linhaBloqueiaPorClassificacao,
+  linhaAtencaoPermiteImportar,
+  POLITICA_PENDENTES,
+  validarPoliticaPendentes,
   chaveHeader,
   valorPorAliases,
   texto,
   numero,
+  campoNumericoInformado,
+  valoresNumericosDivergem,
+  LABEL_NAO_ALTERAR,
   arredondarMoeda,
   arredondarCasas,
   calcularPrecoPorMarkup,

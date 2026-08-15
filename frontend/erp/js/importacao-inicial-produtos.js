@@ -22,7 +22,9 @@ function criarEstadoVazioImportacao(modo) {
     sessaoId: null,
     resumo: null,
     linhas: [],
-    resultado: null
+    resultado: null,
+    politica_pendentes: null,
+    pode_importar: false
   };
 }
 
@@ -88,13 +90,17 @@ function moedaImport(valor) {
 
 function badgeStatusImport(status) {
   const mapa = {
-    PRONTO: '<span class="badge bg-success">PRONTO</span>',
+    PRONTO: '<span class="badge bg-success">NOVO</span>',
     OK: '<span class="badge bg-success">OK</span>',
     ATENCAO: '<span class="badge bg-warning text-dark">ATENÇÃO</span>',
     ERRO: '<span class="badge bg-danger">ERRO</span>',
     CODIGO_DUPLICADO_ARQUIVO: '<span class="badge bg-danger">CÓDIGO DUPLICADO NO ARQUIVO</span>',
     EXISTENTE: '<span class="badge bg-info text-dark">EXISTENTE</span>',
     EXISTENTE_APRESENTACAO_NOVA: '<span class="badge bg-primary">EXISTENTE — APRESENTAÇÃO NOVA</span>',
+    EXISTENTE_ATUALIZAR: '<span class="badge bg-warning text-dark">EXISTENTE — ATUALIZAR</span>',
+    PENDENTE_CLASSIFICACAO: '<span class="badge bg-warning text-dark">PENDENTE</span>',
+    CATEGORIA_NAO_ENCONTRADA: '<span class="badge bg-danger">CATEGORIA NÃO ENCONTRADA</span>',
+    SUBCATEGORIA_INCOMPATIVEL: '<span class="badge bg-danger">SUBCATEGORIA INCOMPATÍVEL</span>',
     NAO_ENCONTRADO: '<span class="badge bg-danger">PRODUTO NÃO ENCONTRADO</span>',
     APRESENTACAO_NAO_ENCONTRADA: '<span class="badge bg-danger">APRESENTAÇÃO NÃO ENCONTRADA</span>',
     JA_PROCESSADO: '<span class="badge bg-secondary">JÁ PROCESSADO</span>'
@@ -102,11 +108,117 @@ function badgeStatusImport(status) {
   return mapa[status] || `<span class="badge bg-secondary">${escapeHtmlImport(status)}</span>`;
 }
 
+function rotuloClassificacaoImport(l) {
+  const cl = l && l.classificacao ? l.classificacao : null;
+  if (l && (l.status === 'PENDENTE_CLASSIFICACAO' || (cl && cl.status === 'PENDENTE_CLASSIFICACAO'))) {
+    return 'REVISÃO NECESSÁRIA';
+  }
+  if (!cl) return '—';
+  if (cl.origem === 'BANCO') return 'BANCO';
+  if (cl.origem === 'XLSX') return `XLSX — ${cl.confianca || ''}`.trim();
+  if (cl.origem === 'AUTOMATICA') return `AUTOMÁTICA — ${cl.confianca || ''}`.trim();
+  if (cl.origem === 'SUGESTAO_IMPORTADOR') return `SUGESTÃO DO IMPORTADOR — ${cl.confianca || ''}`.trim();
+  if (cl.origem === 'NOVA_CATEGORIA') return `NOVA CATEGORIA — SERÁ CRIADA — ${cl.confianca || ''}`.trim();
+  if (cl.origem === 'NOVA_SUBCATEGORIA') return `NOVA SUBCATEGORIA — SERÁ CRIADA — ${cl.confianca || ''}`.trim();
+  return cl.status || '—';
+}
+
+function rotuloOrigemClassificacao(origem) {
+  if (origem === 'SUGESTAO_IMPORTADOR') return 'SUGESTÃO DO IMPORTADOR';
+  if (origem === 'AUTOMATICA') return 'AUTOMÁTICA';
+  if (origem === 'NOVA_CATEGORIA') return 'NOVA CATEGORIA — SERÁ CRIADA';
+  if (origem === 'NOVA_SUBCATEGORIA') return 'NOVA SUBCATEGORIA — SERÁ CRIADA';
+  return origem || '—';
+}
+
+function textoCategoriaSugeridaDetalhe(cl) {
+  if (!cl || cl.origem === 'BANCO') return '—';
+  const nome = cl.categoria_sugerida_nome || cl.categoria_nome || '';
+  if (!nome) return cl.criar_categoria ? 'NOVA → será criada' : '—';
+  if (cl.criar_categoria) return `${nome} — NOVA → será criada`;
+  return nome;
+}
+
+function textoSubcategoriaSugeridaDetalhe(cl) {
+  if (!cl || (cl.origem === 'BANCO' && !cl.alterar_subcategoria && !cl.criar_subcategoria)) return '—';
+  const nome = cl.subcategoria_sugerida_nome || cl.subcategoria_nome || '';
+  if (!nome) return cl.criar_subcategoria ? 'NOVA → será criada' : '—';
+  if (cl.criar_subcategoria) return `${nome} — NOVA → será criada`;
+  return nome;
+}
+
+function nomeCategoriaPreview(l) {
+  const cl = (l && l.classificacao) || {};
+  if (cl.alterar_categoria && cl.categoria_sugerida_nome) return cl.categoria_sugerida_nome;
+  return cl.categoria_nome || cl.categoria_atual_nome || (l.produto && l.produto.categoria) || '—';
+}
+
+function nomeSubcategoriaPreview(l) {
+  const cl = (l && l.classificacao) || {};
+  if (cl.alterar_subcategoria && cl.subcategoria_sugerida_nome) return cl.subcategoria_sugerida_nome;
+  return cl.subcategoria_nome || cl.subcategoria_atual_nome || (l.produto && l.produto.subcategoria) || '—';
+}
+
 function textoBotaoAcaoPrincipal(disabledHint) {
   if (isModoQuantidades()) {
     return disabledHint ? 'Registrar Quantidades' : 'Registrar Quantidades';
   }
   return disabledHint ? 'Importar produtos' : 'Importar produtos';
+}
+
+const POLITICA_IGNORAR = 'IGNORAR';
+const POLITICA_IMPORTAR_SEM = 'IMPORTAR_SEM_CLASSIFICACAO';
+
+function obterPoliticaPendentesUi() {
+  const marcado = document.querySelector('input[name="politicaPendentesImportacao"]:checked');
+  return marcado ? String(marcado.value || '').toUpperCase() : null;
+}
+
+function linhaPendenteClassificacaoUi(l) {
+  if (!l) return false;
+  if (l.status === 'PENDENTE_CLASSIFICACAO') return true;
+  const cl = l.classificacao || {};
+  return l.status === 'ATENCAO' && cl.status === 'PENDENTE_CLASSIFICACAO';
+}
+
+function classificacaoAtualPreview(l) {
+  const cl = (l && l.classificacao) || {};
+  const cat = cl.categoria_atual_nome || '';
+  const sub = cl.subcategoria_atual_nome || '';
+  if (!cat && !sub) return '—';
+  return sub ? `${cat} / ${sub}` : cat;
+}
+
+function classificacaoSugeridaPreview(l) {
+  const cl = (l && l.classificacao) || {};
+  if (linhaPendenteClassificacaoUi(l)) return '—';
+  const cat = cl.categoria_sugerida_nome || (cl.alterar_categoria ? cl.categoria_nome : '') || '';
+  const sub = cl.subcategoria_sugerida_nome || (cl.alterar_subcategoria ? cl.subcategoria_nome : '') || '';
+  if (cl.alterar_categoria || cl.alterar_subcategoria || cl.origem === 'SUGESTAO_IMPORTADOR'
+    || cl.origem === 'AUTOMATICA' || cl.origem === 'NOVA_CATEGORIA' || cl.origem === 'NOVA_SUBCATEGORIA') {
+    if (!cat && !sub) return '—';
+    return sub ? `${cat} / ${sub}` : cat;
+  }
+  return '—';
+}
+
+function acaoLinhaImportacao(l, politica) {
+  if (!l) return '—';
+  if (l.status === 'ERRO' || l.status === 'CODIGO_DUPLICADO_ARQUIVO'
+    || l.status === 'CATEGORIA_NAO_ENCONTRADA' || l.status === 'SUBCATEGORIA_INCOMPATIVEL') {
+    return 'ERRO — NÃO IMPORTAR';
+  }
+  if (linhaPendenteClassificacaoUi(l)) {
+    if (politica === POLITICA_IGNORAR) return 'NÃO SERÁ IMPORTADO';
+    if (politica === POLITICA_IMPORTAR_SEM) return 'IMPORTAR SEM CLASSIFICAÇÃO';
+    return 'PENDENTE';
+  }
+  const cl = l.classificacao || {};
+  if (cl.alterar_categoria || cl.alterar_subcategoria) return 'SERÁ CLASSIFICADO';
+  if (cl.origem === 'BANCO' || cl.status === 'PRESERVADO') return 'PRESERVAR CLASSIFICAÇÃO';
+  if (l.status === 'PRONTO') return 'SERÁ CLASSIFICADO';
+  if (l.status === 'EXISTENTE') return 'SEM ALTERAÇÃO';
+  return 'SERÁ IMPORTADO';
 }
 
 function aplicarLimpezaUiImportacaoInicial() {
@@ -123,7 +235,7 @@ function aplicarLimpezaUiImportacaoInicial() {
   renderResumoVazioImportacao();
   renderCabecalhoPreviewImportacao();
   $('#cardPreviewImportacao').removeClass('d-none');
-  const cols = isModoQuantidades() ? 6 : 13;
+  const cols = isModoQuantidades() ? 8 : 17;
   $('#tbodyPreviewImportacao').html(
     `<tr><td colspan="${cols}" class="text-center text-muted py-4">Nenhuma linha</td></tr>`
   );
@@ -133,6 +245,8 @@ function aplicarLimpezaUiImportacaoInicial() {
 
   $('#cardResultadoImportacao').addClass('d-none');
   $('#corpoResultadoImportacao').empty();
+  $('#blocoPoliticaPendentes').addClass('d-none');
+  $('input[name="politicaPendentesImportacao"]').prop('checked', false);
   atualizarTextosModoImportacao();
 }
 
@@ -177,6 +291,8 @@ function renderCabecalhoPreviewImportacao() {
         <th>Qtd origem</th>
         <th>Conversão</th>
         <th>Quantidade a lançar</th>
+        <th>Custo</th>
+        <th>Venda</th>
       </tr>
     `);
   } else {
@@ -193,6 +309,10 @@ function renderCabecalhoPreviewImportacao() {
         <th>Qtd. Origem</th>
         <th>Conversão</th>
         <th>Estoque Inicial</th>
+        <th>Categoria</th>
+        <th>Subcategoria</th>
+        <th>Classificação</th>
+        <th>Ação</th>
         <th>Fiscal</th>
         <th></th>
       </tr>
@@ -423,6 +543,25 @@ function loadImportacaoInicialProdutos() {
           Importar produtos
         </button>
       </div>
+      <div id="blocoPoliticaPendentes" class="d-none border-bottom bg-light p-3">
+        <h6 class="mb-2">PRODUTOS SEM CLASSIFICAÇÃO</h6>
+        <p class="mb-2" id="textoPoliticaPendentes">Nenhum produto pendente.</p>
+        <p class="mb-2 small text-muted">O que deseja fazer?</p>
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="radio" name="politicaPendentesImportacao" id="politicaPendentesIgnorar" value="IGNORAR">
+          <label class="form-check-label" for="politicaPendentesIgnorar">
+            <strong>Não importar esses produtos</strong><br>
+            <span class="text-muted small">Importar somente os produtos classificados.</span>
+          </label>
+        </div>
+        <div class="form-check">
+          <input class="form-check-input" type="radio" name="politicaPendentesImportacao" id="politicaPendentesImportar" value="IMPORTAR_SEM_CLASSIFICACAO">
+          <label class="form-check-label" for="politicaPendentesImportar">
+            <strong>Importar mesmo assim</strong><br>
+            <span class="text-muted small">Os produtos serão importados sem categoria/subcategoria e poderão ser classificados posteriormente no cadastro.</span>
+          </label>
+        </div>
+      </div>
       <div class="card-body p-0">
         <div class="table-responsive" style="max-height: 420px;">
           <table class="table table-sm table-hover mb-0 align-middle">
@@ -439,6 +578,10 @@ function loadImportacaoInicialProdutos() {
                 <th>Qtd. Origem</th>
                 <th>Conversão</th>
                 <th>Estoque Inicial</th>
+                <th>Categoria</th>
+                <th>Subcategoria</th>
+                <th>Classificação</th>
+                <th>Ação</th>
                 <th>Fiscal</th>
                 <th></th>
               </tr>
@@ -477,12 +620,80 @@ function loadImportacaoInicialProdutos() {
     $('#resumoValidacaoImportacao').addClass('d-none').empty();
     $('#cardPreviewImportacao').addClass('d-none');
     $('#cardResultadoImportacao').addClass('d-none');
+    $('#blocoPoliticaPendentes').addClass('d-none');
+    $('input[name="politicaPendentesImportacao"]').prop('checked', false);
   });
 
   $('#btnValidarImportacaoProdutos').on('click', validarArquivoImportacaoInicial);
   $('#btnImportarProdutosFinal').on('click', confirmarImportacaoInicialProdutos);
   $('#btnLimparImportacaoProdutos').on('click', confirmarLimparImportacaoInicial);
+  $(document).off('change.politicaPendentes').on('change.politicaPendentes', 'input[name="politicaPendentesImportacao"]', function onPoliticaPendentesChange() {
+    importacaoInicialState.politica_pendentes = obterPoliticaPendentesUi();
+    renderPreviewImportacaoInicial();
+    atualizarResumoDestinoPendentes();
+    atualizarBotaoImportarCadastro();
+  });
   atualizarVisibilidadeTratamentoFiscal();
+}
+
+function renderPoliticaPendentesImportacao() {
+  const qtdPend = Number((importacaoInicialState.resumo || {}).pendentes_classificacao || 0);
+  const $bloco = $('#blocoPoliticaPendentes');
+  if (isModoQuantidades() || qtdPend <= 0) {
+    $bloco.addClass('d-none');
+    return;
+  }
+  $('#textoPoliticaPendentes').text(
+    `${qtdPend} produto${qtdPend === 1 ? '' : 's'} não possuem categoria/subcategoria compatível.`
+  );
+  $bloco.removeClass('d-none');
+}
+
+function contagemDestinoPendentes() {
+  const r = importacaoInicialState.resumo || {};
+  const classificados = Number(r.produtos_classificados || 0);
+  const pendentes = Number(r.pendentes_classificacao || 0);
+  const politica = obterPoliticaPendentesUi();
+  if (politica === POLITICA_IMPORTAR_SEM) {
+    return { importados: classificados + pendentes, ignorados: 0 };
+  }
+  if (politica === POLITICA_IGNORAR) {
+    return { importados: classificados, ignorados: pendentes };
+  }
+  return { importados: classificados, ignorados: pendentes };
+}
+
+function atualizarResumoDestinoPendentes() {
+  const d = contagemDestinoPendentes();
+  $('#resumoSeraoImportados').html(`<strong>Serão importados:</strong> ${d.importados}`);
+  $('#resumoSeraoIgnorados').html(`<strong>Serão ignorados:</strong> ${d.ignorados}`);
+}
+
+function atualizarBotaoImportarCadastro() {
+  const $btn = $('#btnImportarProdutosFinal');
+  const r = importacaoInicialState.resumo || {};
+  if (isModoQuantidades()) {
+    const pode = importacaoInicialState.pode_importar && Number(r.prontos || 0) > 0;
+    $btn.prop('disabled', !pode).text('Registrar Quantidades');
+    return;
+  }
+  const temErro = Number(r.com_erro || 0) > 0;
+  const classificados = Number(r.produtos_classificados || 0);
+  const qtdPend = Number(r.pendentes_classificacao || 0);
+  const politica = obterPoliticaPendentesUi();
+  const precisaPolitica = qtdPend > 0;
+  const dest = contagemDestinoPendentes();
+  const pode = importacaoInicialState.pode_importar
+    && !temErro
+    && dest.importados > 0
+    && (!precisaPolitica || Boolean(politica));
+  if (pode) {
+    $btn.prop('disabled', false).text(
+      `Importar ${dest.importados} produto${dest.importados === 1 ? '' : 's'}`
+    );
+  } else {
+    $btn.prop('disabled', true).text('Importar produtos');
+  }
 }
 
 function atualizarVisibilidadeTratamentoFiscal() {
@@ -540,31 +751,22 @@ async function validarArquivoImportacaoInicial() {
     }
 
     renderResumoValidacaoImportacao(data, file.name);
+    atualizarResumoDestinoPendentes();
     renderCabecalhoPreviewImportacao();
+    importacaoInicialState.politica_pendentes = null;
+    importacaoInicialState.pode_importar = data.pode_importar === true;
+    $('input[name="politicaPendentesImportacao"]').prop('checked', false);
+    renderPoliticaPendentesImportacao();
     renderPreviewImportacaoInicial();
     $('#cardPreviewImportacao').removeClass('d-none');
+    atualizarBotaoImportarCadastro();
 
-    const r = data.resumo || {};
-    const $btn = $('#btnImportarProdutosFinal');
-    if (isModoQuantidades()) {
-      const pode = data.pode_importar && Number(r.prontos || 0) > 0;
-      $btn.prop('disabled', !pode).text('Registrar Quantidades');
+    const qtdP = Number((data.resumo || {}).pendentes_classificacao || 0);
+    if (qtdP > 0) {
+      showNotification(`Existem produtos sem classificação segura. ${qtdP} produto${qtdP === 1 ? '' : 's'}.`, 'warning');
     } else {
-      const qtdProntos = Number(r.prontos || 0);
-      const qtdEnriq = Number(r.enriquecimentos || 0);
-      const importaveis = qtdProntos + qtdEnriq;
-      const temErro = Number(r.com_erro || 0) > 0;
-      if (!temErro && importaveis > 0) {
-        const label = qtdEnriq > 0 && qtdProntos === 0
-          ? `Enriquecer ${qtdEnriq} produto${qtdEnriq === 1 ? '' : 's'}`
-          : `Importar ${importaveis} produto${importaveis === 1 ? '' : 's'}`;
-        $btn.prop('disabled', false).text(label);
-      } else {
-        $btn.prop('disabled', true).text('Importar produtos');
-      }
+      showNotification('Validação concluída.', 'success');
     }
-
-    showNotification('Validação concluída.', 'success');
   } catch (err) {
     showNotification(err.message || 'Erro ao validar', 'danger');
   } finally {
@@ -605,16 +807,24 @@ function renderResumoValidacaoImportacao(data, nomeArquivo) {
       <div class="mt-2"><strong>TRATAMENTO FISCAL:</strong> ${tratamento}</div>
       <div class="row g-2 mt-2">
         <div class="col-md-3"><strong>Produtos encontrados:</strong> ${r.produtos_encontrados || 0}</div>
-        <div class="col-md-3"><strong>Produtos válidos:</strong> ${r.produtos_validos || 0}</div>
-        <div class="col-md-3"><strong>Com erro:</strong> ${r.com_erro || 0}</div>
-        <div class="col-md-3"><strong>Possíveis duplicados:</strong> ${r.possiveis_duplicados || 0}</div>
         <div class="col-md-3"><strong>Produtos novos:</strong> ${r.produtos_novos != null ? r.produtos_novos : (r.prontos || 0)}</div>
-        <div class="col-md-3"><strong>Produtos existentes:</strong> ${r.produtos_existentes != null ? r.produtos_existentes : ((r.existentes || 0) + enriquecimentos)}</div>
+        <div class="col-md-3"><strong>Produtos existentes:</strong> ${r.produtos_existentes != null ? r.produtos_existentes : ((r.existentes || 0) + enriquecimentos + Number(r.atualizacoes || 0))}</div>
+        <div class="col-md-3"><strong>Produtos a atualizar:</strong> ${Number(r.atualizacoes || 0)}</div>
+        <div class="col-md-3"><strong>Produtos sem alteração:</strong> ${Number(r.produtos_sem_alteracao != null ? r.produtos_sem_alteracao : r.existentes || 0)}</div>
+        <div class="col-md-3"><strong>Pendentes de classificação:</strong> ${Number(r.pendentes_classificacao || 0)}</div>
+        <div class="col-md-3"><strong>Produtos classificados:</strong> ${Number(r.produtos_classificados != null ? r.produtos_classificados : ((r.prontos || 0) + enriquecimentos + Number(r.atualizacoes || 0) + Number(r.atencao_importaveis || 0)))}</div>
+        <div class="col-md-3" id="resumoSeraoImportados"><strong>Serão importados:</strong> ${Number(r.produtos_classificados || 0)}</div>
+        <div class="col-md-3" id="resumoSeraoIgnorados"><strong>Serão ignorados:</strong> ${Number(r.pendentes_classificacao || 0)}</div>
+        <div class="col-md-3"><strong>Categorias novas:</strong> ${Number(r.categorias_novas || 0)}</div>
+        <div class="col-md-3"><strong>Subcategorias novas:</strong> ${Number(r.subcategorias_novas || 0)}</div>
+        <div class="col-md-3"><strong>Quantidade na planilha:</strong> ${Number(r.quantidade_planilha_total != null ? r.quantidade_planilha_total : estoqueTotal)} ${unEstoque}</div>
+        <div class="col-md-3"><strong>Estoque a lançar:</strong> ${estoqueTotal} ${unEstoque}</div>
+        <div class="col-md-3"><strong>Apresentações novas:</strong> ${aprNovas}</div>
+        <div class="col-md-3"><strong>Possíveis duplicados:</strong> ${r.possiveis_duplicados || 0}</div>
+        <div class="col-md-3"><strong>Erros:</strong> ${r.com_erro || 0}</div>
         <div class="col-md-3"><strong>Produtos fiscais novos:</strong> ${r.produtos_fiscais_novos || 0}</div>
         <div class="col-md-3"><strong>Produtos não fiscais novos:</strong> ${r.produtos_nao_fiscais_novos || 0}</div>
-        <div class="col-md-3"><strong>Estoque inicial:</strong> ${estoqueTotal} ${unEstoque}</div>
         <div class="col-md-3"><strong>Existentes a enriquecer:</strong> ${enriquecimentos}</div>
-        <div class="col-md-3"><strong>Apresentações novas:</strong> ${aprNovas}</div>
       </div>
     </div>
   `);
@@ -627,6 +837,13 @@ function renderPreviewImportacaoInicial() {
     const html = linhas.map((l) => {
       const p = l.produto || {};
       const q = l.quantidade || {};
+      const prev = l.preview_atualizacao || {};
+      const custoLabel = prev.novo_custo_label != null
+        ? (typeof prev.novo_custo_label === 'number' ? moedaImport(prev.novo_custo_label) : escapeHtmlImport(prev.novo_custo_label))
+        : '—';
+      const vendaLabel = prev.novo_preco_label != null
+        ? (typeof prev.novo_preco_label === 'number' ? moedaImport(prev.novo_preco_label) : escapeHtmlImport(prev.novo_preco_label))
+        : '—';
       return `<tr>
         <td>${badgeStatusImport(l.status)}</td>
         <td>${escapeHtmlImport(p.codigo_origem || '—')}</td>
@@ -634,9 +851,11 @@ function renderPreviewImportacaoInicial() {
         <td>${escapeHtmlImport(q.qtd_origem_label || '—')}</td>
         <td>${escapeHtmlImport(q.conversao_label || '—')}</td>
         <td>${escapeHtmlImport(q.quantidade_label || '—')}</td>
+        <td>${custoLabel}</td>
+        <td>${vendaLabel}</td>
       </tr>`;
     }).join('');
-    $('#tbodyPreviewImportacao').html(html || '<tr><td colspan="6" class="text-center text-muted py-4">Nenhuma linha</td></tr>');
+    $('#tbodyPreviewImportacao').html(html || '<tr><td colspan="8" class="text-center text-muted py-4">Nenhuma linha</td></tr>');
     return;
   }
 
@@ -659,11 +878,15 @@ function renderPreviewImportacaoInicial() {
       <td>${escapeHtmlImport(e.qtd_origem_label || '—')}</td>
       <td>${escapeHtmlImport(e.conversao_label || '—')}</td>
       <td>${escapeHtmlImport(e.estoque_inicial_label || '—')}</td>
+      <td>${escapeHtmlImport(nomeCategoriaPreview(l))}</td>
+      <td>${escapeHtmlImport(nomeSubcategoriaPreview(l) === '—' ? '—' : nomeSubcategoriaPreview(l))}</td>
+      <td>${escapeHtmlImport(rotuloClassificacaoImport(l))}</td>
+      <td>${escapeHtmlImport(acaoLinhaImportacao(l, obterPoliticaPendentesUi()))}</td>
       <td>${badgeFiscal}</td>
       <td><button type="button" class="btn btn-outline-secondary btn-sm" data-idx="${idx}" onclick="verDetalheImportacaoInicial(${idx})">Ver detalhes</button></td>
     </tr>`;
   }).join('');
-  $('#tbodyPreviewImportacao').html(html || '<tr><td colspan="13" class="text-center text-muted py-4">Nenhuma linha</td></tr>');
+  $('#tbodyPreviewImportacao').html(html || '<tr><td colspan="17" class="text-center text-muted py-4">Nenhuma linha</td></tr>');
 }
 
 function verDetalheImportacaoInicial(idx) {
@@ -689,6 +912,49 @@ function verDetalheImportacaoInicial(idx) {
         <dt class="col-sm-4">Unidade base</dt><dd class="col-sm-8">${enr.corrigir_unidade_base
           ? `${escapeHtmlImport(enr.unidade_atual || '—')} → ${escapeHtmlImport(enr.unidade_arquivo || p.unidade_base || '—')}`
           : escapeHtmlImport(p.unidade_base || '—')}</dd>
+      </dl>
+    `
+    : '';
+
+  const prev = l.preview_atualizacao || null;
+  const blocoNovo = (l.status === 'PRONTO')
+    ? `
+      <hr>
+      <h6>Cadastro novo</h6>
+      <dl class="row mb-0">
+        <dt class="col-sm-4">Status</dt><dd class="col-sm-8">NOVO</dd>
+        <dt class="col-sm-4">Categoria</dt><dd class="col-sm-8">${escapeHtmlImport(p.categoria || '—')}</dd>
+        <dt class="col-sm-4">Subcategoria</dt><dd class="col-sm-8">${escapeHtmlImport(p.subcategoria || '—')}</dd>
+        <dt class="col-sm-4">Quantidade</dt><dd class="col-sm-8">${escapeHtmlImport((l.estoque && l.estoque.estoque_inicial_label) || '—')}</dd>
+        <dt class="col-sm-4">Custo</dt><dd class="col-sm-8">${moedaImport(p.custo_unitario)}</dd>
+        <dt class="col-sm-4">Preço venda</dt><dd class="col-sm-8">${moedaImport(p.preco_venda)}</dd>
+      </dl>
+    `
+    : '';
+  const blocoAtualizar = (l.status === 'EXISTENTE_ATUALIZAR' && prev)
+    ? `
+      <hr>
+      <h6>Atualização de produto existente</h6>
+      <dl class="row mb-0">
+        <dt class="col-sm-4">Status</dt><dd class="col-sm-8">EXISTENTE_ATUALIZAR</dd>
+        <dt class="col-sm-4">Estoque atual</dt><dd class="col-sm-8">${escapeHtmlImport(String(prev.estoque_atual ?? '—'))}</dd>
+        <dt class="col-sm-4">Qtd. a lançar</dt><dd class="col-sm-8">${Number(prev.alterar_estoque) === true
+          ? `+${escapeHtmlImport(String(prev.quantidade_importada ?? 0))} UN`
+          : (Number(prev.quantidade_arquivo || 0) > 0
+            ? `0 UN (já lançado — ${escapeHtmlImport(String(prev.quantidade_arquivo))} UN na planilha)`
+            : '—')}</dd>
+        <dt class="col-sm-4">= Estoque final</dt><dd class="col-sm-8">${escapeHtmlImport(String(prev.estoque_final ?? '—'))}</dd>
+        <dt class="col-sm-4">Custo atual</dt><dd class="col-sm-8">${moedaImport(prev.custo_atual)}</dd>
+        <dt class="col-sm-4">→ Novo custo</dt><dd class="col-sm-8">${typeof prev.novo_custo_label === 'number' ? moedaImport(prev.novo_custo_label) : escapeHtmlImport(prev.novo_custo_label || '— não alterar —')}</dd>
+        <dt class="col-sm-4">Venda atual</dt><dd class="col-sm-8">${moedaImport(prev.preco_atual)}</dd>
+        <dt class="col-sm-4">→ Nova venda</dt><dd class="col-sm-8">${typeof prev.novo_preco_label === 'number' ? moedaImport(prev.novo_preco_label) : escapeHtmlImport(prev.novo_preco_label || '— não alterar —')}</dd>
+        <dt class="col-sm-4">Categoria</dt><dd class="col-sm-8">${prev.alterar_categoria
+          ? 'a classificar (cadastro sem categoria)'
+          : `preservada${prev.categoria_preservada ? ` (${escapeHtmlImport(prev.categoria_preservada)})` : ''}`}</dd>
+        <dt class="col-sm-4">Subcategoria</dt><dd class="col-sm-8">${prev.alterar_subcategoria
+          ? 'a classificar (cadastro sem subcategoria)'
+          : `preservada${prev.subcategoria_preservada ? ` (${escapeHtmlImport(prev.subcategoria_preservada)})` : ''}`}</dd>
+        <dt class="col-sm-4">Fiscal</dt><dd class="col-sm-8">preservado</dd>
       </dl>
     `
     : '';
@@ -719,8 +985,17 @@ function verDetalheImportacaoInicial(idx) {
             <dl class="row mb-0">
               <dt class="col-sm-4">Produto</dt><dd class="col-sm-8">${escapeHtmlImport(p.nome)}</dd>
               <dt class="col-sm-4">Marca</dt><dd class="col-sm-8">${escapeHtmlImport(p.marca || '—')}</dd>
-              <dt class="col-sm-4">Categoria</dt><dd class="col-sm-8">${escapeHtmlImport(p.categoria || '—')}</dd>
-              <dt class="col-sm-4">Subcategoria</dt><dd class="col-sm-8">${escapeHtmlImport(p.subcategoria || '—')}</dd>
+              <dt class="col-sm-4">Classificação atual</dt><dd class="col-sm-8">${escapeHtmlImport(classificacaoAtualPreview(l))}</dd>
+              <dt class="col-sm-4">Classificação sugerida</dt><dd class="col-sm-8">${escapeHtmlImport(classificacaoSugeridaPreview(l))}</dd>
+              <dt class="col-sm-4">Ação</dt><dd class="col-sm-8">${escapeHtmlImport(acaoLinhaImportacao(l, obterPoliticaPendentesUi()))}</dd>
+              <dt class="col-sm-4">Categoria atual</dt><dd class="col-sm-8">${escapeHtmlImport((l.classificacao && l.classificacao.categoria_atual_nome) || '—')}</dd>
+              <dt class="col-sm-4">Categoria sugerida</dt><dd class="col-sm-8">${escapeHtmlImport(textoCategoriaSugeridaDetalhe(l.classificacao))}</dd>
+              <dt class="col-sm-4">Subcategoria atual</dt><dd class="col-sm-8">${escapeHtmlImport((l.classificacao && l.classificacao.subcategoria_atual_nome) || '—')}</dd>
+              <dt class="col-sm-4">Subcategoria sugerida</dt><dd class="col-sm-8">${escapeHtmlImport(textoSubcategoriaSugeridaDetalhe(l.classificacao))}</dd>
+              <dt class="col-sm-4">Confiança</dt><dd class="col-sm-8">${escapeHtmlImport((l.classificacao && l.classificacao.confianca) || '—')}</dd>
+              <dt class="col-sm-4">Origem</dt><dd class="col-sm-8">${escapeHtmlImport(rotuloOrigemClassificacao(l.classificacao && l.classificacao.origem))}</dd>
+              <dt class="col-sm-4">Categoria informada</dt><dd class="col-sm-8">${escapeHtmlImport(p.categoria || '—')}</dd>
+              <dt class="col-sm-4">Subcategoria informada</dt><dd class="col-sm-8">${escapeHtmlImport(p.subcategoria || '—')}</dd>
               <dt class="col-sm-4">Unidade base</dt><dd class="col-sm-8">${escapeHtmlImport(p.unidade_base || 'UN')}</dd>
               <dt class="col-sm-4">Qtd. origem</dt><dd class="col-sm-8">${escapeHtmlImport((l.estoque && l.estoque.qtd_origem_label) || '—')}</dd>
               <dt class="col-sm-4">Conversão</dt><dd class="col-sm-8">${escapeHtmlImport((l.estoque && l.estoque.conversao_label) || '—')}</dd>
@@ -739,6 +1014,8 @@ function verDetalheImportacaoInicial(idx) {
               <dt class="col-sm-4">Status</dt><dd class="col-sm-8">${badgeStatusImport(l.status)} ${(l.mensagens || []).map(escapeHtmlImport).join('; ')}</dd>
             </dl>
             ${blocoDuplicidade}
+            ${blocoNovo}
+            ${blocoAtualizar}
             ${blocoEnriquecimento}
             <hr>
             <h6>Apresentações / conversões</h6>
@@ -761,6 +1038,12 @@ function confirmarImportacaoInicialProdutos() {
     showNotification('Existem erros de validação. Corrija o arquivo e valide novamente.', 'warning');
     return;
   }
+  const qtdPendClass = Number(importacaoInicialState.resumo?.pendentes_classificacao || 0);
+  const politica = obterPoliticaPendentesUi();
+  if (!isModoQuantidades() && qtdPendClass > 0 && !politica) {
+    showNotification('Selecione o destino dos produtos sem classificação.', 'warning');
+    return;
+  }
 
   if (isModoQuantidades()) {
     const r = importacaoInicialState.resumo || {};
@@ -778,8 +1061,8 @@ function confirmarImportacaoInicialProdutos() {
               <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
-              <p class="mb-2">Esta operação não criará nem alterará produtos.
-              Somente registrará as quantidades dos produtos existentes.</p>
+              <p class="mb-2">Esta operação não criará produtos.
+              Somará as quantidades dos produtos existentes e atualizará custo/preço somente quando informados na planilha.</p>
               <ul class="mb-2">
                 <li>Produtos: <strong>${totalArquivo}</strong></li>
                 <li>Quantidade total: <strong>${qtdLancar}</strong></li>
@@ -796,14 +1079,18 @@ function confirmarImportacaoInicialProdutos() {
     `);
   } else {
     const r = importacaoInicialState.resumo || {};
-    const qtd = Number(r.prontos || 0);
-    const enriquecimentos = Number(r.enriquecimentos || 0);
-    if (qtd + enriquecimentos <= 0) return;
+    const dest = contagemDestinoPendentes();
+    const qtd = dest.importados;
+    if (qtd <= 0) return;
     const existentes = Number(r.existentes || 0);
     const total = Number(r.produtos_encontrados || 0);
     const estoque = Number(r.estoque_inicial_total || 0);
     const un = escapeHtmlImport(r.estoque_inicial_unidade || 'UN');
     const aprNovas = Number(r.apresentacoes_novas || 0);
+    const enriquecimentos = Number(r.enriquecimentos || 0);
+    const atualizacoes = Number(r.atualizacoes || 0);
+    const qtdPend = Number(r.pendentes_classificacao || 0);
+    const politica = obterPoliticaPendentesUi();
     const modoFiscal = importacaoInicialState.modo_fiscal_importacao
       || r.modo_fiscal_importacao
       || MODO_FISCAL;
@@ -829,6 +1116,18 @@ function confirmarImportacaoInicialProdutos() {
            <li>Estoque a registrar: <strong>${estoque}</strong> ${un}</li>
          </ul>`
       : '';
+    const avisoAtualizacao = atualizacoes > 0
+      ? `<p class="mb-2 text-warning">Existem produtos já cadastrados que receberão soma de estoque e/ou atualização de custo/preço.</p>
+         <ul class="mb-2">
+           <li>Produtos existentes a atualizar: <strong>${atualizacoes}</strong></li>
+         </ul>`
+      : '';
+
+    const avisoPendentes = qtdPend > 0
+      ? (politica === POLITICA_IGNORAR
+        ? `<p class="mb-2"><strong>Pendentes:</strong> ${qtdPend} produto${qtdPend === 1 ? '' : 's'} <strong>não serão importados</strong>.</p>`
+        : `<p class="mb-2"><strong>Pendentes:</strong> ${qtdPend} produto${qtdPend === 1 ? '' : 's'} serão importados <strong>sem categoria/subcategoria</strong>.</p>`)
+      : '';
 
     $('#modal-container').html(`
       <div class="modal fade" id="modalConfirmarImportacao" tabindex="-1">
@@ -841,9 +1140,12 @@ function confirmarImportacaoInicialProdutos() {
             <div class="modal-body">
               ${avisoFiscal}
               ${avisoEnriquecimento}
+              ${avisoAtualizacao}
+              ${avisoPendentes}
               <ul class="mb-2">
                 <li>Produtos: <strong>${total}</strong></li>
-                <li>Produtos novos: <strong>${qtd}</strong></li>
+                <li>Serão importados: <strong>${dest.importados}</strong></li>
+                <li>Serão ignorados: <strong>${dest.ignorados}</strong></li>
                 <li>Produtos existentes (sem alteração): <strong>${existentes}</strong></li>
                 <li>Estoque inicial: <strong>${estoque}</strong> na unidade base (${un})</li>
                 <li>Movimentações de estoque: <strong>serão criadas quando aplicável</strong></li>
@@ -880,10 +1182,15 @@ async function executarImportacaoInicialProdutos() {
       : '<i class="fas fa-spinner fa-spin"></i> Importando...'
   );
   try {
+    const payload = { sessao_id: importacaoInicialState.sessaoId };
+    if (!modoQtd) {
+      const politica = obterPoliticaPendentesUi();
+      if (politica) payload.politica_pendentes = politica;
+    }
     const resp = await fetch(`${API_URL}/produtos/importacao-inicial/importar`, {
       method: 'POST',
       headers: { ...headersImportacao(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessao_id: importacaoInicialState.sessaoId })
+      body: JSON.stringify(payload)
     });
     const data = await resp.json();
     if (!resp.ok || !data.sucesso) {
@@ -912,7 +1219,10 @@ async function executarImportacaoInicialProdutos() {
       $('#corpoResultadoImportacao').html(`
         <h5 class="text-success">IMPORTAÇÃO CONCLUÍDA</h5>
         <ul class="mb-2">
-          <li>Produtos processados: <strong>${r.produtos_processados || 0}</strong></li>
+          <li>Importados: <strong>${r.importados != null ? r.importados : (r.criados || 0) + (r.atualizados || 0)}</strong></li>
+          <li>Ignorados: <strong>${r.ignorados || 0}</strong></li>
+          <li>Classificados: <strong>${r.classificados != null ? r.classificados : 0}</strong></li>
+          <li>Sem classificação: <strong>${r.sem_classificacao || 0}</strong></li>
           <li>Criados: <strong>${r.criados || 0}</strong></li>
           <li>Existentes: <strong>${r.existentes || 0}</strong></li>
           <li>Enriquecidos: <strong>${r.enriquecidos || r.atualizados || 0}</strong></li>

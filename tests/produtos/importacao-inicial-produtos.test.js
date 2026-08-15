@@ -25,6 +25,7 @@ const {
 } = require('../../backend/services/importacao-inicial-produtos/helpers');
 const { resolverCustosEPrecos, montarEstoquePreview } = require('../../backend/services/importacao-inicial-produtos/validator');
 const { executarImportacao } = require('../../backend/services/importacao-inicial-produtos/importer');
+const { seedParCategoriaSub } = require('./helpers-seed-catalogo-importacao');
 
 function openDb(filePath) {
   return new Promise((resolve, reject) => {
@@ -222,6 +223,7 @@ async function criarSchema(db) {
     estoque_total_depois REAL DEFAULT 0,
     criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
+  await seedParCategoriaSub(db, run, get, 'Ferragens', 'Abraçadeiras');
 }
 
 describe('V1.0.1 — normalização de cabeçalhos oficiais', () => {
@@ -936,6 +938,7 @@ describe('V1.0.7 — ProdutoEmbalagemService + paridade', () => {
     fs.mkdirSync(pastaBackup);
     const db = await openDb(dbPath);
     await criarSchema(db);
+    await seedParCategoriaSub(db, run, get, 'Elétrica', 'Cabos');
 
     const buffer = svc.gerarXlsxFixture({
       produtos: [linhaCabo()],
@@ -1021,6 +1024,7 @@ describe('V1.0.7 — ProdutoEmbalagemService + paridade', () => {
     fs.mkdirSync(pastaBackup);
     const db = await openDb(dbPath);
     await criarSchema(db);
+    await seedParCategoriaSub(db, run, get, 'Elétrica', 'Cabos');
 
     const buffer = svc.gerarXlsxFixture({
       produtos: [linhaCabo()],
@@ -1054,6 +1058,7 @@ describe('V1.0.7 — ProdutoEmbalagemService + paridade', () => {
     fs.mkdirSync(pastaBackup);
     const db = await openDb(dbPath);
     await criarSchema(db);
+    await seedParCategoriaSub(db, run, get, 'Elétrica', 'Cabos');
 
     const cadastro = svc.gerarXlsxFixture({
       produtos: [linhaCabo()],
@@ -1152,7 +1157,7 @@ describe('V1.0.8 — Enriquecimento de produto existente (apresentação)', () =
   } = {}) {
     await run(db, `INSERT INTO marcas (nome, ativo) VALUES (?, 1)`, [marca]);
     const marcaRow = await get(db, `SELECT id FROM marcas WHERE nome = ?`, [marca]);
-    await run(db, `INSERT INTO categorias (nome, tipo, ativo) VALUES (?, 'produto', 1)`, ['Elétrica']);
+    await run(db, `INSERT OR IGNORE INTO categorias (nome, tipo, ativo) VALUES (?, 'produto', 1)`, ['Elétrica']);
     const cat = await get(db, `SELECT id FROM categorias WHERE nome = ?`, ['Elétrica']);
     await run(db, `INSERT INTO subcategorias (nome, categoria_id, ativo) VALUES (?, ?, 1)`, ['Cabos', cat.id]);
     const sub = await get(db, `SELECT id FROM subcategorias WHERE nome = ?`, ['Cabos']);
@@ -1351,6 +1356,7 @@ describe('V1.0.8 — Enriquecimento de produto existente (apresentação)', () =
     assert.ok(
       validacao.linhas[0].status === STATUS.EXISTENTE
       || validacao.linhas[0].status === STATUS.EXISTENTE_APRESENTACAO_NOVA
+      || validacao.linhas[0].status === STATUS.EXISTENTE_ATUALIZAR
     );
     if (validacao.linhas[0].status === STATUS.EXISTENTE_APRESENTACAO_NOVA) {
       assert.equal(validacao.linhas[0].enriquecimento.apresentacoes_novas, 0);
@@ -1481,7 +1487,7 @@ describe('V1.0.10 — Preço unitário (não preço da apresentação)', () => {
 
     await run(db, `INSERT INTO marcas (nome, ativo) VALUES ('GENERICA', 1)`);
     const marca = await get(db, `SELECT id FROM marcas WHERE nome = 'GENERICA'`);
-    await run(db, `INSERT INTO categorias (nome, tipo, ativo) VALUES ('Elétrica', 'produto', 1)`);
+    await run(db, `INSERT OR IGNORE INTO categorias (nome, tipo, ativo) VALUES ('Elétrica', 'produto', 1)`);
     const cat = await get(db, `SELECT id FROM categorias WHERE nome = 'Elétrica'`);
     await run(db, `INSERT INTO subcategorias (nome, categoria_id, ativo) VALUES ('Cabos', ?, 1)`, [cat.id]);
     const sub = await get(db, `SELECT id FROM subcategorias WHERE nome = 'Cabos'`);

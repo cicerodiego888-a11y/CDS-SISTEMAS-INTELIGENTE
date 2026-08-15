@@ -32,7 +32,9 @@
       sessaoId: null,
       resumo: null,
       linhas: [],
-      resultado: null
+      resultado: null,
+      politica_pendentes: null,
+      pode_importar: false
     };
   }
 

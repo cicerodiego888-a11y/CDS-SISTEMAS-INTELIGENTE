@@ -237,10 +237,29 @@ router.get('/danfe/venda/:vendaId', async (req, res) => {
   const vendaId = Number(req.params.vendaId);
 
   try {
-    const { html } = await obterDanfeHtmlAtualizado(vendaId);
+    const { html, htmlTermico, textoTermico } = await obterDanfeHtmlAtualizado(vendaId);
     if (!html) {
       return res.status(404).send('DANFE não gerado para esta NFC-e.');
     }
+
+    const formato = String(req.query.formato || '').toLowerCase();
+    const pacote = req.query.pacote === '1' || formato === 'pacote' || formato === 'json';
+
+    if (pacote) {
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({
+        html,
+        htmlTermico: htmlTermico || html,
+        textoTermico: textoTermico || ''
+      });
+    }
+
+    if (formato === 'termico') {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      return res.send(htmlTermico || html);
+    }
+
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
     return res.send(html);

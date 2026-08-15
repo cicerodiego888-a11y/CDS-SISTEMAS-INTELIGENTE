@@ -254,8 +254,8 @@ function icoTelefone() {
   return '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M3.5 1.5h3l1 3-2 1.5a9 9 0 0 0 4.5 4.5l1.5-2 3 1v3A1.5 1.5 0 0 1 13 14 11.5 11.5 0 0 1 2 3a1.5 1.5 0 0 1 1.5-1.5z"/></svg>';
 }
 
-async function gerarDanfeHtml({
-  venda,
+async function montarDadosDanfe({
+  venda = {},
   itens: itensDanfe = [],
   itensFiscal = [],
   empresa = {},
@@ -266,21 +266,15 @@ async function gerarDanfeHtml({
   tributos,
   nota,
   larguraMm
-}) {
+} = {}) {
   void itensFiscal;
 
   const tpAmbDanfe = Number(
     nota?.tpAmb || nota?.ambiente || venda?.tpAmb || venda?.ambiente || 1
   );
 
-  const avisoHomologacao = tpAmbDanfe === 2
-    ? '<div class="homolog">EMITIDA EM AMBIENTE DE HOMOLOGAÇÃO — SEM VALOR FISCAL</div>'
-    : '';
-
   const papelMm = resolverLarguraPapelMm(empresa, { larguraMm });
   const qrLargura = papelMm === 58 ? 160 : 200;
-  const fsBase = papelMm === 58 ? '9.5px' : '11px';
-  const fsFantasia = papelMm === 58 ? '15px' : '18px';
 
   const qrCodeDataUrl = qrCodeUrl
     ? (await QRCodeService.gerarLink(qrCodeUrl, {
@@ -290,30 +284,119 @@ async function gerarDanfeHtml({
     })).imagem || ''
     : '';
 
-  const itensImpressao = Array.isArray(itensDanfe) ? itensDanfe : [];
-  const pagamentosComerciais = resolverPagamentosExibicaoDanfe(venda);
-  const textoPagamentos = montarPagamentosDanfe(pagamentosComerciais);
-  const pagamentosHtml = montarPagamentosHtml(pagamentosComerciais);
+  const itensOrigem = Array.isArray(itensDanfe) ? itensDanfe : [];
+  const itens = itensOrigem.map((item) => {
+    const quantidade = obterQuantidadeImpressao(item);
+    const subtotal = obterValorImpressao(item);
+    const precoUnitario = quantidade > 0
+      ? subtotal / quantidade
+      : Number(item.preco_unitario || 0);
+    return {
+      codigo: obterCodigoItem(item),
+      nome: String(item.produto_nome || item.nome || ''),
+      quantidade,
+      precoUnitario,
+      subtotal
+    };
+  });
+
+  const pagamentos = resolverPagamentosExibicaoDanfe(venda).map((p) => ({
+    forma_pagamento: p.forma_pagamento,
+    valor: Number(p.valor || 0)
+  }));
 
   const valorTotalVenda = Number(venda.total ?? 0) > 0
     ? Number(venda.total)
-    : itensImpressao.reduce((acc, item) => acc + obterValorImpressao(item), 0);
+    : itens.reduce((acc, item) => acc + Number(item.subtotal || 0), 0);
 
   const desconto = Number(venda.desconto || 0);
-  const troco = Number(venda.troco || venda.valor_troco || 0);
+  const acrescimo = Number(venda.acrescimo || venda.outro || 0);
+  const subtotal = Number(venda.subtotal || 0) > 0
+    ? Number(venda.subtotal)
+    : itens.reduce((acc, item) => acc + Number(item.subtotal || 0), 0);
+  const trocoCampo = Number(venda.troco || venda.valor_troco || 0);
   const valorRecebido = Number(venda.valor_recebido || 0);
+  const troco = trocoCampo > 0
+    ? trocoCampo
+    : (valorRecebido > valorTotalVenda ? valorRecebido - valorTotalVenda : 0);
+  const totalPago = somarPagamentosDanfe(pagamentos);
 
-  const nomeFantasia = resolverNomeFantasia(empresa);
-  const razaoSocial = resolverRazaoSocial(empresa);
-  const maxEndereco = papelMm === 58 ? 28 : 36;
-  const linhasEndereco = montarLinhasEndereco(empresa, maxEndereco);
-  const telefoneFmt = formatarTelefone(empresa.telefone || '');
-  const cnpjFmt = formatarCNPJ(empresa.cnpj);
-  const protocolo = String(nota?.protocolo || venda?.protocolo || '').trim();
-  const dataHora = String(
-    nota?.data_autorizacao || nota?.updated_at || venda?.data_hora
-    || venda?.created_at || venda?.data_venda || ''
-  ).trim();
+  const consumidorDoc = venda.cpf_cnpj_nota || venda.cliente_cpf || '';
+
+  return {
+    papelMm,
+    qrLargura,
+    fsBase: papelMm === 58 ? '9.5px' : '11px',
+    fsFantasia: papelMm === 58 ? '15px' : '18px',
+    qrCodeUrl: qrCodeUrl || '',
+    qrCodeDataUrl,
+    itensOrigem,
+    itens,
+    pagamentos,
+    total: valorTotalVenda,
+    subtotal,
+    desconto,
+    acrescimo,
+    troco,
+    valorRecebido,
+    totalPago,
+    nomeFantasia: resolverNomeFantasia(empresa),
+    razaoSocial: resolverRazaoSocial(empresa),
+    linhasEndereco: montarLinhasEndereco(empresa, papelMm === 58 ? 28 : 36),
+    telefoneFmt: formatarTelefone(empresa.telefone || ''),
+    cnpjFmt: formatarCNPJ(empresa.cnpj),
+    protocolo: String(nota?.protocolo || venda?.protocolo || '').trim(),
+    dataHora: String(
+      nota?.data_autorizacao || nota?.updated_at || venda?.data_hora
+      || venda?.created_at || venda?.data_venda || ''
+    ).trim(),
+    chave: chave || '',
+    chaveGrupos: formatarChaveAcessoGrupos(chave),
+    numero,
+    serie,
+    tributos: tributos || null,
+    tpAmb: tpAmbDanfe,
+    homologacao: tpAmbDanfe === 2,
+    consumidorDoc,
+    consumidorDocFmt: consumidorDoc ? formatarCpfCnpj(consumidorDoc) : '',
+    informacoesAdicionais: String(
+      venda.informacoes_adicionais || venda.observacao || nota?.informacoes_adicionais || ''
+    ).trim(),
+    _danfeDto: true
+  };
+}
+
+async function gerarDanfeHtml(args = {}) {
+  const dados = args && args._danfeDto
+    ? args
+    : await montarDadosDanfe(args);
+
+  const avisoHomologacao = dados.homologacao
+    ? '<div class="homolog">EMITIDA EM AMBIENTE DE HOMOLOGAÇÃO — SEM VALOR FISCAL</div>'
+    : '';
+
+  const papelMm = dados.papelMm;
+  const qrLargura = dados.qrLargura;
+  const fsBase = dados.fsBase;
+  const fsFantasia = dados.fsFantasia;
+  const qrCodeDataUrl = dados.qrCodeDataUrl;
+  const itensImpressao = dados.itensOrigem || [];
+  const pagamentosComerciais = dados.pagamentos;
+  const textoPagamentos = montarPagamentosDanfe(pagamentosComerciais);
+  const pagamentosHtml = montarPagamentosHtml(pagamentosComerciais);
+  const valorTotalVenda = dados.total;
+  const desconto = dados.desconto;
+  const nomeFantasia = dados.nomeFantasia;
+  const razaoSocial = dados.razaoSocial;
+  const linhasEndereco = dados.linhasEndereco;
+  const telefoneFmt = dados.telefoneFmt;
+  const cnpjFmt = dados.cnpjFmt;
+  const protocolo = dados.protocolo;
+  const dataHora = dados.dataHora;
+  const chave = dados.chave;
+  const numero = dados.numero;
+  const serie = dados.serie;
+  const tributos = dados.tributos;
 
   const itensHtml = itensImpressao.map((item) => {
     const quantidade = obterQuantidadeImpressao(item);
@@ -341,7 +424,7 @@ async function gerarDanfeHtml({
       <div class="row"><span>COFINS</span><span>R$ ${Number(tributos.vCOFINS || 0).toFixed(2)}</span></div>
     </div>` : '';
 
-  const consumidorDoc = venda.cpf_cnpj_nota || venda.cliente_cpf;
+  const consumidorDoc = dados.consumidorDoc;
   const consumidorHtml = consumidorDoc
     ? `<div class="center consumer">CPF/CNPJ do Consumidor: ${escapeHtml(formatarCpfCnpj(consumidorDoc))}</div>`
     : '';
@@ -359,10 +442,8 @@ async function gerarDanfeHtml({
     : '';
 
   let trocoHtml = '';
-  if (troco > 0) {
-    trocoHtml = `<div class="row"><span>Troco</span><span>${escapeHtml(formatarMoeda(troco))}</span></div>`;
-  } else if (valorRecebido > valorTotalVenda) {
-    trocoHtml = `<div class="row"><span>Troco</span><span>${escapeHtml(formatarMoeda(valorRecebido - valorTotalVenda))}</span></div>`;
+  if (Number(dados.troco || 0) > 0) {
+    trocoHtml = `<div class="row"><span>Troco</span><span>${escapeHtml(formatarMoeda(dados.troco))}</span></div>`;
   }
 
   const totalLegado = `Total: R$ ${valorTotalVenda.toFixed(2)}`;
@@ -483,6 +564,7 @@ async function gerarDanfeHtml({
 
 module.exports = {
   gerarDanfeHtml,
+  montarDadosDanfe,
   obterPagamentosComerciaisDanfe,
   resolverPagamentosExibicaoDanfe,
   obterQuantidadeImpressao,
@@ -496,5 +578,6 @@ module.exports = {
   formatarTelefone,
   formatarCNPJ,
   formatarMoeda,
-  formatarFormaPagamento
+  formatarFormaPagamento,
+  formatarChaveAcessoGrupos
 };

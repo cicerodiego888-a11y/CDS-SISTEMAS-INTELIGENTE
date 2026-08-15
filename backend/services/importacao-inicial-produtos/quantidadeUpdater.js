@@ -18,7 +18,9 @@ const {
   calcularEstoqueInicial,
   montarMotivoAtualizacaoQuantidades,
   arredondarCasas,
-  mapearTipoApresentacao
+  mapearTipoApresentacao,
+  campoNumericoInformado,
+  LABEL_NAO_ALTERAR
 } = require('./helpers');
 
 function dbRun(db, sql, params = []) {
@@ -56,6 +58,7 @@ async function carregarIndicesProdutos(db) {
     SELECT p.id, p.codigo, p.nome, p.codigo_barras, p.unidade,
            p.preco_compra, p.preco_venda, p.lucro_percentual, p.item_fiscal,
            p.estoque_atual, p.saldo_fiscal, p.saldo_nao_fiscal,
+           p.categoria_id, p.subcategoria_id,
            m.nome AS marca_nome
     FROM produtos p
     LEFT JOIN marcas m ON m.id = p.marca_id
@@ -234,6 +237,14 @@ async function validarAtualizacaoQuantidades(db, dadosExtraidos, { nomeArquivo }
           status = STATUS.ERRO;
           mensagens.push('Quantidade inválida');
           erros += 1;
+        } else if (campoNumericoInformado(raw.custo_informado) && Number(raw.custo_informado) < 0) {
+          status = STATUS.ERRO;
+          mensagens.push('Custo unitário inválido');
+          erros += 1;
+        } else if (campoNumericoInformado(raw.preco_informado) && Number(raw.preco_informado) < 0) {
+          status = STATUS.ERRO;
+          mensagens.push('Preço de venda inválido');
+          erros += 1;
         } else {
           encontrados += 1;
           quantidadeTotal = arredondarCasas(quantidadeTotal + qtdCalc.quantidade_a_lancar, 3);
@@ -244,6 +255,11 @@ async function validarAtualizacaoQuantidades(db, dadosExtraidos, { nomeArquivo }
     if (!qtdCalc) {
       qtdCalc = calcularQuantidadeALancar(raw, { fator: 1, fonte: 'padrao' });
     }
+
+    const alteraCusto = campoNumericoInformado(raw.custo_informado);
+    const alteraPreco = campoNumericoInformado(raw.preco_informado);
+    const custoAplicar = alteraCusto ? Number(raw.custo_informado) : null;
+    const precoAplicar = alteraPreco ? Number(raw.preco_informado) : null;
 
     linhas.push({
       linha: idx + 1,
@@ -256,18 +272,41 @@ async function validarAtualizacaoQuantidades(db, dadosExtraidos, { nomeArquivo }
         unidade_base: match?.produto?.unidade || raw.unidade_base || 'UN',
         referencia_fabricante: raw.referencia_fabricante,
         origem: raw.origem,
-        codigo_barras: raw.codigo_barras
+        codigo_barras: raw.codigo_barras,
+        custo_informado: raw.custo_informado,
+        preco_informado: raw.preco_informado,
+        custo_unitario: custoAplicar,
+        preco_venda: precoAplicar
       },
       quantidade: qtdCalc,
       fator_fonte: fatorInfo?.fonte || null,
       existente_id: match?.produto?.id || null,
       match_motivo: match?.motivo || null,
+      preview_atualizacao: match ? {
+        estoque_atual: Number(match.produto.estoque_atual || 0),
+        quantidade_importada: Number(qtdCalc.quantidade_a_lancar || 0),
+        estoque_final: arredondarCasas(
+          Number(match.produto.estoque_atual || 0) + Number(qtdCalc.quantidade_a_lancar || 0),
+          3
+        ),
+        custo_atual: match.produto.preco_compra,
+        novo_custo: alteraCusto ? custoAplicar : null,
+        novo_custo_label: alteraCusto ? custoAplicar : LABEL_NAO_ALTERAR,
+        preco_atual: match.produto.preco_venda,
+        novo_preco: alteraPreco ? precoAplicar : null,
+        novo_preco_label: alteraPreco ? precoAplicar : LABEL_NAO_ALTERAR,
+        item_fiscal_preservado: Number(match.produto.item_fiscal) === 0 ? 0 : 1,
+        alterar_custo: alteraCusto,
+        alterar_preco: alteraPreco
+      } : null,
       snapshot_cadastro: match ? {
         preco_compra: match.produto.preco_compra,
         preco_venda: match.produto.preco_venda,
         lucro_percentual: match.produto.lucro_percentual,
         item_fiscal: match.produto.item_fiscal,
-        nome: match.produto.nome
+        nome: match.produto.nome,
+        categoria_id: match.produto.categoria_id,
+        subcategoria_id: match.produto.subcategoria_id
       } : null
     });
   }
@@ -337,7 +376,8 @@ async function executarAtualizacaoQuantidades(db, validacao, {
   dbPath,
   pastaBackup,
   importId,
-  forcarFalhaEstoque
+  forcarFalhaEstoque,
+  forcarFalhaCustoPreco
 } = {}) {
   if (validacao.modo && validacao.modo !== MODOS.ATUALIZAR_QUANTIDADES) {
     const err = new Error('Sessão inválida para atualização de quantidades.');
@@ -394,6 +434,7 @@ async function executarAtualizacaoQuantidades(db, validacao, {
   let estoqueLancado = 0;
   let movimentacoes = 0;
   let ignorados = 0;
+  let cadastroAlterado = 0;
 
   await dbRun(db, 'BEGIN IMMEDIATE');
   try {
@@ -405,7 +446,7 @@ async function executarAtualizacaoQuantidades(db, validacao, {
 
       const atual = await dbGet(db, `
         SELECT id, nome, preco_compra, preco_venda, lucro_percentual, item_fiscal,
-               estoque_atual, saldo_fiscal
+               estoque_atual, saldo_fiscal, saldo_nao_fiscal, categoria_id, subcategoria_id
         FROM produtos WHERE id = ?
       `, [produtoId]);
       if (!atual) {
@@ -413,14 +454,20 @@ async function executarAtualizacaoQuantidades(db, validacao, {
       }
 
       const qtd = Number(linha.quantidade?.quantidade_a_lancar || 0);
-      if (!Number.isFinite(qtd) || qtd <= 0) {
+      const lancaEstoque = Number.isFinite(qtd) && qtd > 0;
+      const alteraCusto = campoNumericoInformado(linha.produto?.custo_informado)
+        && Number(linha.produto.custo_informado) >= 0;
+      const alteraPreco = campoNumericoInformado(linha.produto?.preco_informado)
+        && Number(linha.produto.preco_informado) >= 0;
+
+      if (!lancaEstoque && !alteraCusto && !alteraPreco) {
         continue;
       }
 
       const codigo = linha.produto?.codigo_origem;
       const origemArquivo = linha.produto?.origem || null;
 
-      if (await jaProcessouAtualizacao(db, {
+      if (lancaEstoque && await jaProcessouAtualizacao(db, {
         produtoId,
         importId: refImportacao,
         codigoOrigem: codigo,
@@ -430,40 +477,63 @@ async function executarAtualizacaoQuantidades(db, validacao, {
         continue;
       }
 
-      if (forcarFalhaEstoque) {
-        throw new Error('Falha forçada no registro de quantidades (teste de rollback).');
+      if (lancaEstoque) {
+        if (forcarFalhaEstoque) {
+          throw new Error('Falha forçada no registro de quantidades (teste de rollback).');
+        }
+
+        const motivo = montarMotivoAtualizacaoQuantidades({
+          importId: refImportacao,
+          codigoOrigem: codigo,
+          origemArquivo
+        });
+
+        const itemFiscal = Number(atual.item_fiscal) === 0 ? 0 : 1;
+        await aplicarAjusteAsync(db, {
+          produtoId,
+          ajusteFiscal: itemFiscal === 1 ? qtd : 0,
+          ajusteNaoFiscal: itemFiscal === 0 ? qtd : 0,
+          motivo,
+          usuarioId: usuarioId || null,
+          usuarioNome: usuarioNome || 'Atualização de Quantidades'
+        });
+        estoqueLancado = arredondarCasas(estoqueLancado + qtd, 3);
+        movimentacoes += 1;
       }
 
-      const motivo = montarMotivoAtualizacaoQuantidades({
-        importId: refImportacao,
-        codigoOrigem: codigo,
-        origemArquivo
-      });
-
-      const itemFiscal = Number(atual.item_fiscal) === 0 ? 0 : 1;
-      await aplicarAjusteAsync(db, {
-        produtoId,
-        ajusteFiscal: itemFiscal === 1 ? qtd : 0,
-        ajusteNaoFiscal: itemFiscal === 0 ? qtd : 0,
-        motivo,
-        usuarioId: usuarioId || null,
-        usuarioNome: usuarioNome || 'Atualização de Quantidades'
-      });
+      if (alteraCusto || alteraPreco) {
+        if (forcarFalhaCustoPreco === true || linha._forcarFalhaCustoPreco === true) {
+          throw new Error('Falha forçada na atualização de custo/preço (teste de rollback).');
+        }
+        const sets = [];
+        const params = [];
+        if (alteraCusto) {
+          sets.push('preco_compra = ?');
+          params.push(Number(linha.produto.custo_informado));
+        }
+        if (alteraPreco) {
+          sets.push('preco_venda = ?');
+          params.push(Number(linha.produto.preco_informado));
+        }
+        params.push(produtoId);
+        await dbRun(db, `UPDATE produtos SET ${sets.join(', ')} WHERE id = ?`, params);
+        cadastroAlterado += 1;
+      }
 
       const depois = await dbGet(db, `
-        SELECT nome, preco_compra, preco_venda, lucro_percentual, item_fiscal
+        SELECT nome, preco_compra, preco_venda, lucro_percentual, item_fiscal,
+               categoria_id, subcategoria_id
         FROM produtos WHERE id = ?
       `, [produtoId]);
       if (depois.nome !== atual.nome
-        || Number(depois.preco_compra) !== Number(atual.preco_compra)
-        || Number(depois.preco_venda) !== Number(atual.preco_venda)
+        || Number(depois.item_fiscal) !== Number(atual.item_fiscal)
+        || Number(depois.categoria_id || 0) !== Number(atual.categoria_id || 0)
+        || Number(depois.subcategoria_id || 0) !== Number(atual.subcategoria_id || 0)
         || Number(depois.lucro_percentual) !== Number(atual.lucro_percentual)
-        || Number(depois.item_fiscal) !== Number(atual.item_fiscal)) {
+        || (!alteraCusto && Number(depois.preco_compra) !== Number(atual.preco_compra))
+        || (!alteraPreco && Number(depois.preco_venda) !== Number(atual.preco_venda))) {
         throw new Error('Integridade: dados cadastrais foram alterados indevidamente.');
       }
-
-      estoqueLancado = arredondarCasas(estoqueLancado + qtd, 3);
-      movimentacoes += 1;
     }
     await dbRun(db, 'COMMIT');
   } catch (e) {
@@ -483,7 +553,7 @@ async function executarAtualizacaoQuantidades(db, validacao, {
       encontrados: linhasOk.length,
       nao_encontrados: 0,
       criados: 0,
-      cadastro_alterado: 0,
+      cadastro_alterado: cadastroAlterado,
       estoque_lancado: estoqueLancado,
       movimentacoes_estoque: movimentacoes,
       ignorados_ja_processados: ignorados,

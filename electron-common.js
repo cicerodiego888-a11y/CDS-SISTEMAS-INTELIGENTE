@@ -297,6 +297,34 @@ function iniciarBackendLocal(tituloJanela) {
     });
 }
 
+function imprimirHtmlEmJanelaOculta(html, deviceName, callback) {
+  const printWindow = new BrowserWindow({
+    width: 380,
+    height: 900,
+    show: false,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true
+    }
+  });
+
+  const printOptions = {
+    silent: true,
+    printBackground: true,
+    margins: { marginType: 'none' }
+  };
+  if (deviceName) printOptions.deviceName = deviceName;
+
+  printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(String(html || ''))}`);
+  printWindow.webContents.once('did-finish-load', async () => {
+    await printWindow.webContents.executeJavaScript('new Promise(r => setTimeout(r, 600));');
+    printWindow.webContents.print(printOptions, () => {
+      if (!printWindow.isDestroyed()) printWindow.destroy();
+      if (typeof callback === 'function') callback();
+    });
+  });
+}
+
 function registrarHandlersIpc() {
   ipcMain.removeAllListeners('forcar-reflow');
   ipcMain.on('forcar-reflow', () => {
@@ -314,7 +342,8 @@ function registrarHandlersIpc() {
     const {
       deviceName,
       silent = false,
-      autoFecharMs = 5000
+      autoFecharMs = 5000,
+      htmlImpressao = null
     } = options;
 
     const cupomWindow = new BrowserWindow({
@@ -364,6 +393,16 @@ function registrarHandlersIpc() {
 
       if (deviceName) {
         printOptions.deviceName = deviceName;
+      }
+
+      if (htmlImpressao) {
+        imprimirHtmlEmJanelaOculta(htmlImpressao, deviceName, () => {
+          impressaoConcluida = true;
+          if (typeof callback === 'function') {
+            callback();
+          }
+        });
+        return;
       }
 
       cupomWindow.webContents.print(printOptions, () => {

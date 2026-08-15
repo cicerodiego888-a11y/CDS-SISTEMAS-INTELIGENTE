@@ -22,11 +22,19 @@ const {
   MODOS,
   MODOS_FISCAIS_IMPORTACAO,
   STATUS,
+  POLITICA_PENDENTES,
   calcularCustoUnitarioDeEmbalagem,
   calcularPrecoPorMarkup,
   validarModoFiscalImportacao
 } = require('./helpers');
 const validator = require('./validator');
+const {
+  classificarProduto,
+  resolverClassificacaoExistente,
+  STATUS_CLASSIFICACAO,
+  CONFIANCA,
+  ORIGEM
+} = require('./classificadorCategoria');
 
 function normalizarModo(modo) {
   const m = String(modo || MODOS.CADASTRO_INICIAL).toUpperCase();
@@ -84,7 +92,13 @@ async function validarArquivoBuffer(db, buffer, {
   };
 }
 
-async function importarSessao(db, sessaoId, { usuarioId, usuarioNome, dbPath, pastaBackup } = {}) {
+async function importarSessao(db, sessaoId, {
+  usuarioId,
+  usuarioNome,
+  dbPath,
+  pastaBackup,
+  politica_pendentes
+} = {}) {
   const sessao = obterSessao(sessaoId);
   if (!sessao || !sessao.validacao) {
     const err = new Error('Sessão de importação não encontrada ou expirada. Valide o arquivo novamente.');
@@ -120,7 +134,8 @@ async function importarSessao(db, sessaoId, { usuarioId, usuarioNome, dbPath, pa
       usuarioNome,
       dbPath,
       pastaBackup,
-      importId: sessaoId
+      importId: sessaoId,
+      politica_pendentes
     });
   }
 
@@ -172,6 +187,12 @@ module.exports = {
   MODOS_FISCAIS_IMPORTACAO,
   validarModoFiscalImportacao,
   STATUS,
+  POLITICA_PENDENTES,
+  classificarProduto,
+  resolverClassificacaoExistente,
+  STATUS_CLASSIFICACAO,
+  CONFIANCA,
+  ORIGEM,
   calcularCustoUnitarioDeEmbalagem,
   calcularPrecoPorMarkup,
   calcularEstoqueInicial: require('./helpers').calcularEstoqueInicial,

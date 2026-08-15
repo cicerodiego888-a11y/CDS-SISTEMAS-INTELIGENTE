@@ -16,13 +16,19 @@ const {
   chaveNomeCadastroSimples,
   normalizarNomeCadastroSimples,
   STATUS,
+  linhaBloqueiaPorClassificacao,
+  linhaAtencaoPermiteImportar,
+  POLITICA_PENDENTES,
+  validarPoliticaPendentes,
   montarMotivoEstoqueInicial,
   calcularCustoTotalEstoqueInicial,
   montarEmbalagensParaServico,
   mesclarApresentacoesParaSync,
   normalizarUnidadeBaseCadastro,
-  texto
+  texto,
+  campoNumericoInformado
 } = require('./helpers');
+const { chaveCategoriaEquivalente } = require('./classificadorCategoria');
 
 function dbRun(db, sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -54,52 +60,132 @@ function aplicarAjusteAsync(db, opcoes) {
   });
 }
 
-async function findOrCreateCategoria(db, nomeBruto, cache) {
+async function encontrarCategoriaProduto(db, nomeBruto, cache) {
   const nome = normalizarNomeCadastroSimples(nomeBruto);
   if (!nome) return null;
-  const chave = chaveNomeCadastroSimples(nome);
+  const chave = chaveCategoriaEquivalente(nome);
   if (cache.categorias.has(chave)) return cache.categorias.get(chave);
 
-  const todas = await dbAll(db, `SELECT id, nome FROM categorias WHERE COALESCE(ativo, 1) = 1`);
-  const existente = todas.find((c) => chaveNomeCadastroSimples(c.nome) === chave);
+  const todas = await dbAll(
+    db,
+    `SELECT id, nome FROM categorias
+     WHERE tipo = 'produto' AND COALESCE(ativo, 1) = 1`
+  );
+  const existente = todas.find((c) => chaveCategoriaEquivalente(c.nome) === chave);
   if (existente) {
     cache.categorias.set(chave, existente.id);
     return existente.id;
   }
+  return null;
+}
+
+async function encontrarSubcategoriaProduto(db, nomeBruto, categoriaId, cache) {
+  const nome = normalizarNomeCadastroSimples(nomeBruto);
+  if (!nome || !categoriaId) return null;
+  const chave = `${categoriaId}|${chaveCategoriaEquivalente(nome)}`;
+  if (cache.subcategorias.has(chave)) return cache.subcategorias.get(chave);
+
+  const todas = await dbAll(
+    db,
+    `SELECT id, nome, categoria_id FROM subcategorias
+     WHERE categoria_id = ? AND COALESCE(ativo, 1) = 1`,
+    [categoriaId]
+  );
+  const existente = todas.find((s) => chaveCategoriaEquivalente(s.nome) === chaveCategoriaEquivalente(nome));
+  if (existente) {
+    cache.subcategorias.set(chave, existente.id);
+    return existente.id;
+  }
+  return null;
+}
+
+/** V1.1.4 — reutiliza equivalente (produto ativo) ou cria tipo=produto ativo=1. Nunca cria despesa. */
+async function findOrCreateCategoria(db, nomeBruto, cache) {
+  const nome = normalizarNomeCadastroSimples(nomeBruto);
+  if (!nome) return null;
+  const chave = chaveCategoriaEquivalente(nome);
+  if (cache.categorias.has(chave)) return cache.categorias.get(chave);
+
+  const todas = await dbAll(db, `SELECT id, nome, tipo, COALESCE(ativo, 1) AS ativo FROM categorias`);
+  const equivalente = todas.find((c) => chaveCategoriaEquivalente(c.nome) === chave);
+  if (equivalente) {
+    if (String(equivalente.tipo || 'produto') !== 'produto' || Number(equivalente.ativo) === 0) {
+      return null;
+    }
+    cache.categorias.set(chave, equivalente.id);
+    return equivalente.id;
+  }
   const ins = await dbRun(
     db,
-    `INSERT INTO categorias (nome, tipo, ativo, created_at, updated_at)
-     VALUES (?, 'produto', 1, datetime('now','localtime'), datetime('now','localtime'))`,
+    `INSERT INTO categorias (nome, tipo, ativo) VALUES (?, 'produto', 1)`,
     [nome]
   );
   cache.categorias.set(chave, ins.lastID);
   return ins.lastID;
 }
 
+/** V1.1.4 — reutiliza sub equivalente na categoria ou cria vinculada a ela. */
 async function findOrCreateSubcategoria(db, nomeBruto, categoriaId, cache) {
   const nome = normalizarNomeCadastroSimples(nomeBruto);
   if (!nome || !categoriaId) return null;
-  const chave = `${categoriaId}|${chaveNomeCadastroSimples(nome)}`;
+  const chave = `${categoriaId}|${chaveCategoriaEquivalente(nome)}`;
   if (cache.subcategorias.has(chave)) return cache.subcategorias.get(chave);
 
   const todas = await dbAll(
     db,
-    `SELECT id, nome, categoria_id FROM subcategorias WHERE categoria_id = ? AND COALESCE(ativo, 1) = 1`,
+    `SELECT id, nome, categoria_id FROM subcategorias
+     WHERE categoria_id = ? AND COALESCE(ativo, 1) = 1`,
     [categoriaId]
   );
-  const existente = todas.find((s) => chaveNomeCadastroSimples(s.nome) === chaveNomeCadastroSimples(nome));
+  const existente = todas.find((s) => chaveCategoriaEquivalente(s.nome) === chaveCategoriaEquivalente(nome));
   if (existente) {
     cache.subcategorias.set(chave, existente.id);
     return existente.id;
   }
   const ins = await dbRun(
     db,
-    `INSERT INTO subcategorias (nome, categoria_id, ativo, created_at, updated_at)
-     VALUES (?, ?, 1, datetime('now','localtime'), datetime('now','localtime'))`,
+    `INSERT INTO subcategorias (nome, categoria_id, ativo) VALUES (?, ?, 1)`,
     [nome, categoriaId]
   );
   cache.subcategorias.set(chave, ins.lastID);
   return ins.lastID;
+}
+
+async function garantirEstruturaClassificacao(db, linha, cache) {
+  const cl = linha.classificacao;
+  if (!cl) return cl;
+  const nomeCat = cl.categoria_nome || linha.produto?.categoria;
+  const nomeSub = cl.subcategoria_nome || linha.produto?.subcategoria;
+  const novo = linha.status === STATUS.PRONTO;
+  const precisaCat = Boolean(
+    cl.criar_categoria || ((cl.alterar_categoria || novo) && nomeCat && !cl.categoria_id)
+  );
+  const precisaSub = Boolean(
+    cl.criar_subcategoria || ((cl.alterar_subcategoria || novo) && nomeSub && !cl.subcategoria_id)
+  );
+
+  if (precisaCat && nomeCat) {
+    const id = await findOrCreateCategoria(db, nomeCat, cache);
+    if (id) cl.categoria_id = id;
+    else if (cl.criar_categoria) {
+      throw new Error(`Não foi possível criar a categoria "${nomeCat}".`);
+    }
+  }
+  if (precisaSub && nomeSub) {
+    if (!cl.categoria_id && nomeCat) {
+      const idCat = await findOrCreateCategoria(db, nomeCat, cache);
+      if (idCat) cl.categoria_id = idCat;
+    }
+    if (!cl.categoria_id) {
+      throw new Error('Não é possível criar subcategoria sem categoria.');
+    }
+    const id = await findOrCreateSubcategoria(db, nomeSub, cl.categoria_id, cache);
+    if (id) cl.subcategoria_id = id;
+    else if (cl.criar_subcategoria) {
+      throw new Error(`Não foi possível criar a subcategoria "${nomeSub}".`);
+    }
+  }
+  return cl;
 }
 
 /**
@@ -194,15 +280,160 @@ async function registrarEstoqueInicial(db, {
   return { lancado: qtd, movimentado: true };
 }
 
+/**
+ * Atualiza somente produtos.preco_compra / produtos.preco_venda quando a planilha
+ * informou o campo. Vazio = não alterar. Nunca toca categoria, subcategoria ou item_fiscal.
+ */
+async function aplicarCustoPrecoProdutoExistente(db, produtoId, linha, { forcarFalha } = {}) {
+  if (forcarFalha) {
+    throw new Error('Falha forçada na atualização de custo/preço (teste de rollback).');
+  }
+  const p = linha.produto || {};
+  const sets = [];
+  const params = [];
+
+  if (campoNumericoInformado(p.custo_informado) && Number(p.custo_informado) >= 0) {
+    const custo = Number(p.custo_unitario);
+    if (Number.isFinite(custo) && custo >= 0) {
+      sets.push('preco_compra = ?');
+      params.push(custo);
+    }
+  }
+  if (campoNumericoInformado(p.preco_informado) && Number(p.preco_informado) >= 0) {
+    const preco = Number(p.preco_venda);
+    if (Number.isFinite(preco) && preco >= 0) {
+      sets.push('preco_venda = ?');
+      params.push(preco);
+      const markup = Number(p.markup);
+      if (Number.isFinite(markup)) {
+        sets.push('lucro_percentual = ?');
+        params.push(markup);
+      }
+    }
+  }
+  if (!sets.length) return { atualizado: false, custo: false, preco: false };
+
+  params.push(produtoId);
+  await dbRun(db, `UPDATE produtos SET ${sets.join(', ')} WHERE id = ?`, params);
+  return {
+    atualizado: true,
+    custo: campoNumericoInformado(p.custo_informado),
+    preco: campoNumericoInformado(p.preco_informado)
+  };
+}
+
+/**
+ * EXISTENTE_ATUALIZAR: soma estoque (idempotente) + custo/preço informados
+ * + classificação somente quando o banco estiver NULL.
+ * Nunca sobrescreve categoria/subcategoria já preenchidas.
+ */
+async function aplicarClassificacaoProdutoExistente(db, produtoId, classificacao) {
+  if (!produtoId || !classificacao) {
+    return { categoria: false, subcategoria: false };
+  }
+  const atual = await dbGet(
+    db,
+    `SELECT categoria_id, subcategoria_id FROM produtos WHERE id = ?`,
+    [produtoId]
+  );
+  if (!atual) return { categoria: false, subcategoria: false };
+
+  let categoriaAplicada = false;
+  let subcategoriaAplicada = false;
+
+  if (classificacao.alterar_categoria === true
+    && classificacao.categoria_id
+    && atual.categoria_id == null) {
+    const upd = await dbRun(
+      db,
+      `UPDATE produtos SET categoria_id = ?
+       WHERE id = ? AND categoria_id IS NULL`,
+      [classificacao.categoria_id, produtoId]
+    );
+    categoriaAplicada = Number(upd.changes || 0) > 0;
+  }
+
+  const categoriaAtual = categoriaAplicada ? classificacao.categoria_id : atual.categoria_id;
+  if (classificacao.alterar_subcategoria === true
+    && classificacao.subcategoria_id
+    && atual.subcategoria_id == null
+    && categoriaAtual) {
+    const sub = await dbGet(
+      db,
+      `SELECT id, categoria_id FROM subcategorias
+       WHERE id = ? AND COALESCE(ativo, 1) = 1`,
+      [classificacao.subcategoria_id]
+    );
+    if (sub && Number(sub.categoria_id) === Number(categoriaAtual)) {
+      const upd = await dbRun(
+        db,
+        `UPDATE produtos SET subcategoria_id = ?
+         WHERE id = ?
+           AND subcategoria_id IS NULL
+           AND categoria_id = ?`,
+        [classificacao.subcategoria_id, produtoId, categoriaAtual]
+      );
+      subcategoriaAplicada = Number(upd.changes || 0) > 0;
+    }
+  }
+
+  return { categoria: categoriaAplicada, subcategoria: subcategoriaAplicada };
+}
+
+async function atualizarProdutoExistente(db, linha, {
+  usuarioId,
+  usuarioNome,
+  importId,
+  forcarFalhaEstoque,
+  forcarFalhaCustoPreco,
+  cache = { categorias: new Map(), subcategorias: new Map() }
+} = {}) {
+  const produtoId = linha.existente_id;
+  if (!produtoId) {
+    throw new Error('Linha de atualização sem produto existente.');
+  }
+
+  const semClassificacao = linha._importarSemClassificacao === true;
+  if (!semClassificacao) {
+    const classif = await garantirEstruturaClassificacao(db, linha, cache);
+    await aplicarClassificacaoProdutoExistente(db, produtoId, classif || linha.classificacao);
+  }
+
+  const mov = await registrarEstoqueInicial(db, {
+    produtoId,
+    linha,
+    importId,
+    usuarioId,
+    usuarioNome,
+    forcarFalhaEstoque
+  });
+
+  const precos = await aplicarCustoPrecoProdutoExistente(db, produtoId, linha, {
+    forcarFalha: forcarFalhaCustoPreco === true || linha._forcarFalhaCustoPreco === true
+  });
+
+  return { produtoId, mov, precos, classificacao: semClassificacao ? null : linha.classificacao };
+}
+
 async function inserirProduto(db, linha, cache, usuarioId) {
   const p = linha.produto;
+  const semClassificacao = linha._importarSemClassificacao === true;
+  if (!semClassificacao) {
+    await garantirEstruturaClassificacao(db, linha, cache);
+  }
   let marcaId = null;
   if (p.marca) {
     const r = await findOrCreateMarca(db, p.marca);
     marcaId = r.marca?.id || null;
   }
-  const categoriaId = await findOrCreateCategoria(db, p.categoria, cache);
-  const subcategoriaId = await findOrCreateSubcategoria(db, p.subcategoria, categoriaId, cache);
+  const categoriaId = semClassificacao
+    ? null
+    : (Number(linha.classificacao?.categoria_id)
+      || await findOrCreateCategoria(db, p.categoria, cache));
+  const subcategoriaId = semClassificacao
+    ? null
+    : (Number(linha.classificacao?.subcategoria_id)
+      || await findOrCreateSubcategoria(db, p.subcategoria, categoriaId, cache));
   const unidade = normalizarUnidadeBaseCadastro(p.unidade_base || 'UN');
   const codigo = p.codigo_origem || null;
 
@@ -292,12 +523,16 @@ async function enriquecerProdutoExistente(db, linha, {
   usuarioNome,
   importId,
   forcarFalhaEstoque,
-  forcarFalhaApresentacao
+  forcarFalhaApresentacao,
+  cache = { categorias: new Map(), subcategorias: new Map() }
 } = {}) {
   const produtoId = linha.existente_id;
   if (!produtoId) {
     throw new Error('Linha de enriquecimento sem produto existente.');
   }
+
+  await garantirEstruturaClassificacao(db, linha, cache);
+  await aplicarClassificacaoProdutoExistente(db, produtoId, linha.classificacao);
 
   const enr = linha.enriquecimento || {};
   let codigoBarrasAtualizado = false;
@@ -322,6 +557,8 @@ async function enriquecerProdutoExistente(db, linha, {
     && !enr.corrigir_unidade_base
     && !enr.corrigir_preco
     && !enr.precisa_estoque
+    && !enr.alterar_custo
+    && !enr.alterar_preco
     && !(Number(enr.apresentacoes_novas || 0) > 0);
 
   if (soCodigoBarras) {
@@ -413,40 +650,82 @@ async function executarImportacao(db, validacao, {
   pastaBackup,
   importId,
   forcarFalhaEstoque,
-  forcarFalhaApresentacao
+  forcarFalhaApresentacao,
+  forcarFalhaCustoPreco,
+  politica_pendentes
 } = {}) {
   const linhasNovas = (validacao.linhas || []).filter((l) => l.status === STATUS.PRONTO);
   const linhasEnriquecer = (validacao.linhas || []).filter(
     (l) => l.status === STATUS.EXISTENTE_APRESENTACAO_NOVA
   );
+  const linhasAtualizar = (validacao.linhas || []).filter(
+    (l) => l.status === STATUS.EXISTENTE_ATUALIZAR
+  );
   const existentes = (validacao.linhas || []).filter((l) => l.status === STATUS.EXISTENTE);
   const atencao = (validacao.linhas || []).filter((l) => l.status === STATUS.ATENCAO);
+  const linhasAtencao = (validacao.linhas || []).filter(linhaAtencaoPermiteImportar);
+  const linhasPendentes = (validacao.linhas || []).filter(linhaBloqueiaPorClassificacao);
   const refImportacao = importId || validacao.arquivo || `imp-${Date.now()}`;
 
+  const politica = validarPoliticaPendentes(politica_pendentes, {
+    obrigatorio: linhasPendentes.length > 0
+  });
+  const importarPendentes = politica === POLITICA_PENDENTES.IMPORTAR_SEM_CLASSIFICACAO;
+  const linhasPendentesNovas = importarPendentes
+    ? linhasPendentes.filter((l) => !l.existente_id)
+    : [];
+  const linhasPendentesExistentes = importarPendentes
+    ? linhasPendentes.filter((l) => l.existente_id)
+    : [];
+  const ignorados = importarPendentes ? 0 : linhasPendentes.length;
+
   if ((validacao.linhas || []).some(
-    (l) => l.status === STATUS.ERRO || l.status === STATUS.CODIGO_DUPLICADO_ARQUIVO
+    (l) => l.status === STATUS.ERRO
+      || l.status === STATUS.CODIGO_DUPLICADO_ARQUIVO
+      || l.status === STATUS.CATEGORIA_NAO_ENCONTRADA
+      || l.status === STATUS.SUBCATEGORIA_INCOMPATIVEL
   )) {
     const err = new Error('Existem produtos com erro. Corrija antes de importar.');
     err.status = 400;
     throw err;
   }
-  if (!linhasNovas.length && !linhasEnriquecer.length) {
-    return {
-      sucesso: true,
-      backup: null,
-      relatorio: {
-        produtos_processados: (validacao.linhas || []).length,
-        criados: 0,
-        existentes: existentes.length,
-        enriquecidos: 0,
-        apresentacoes_novas: 0,
-        atualizados: 0,
-        com_atencao: atencao.length,
-        erros: 0,
-        estoque_lancado: 0,
-        movimentacoes_estoque: 0
-      }
-    };
+
+  const temAptos = linhasNovas.length
+    || linhasEnriquecer.length
+    || linhasAtualizar.length
+    || linhasAtencao.length
+    || linhasPendentesNovas.length
+    || linhasPendentesExistentes.length;
+
+  const montarRelatorioVazio = (backupInfo = null) => ({
+    sucesso: true,
+    backup: backupInfo,
+    relatorio: {
+      produtos_processados: (validacao.linhas || []).length,
+      criados: 0,
+      existentes: existentes.length,
+      enriquecidos: 0,
+      apresentacoes_novas: 0,
+      atualizados: 0,
+      atualizacoes: 0,
+      com_atencao: atencao.length,
+      erros: 0,
+      estoque_lancado: 0,
+      movimentacoes_estoque: 0,
+      importados: 0,
+      ignorados,
+      sem_classificacao: importarPendentes ? linhasPendentes.length : ignorados,
+      classificados: 0,
+      politica_pendentes: politica,
+      ids_criados: [],
+      ids_enriquecidos: [],
+      ids_atualizados: [],
+      import_id: refImportacao
+    }
+  });
+
+  if (!temAptos) {
+    return montarRelatorioVazio(null);
   }
 
   let backup;
@@ -469,6 +748,7 @@ async function executarImportacao(db, validacao, {
   await dbRun(db, 'BEGIN IMMEDIATE');
   const criados = [];
   const enriquecidos = [];
+  const atualizadosCadastro = [];
   let apresentacoesNovas = 0;
   let estoqueLancado = 0;
   let movimentacoes = 0;
@@ -497,10 +777,82 @@ async function executarImportacao(db, validacao, {
         usuarioNome,
         importId: refImportacao,
         forcarFalhaEstoque,
-        forcarFalhaApresentacao
+        forcarFalhaApresentacao,
+        cache
       });
       enriquecidos.push(r.produtoId);
       apresentacoesNovas += Number(r.apresentacoes_novas || 0);
+      estoqueLancado += Number(r.mov?.lancado || 0);
+      if (r.mov?.movimentado) movimentacoes += 1;
+    }
+
+    for (const linha of linhasAtualizar) {
+      if (forcarFalhaCustoPreco) {
+        linha._forcarFalhaCustoPreco = true;
+      }
+      const r = await atualizarProdutoExistente(db, linha, {
+        usuarioId,
+        usuarioNome,
+        importId: refImportacao,
+        forcarFalhaEstoque,
+        forcarFalhaCustoPreco,
+        cache
+      });
+      atualizadosCadastro.push(r.produtoId);
+      estoqueLancado += Number(r.mov?.lancado || 0);
+      if (r.mov?.movimentado) movimentacoes += 1;
+    }
+
+    for (const linha of linhasAtencao) {
+      if (forcarFalhaCustoPreco) {
+        linha._forcarFalhaCustoPreco = true;
+      }
+      const r = await atualizarProdutoExistente(db, linha, {
+        usuarioId,
+        usuarioNome,
+        importId: refImportacao,
+        forcarFalhaEstoque,
+        forcarFalhaCustoPreco,
+        cache
+      });
+      atualizadosCadastro.push(r.produtoId);
+      estoqueLancado += Number(r.mov?.lancado || 0);
+      if (r.mov?.movimentado) movimentacoes += 1;
+    }
+
+    for (const linha of linhasPendentesNovas) {
+      linha._importarSemClassificacao = true;
+      if (forcarFalhaApresentacao) {
+        linha._forcarFalhaApresentacao = true;
+      }
+      const id = await inserirProduto(db, linha, cache, usuarioId);
+      criados.push(id);
+      const mov = await registrarEstoqueInicial(db, {
+        produtoId: id,
+        linha,
+        importId: refImportacao,
+        usuarioId,
+        usuarioNome,
+        forcarFalhaEstoque
+      });
+      estoqueLancado += Number(mov.lancado || 0);
+      if (mov.movimentado) movimentacoes += 1;
+    }
+
+    for (const linha of linhasPendentesExistentes) {
+      linha._importarSemClassificacao = true;
+      if (forcarFalhaCustoPreco) {
+        linha._forcarFalhaCustoPreco = true;
+      }
+      const r = await atualizarProdutoExistente(db, linha, {
+        usuarioId,
+        usuarioNome,
+        importId: refImportacao,
+        forcarFalhaEstoque,
+        forcarFalhaCustoPreco,
+        cache
+      });
+      atualizadosCadastro.push(r.produtoId);
       estoqueLancado += Number(r.mov?.lancado || 0);
       if (r.mov?.movimentado) movimentacoes += 1;
     }
@@ -510,6 +862,12 @@ async function executarImportacao(db, validacao, {
     try { await dbRun(db, 'ROLLBACK'); } catch (_) { /* ignore */ }
     throw e;
   }
+
+  const importadosClassificados = linhasNovas.length
+    + linhasEnriquecer.length
+    + linhasAtualizar.length
+    + linhasAtencao.length;
+  const importadosSemClass = linhasPendentesNovas.length + linhasPendentesExistentes.length;
 
   return {
     sucesso: true,
@@ -523,13 +881,20 @@ async function executarImportacao(db, validacao, {
       existentes: existentes.length,
       enriquecidos: enriquecidos.length,
       apresentacoes_novas: apresentacoesNovas,
-      atualizados: enriquecidos.length,
+      atualizados: enriquecidos.length + atualizadosCadastro.length,
+      atualizacoes: atualizadosCadastro.length,
       com_atencao: atencao.length,
       erros: 0,
       estoque_lancado: estoqueLancado,
       movimentacoes_estoque: movimentacoes,
+      importados: importadosClassificados + importadosSemClass,
+      ignorados,
+      sem_classificacao: importarPendentes ? importadosSemClass : ignorados,
+      classificados: importadosClassificados,
+      politica_pendentes: politica,
       ids_criados: criados,
       ids_enriquecidos: enriquecidos,
+      ids_atualizados: atualizadosCadastro,
       import_id: refImportacao
     }
   };
@@ -539,8 +904,14 @@ module.exports = {
   executarImportacao,
   findOrCreateCategoria,
   findOrCreateSubcategoria,
+  encontrarCategoriaProduto,
+  encontrarSubcategoriaProduto,
   inserirProduto,
   enriquecerProdutoExistente,
+  atualizarProdutoExistente,
+  aplicarCustoPrecoProdutoExistente,
+  aplicarClassificacaoProdutoExistente,
+  garantirEstruturaClassificacao,
   sincronizarEmbalagensOficial,
   registrarEstoqueInicial,
   jaTemEstoqueInicialImportacao

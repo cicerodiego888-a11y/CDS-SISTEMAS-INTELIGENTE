@@ -23,6 +23,7 @@ const {
 } = require('../../backend/services/importacao-inicial-produtos/validator');
 const { executarImportacao } = require('../../backend/services/importacao-inicial-produtos/importer');
 const { extrairDadosImportacao } = require('../../backend/services/importacao-inicial-produtos/xlsxReader');
+const { seedParCategoriaSub } = require('./helpers-seed-catalogo-importacao');
 
 function openDb(filePath) {
   return new Promise((resolve, reject) => {
@@ -99,6 +100,7 @@ async function criarSchema(db) {
     estoque_total_antes REAL DEFAULT 0, estoque_total_depois REAL DEFAULT 0,
     criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
+  await seedParCategoriaSub(db, run, get, 'Ferramentas', 'Geral');
 }
 
 function linhaProduto(codigo, nome, overrides = {}) {

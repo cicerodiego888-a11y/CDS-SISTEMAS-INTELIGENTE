@@ -796,7 +796,17 @@
 
     const btnBuscar = document.getElementById('btnBuscarProdutoPdv');
     if (btnBuscar) {
-      btnBuscar.addEventListener('click', () => confirmarEntrada());
+      btnBuscar.addEventListener('click', () => {
+        fecharLista();
+        if (typeof global.abrirConsultaProdutosPdvDoCampoBusca === 'function') {
+          global.abrirConsultaProdutosPdvDoCampoBusca();
+          return;
+        }
+        if (typeof global.abrirConsultaProdutosPDV === 'function') {
+          const termo = obterInput() ? String(obterInput().value || '').trim() : '';
+          global.abrirConsultaProdutosPDV(termo);
+        }
+      });
     }
 
     fecharLista();

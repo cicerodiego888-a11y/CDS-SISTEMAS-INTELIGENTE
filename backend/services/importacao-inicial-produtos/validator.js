@@ -5,6 +5,8 @@
 'use strict';
 
 const {
+  linhaBloqueiaPorClassificacao,
+  linhaAtencaoPermiteImportar,
   STATUS,
   MARKUP_PADRAO,
   chaveNomeCadastroSimples,
@@ -19,8 +21,12 @@ const {
   normalizarUnidadeBaseCadastro,
   validarModoFiscalImportacao,
   itemFiscalDeModoImportacao,
-  rotuloModoFiscalImportacao
+  rotuloModoFiscalImportacao,
+  campoNumericoInformado,
+  valoresNumericosDivergem,
+  LABEL_NAO_ALTERAR
 } = require('./helpers');
+const { classificarProduto, resolverClassificacaoExistente, STATUS_CLASSIFICACAO, chaveCategoriaEquivalente } = require('./classificadorCategoria');
 
 function dbAll(db, sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -204,13 +210,69 @@ function montarEstoquePreview(produto, pricing) {
   };
 }
 
+function deveAtualizarCustoExistente(produtoRaw, pricing, produtoDb) {
+  return campoNumericoInformado(produtoRaw.custo_informado)
+    && valoresNumericosDivergem(pricing.custo_unitario, produtoDb?.preco_compra, 0.0001);
+}
+
+function deveAtualizarPrecoExistente(produtoRaw, pricing, produtoDb) {
+  return campoNumericoInformado(produtoRaw.preco_informado)
+    && valoresNumericosDivergem(pricing.preco_venda, produtoDb?.preco_venda, 0.02);
+}
+
+function montarPreviewAtualizacao({
+  produtoDb,
+  produtoRaw,
+  pricing,
+  estoque,
+  precisaStock,
+  alterarCategoria = false,
+  alterarSubcategoria = false
+}) {
+  const estoqueAtual = Number(produtoDb?.estoque_atual || 0);
+  const qtdArquivo = Number(estoque?.estoque_inicial || 0);
+  const qtdSomar = precisaStock && Number.isFinite(qtdArquivo) && qtdArquivo > 0 ? qtdArquivo : 0;
+  const alteraCusto = deveAtualizarCustoExistente(produtoRaw, pricing, produtoDb);
+  const alteraPreco = deveAtualizarPrecoExistente(produtoRaw, pricing, produtoDb);
+  const custoAtual = Number.isFinite(Number(produtoDb?.preco_compra)) ? Number(produtoDb.preco_compra) : null;
+  const precoAtual = Number.isFinite(Number(produtoDb?.preco_venda)) ? Number(produtoDb.preco_venda) : null;
+
+  return {
+    estoque_atual: estoqueAtual,
+    quantidade_importada: qtdSomar,
+    quantidade_arquivo: qtdArquivo,
+    estoque_final: arredondarCasas(estoqueAtual + qtdSomar, 3),
+    custo_atual: custoAtual,
+    novo_custo: alteraCusto ? pricing.custo_unitario : null,
+    novo_custo_label: alteraCusto ? pricing.custo_unitario : LABEL_NAO_ALTERAR,
+    preco_atual: precoAtual,
+    novo_preco: alteraPreco ? pricing.preco_venda : null,
+    novo_preco_label: alteraPreco ? pricing.preco_venda : LABEL_NAO_ALTERAR,
+    categoria_preservada: produtoDb?.categoria_nome || null,
+    subcategoria_preservada: produtoDb?.subcategoria_nome || null,
+    item_fiscal_preservado: Number(produtoDb?.item_fiscal) === 0 ? 0 : 1,
+    saldo_fiscal: Number(produtoDb?.saldo_fiscal || 0),
+    saldo_nao_fiscal: Number(produtoDb?.saldo_nao_fiscal || 0),
+    alterar_custo: alteraCusto,
+    alterar_preco: alteraPreco,
+    alterar_estoque: qtdSomar > 0,
+    alterar_categoria: alterarCategoria === true,
+    alterar_subcategoria: alterarSubcategoria === true
+  };
+}
+
 async function carregarIndicesExistentes(db) {
   const produtos = await dbAll(db, `
     SELECT p.id, p.codigo, p.nome, p.codigo_barras, p.marca_id, p.preco_compra, p.preco_venda,
-           p.unidade, p.estoque_atual, p.saldo_fiscal, p.item_fiscal,
-           m.nome AS marca_nome
+           p.unidade, p.estoque_atual, p.saldo_fiscal, p.saldo_nao_fiscal, p.item_fiscal,
+           p.categoria_id, p.subcategoria_id,
+           m.nome AS marca_nome,
+           c.nome AS categoria_nome,
+           s.nome AS subcategoria_nome
     FROM produtos p
     LEFT JOIN marcas m ON m.id = p.marca_id
+    LEFT JOIN categorias c ON c.id = p.categoria_id
+    LEFT JOIN subcategorias s ON s.id = p.subcategoria_id
   `);
   const porCodigo = new Map();
   const porBarras = new Map();
@@ -326,33 +388,81 @@ function mapearDuplicidadesCodigoArquivo(produtos) {
 }
 
 function statusBloqueiaImportacao(status) {
-  return status === STATUS.ERRO || status === STATUS.CODIGO_DUPLICADO_ARQUIVO;
+  return status === STATUS.ERRO
+    || status === STATUS.CODIGO_DUPLICADO_ARQUIVO
+    || status === STATUS.CATEGORIA_NAO_ENCONTRADA
+    || status === STATUS.SUBCATEGORIA_INCOMPATIVEL;
+}
+
+async function carregarCatalogoClassificacao(db) {
+  const categorias = await dbAll(
+    db,
+    `SELECT id, nome, tipo, COALESCE(ativo, 1) AS ativo FROM categorias`
+  );
+  const subcategorias = await dbAll(
+    db,
+    `SELECT id, nome, categoria_id, COALESCE(ativo, 1) AS ativo FROM subcategorias`
+  );
+  return { categorias, subcategorias };
+}
+
+function contarEstruturasNovas(linhas) {
+  const cats = new Set();
+  const subs = new Set();
+  const importaveis = new Set([
+    STATUS.PRONTO,
+    STATUS.EXISTENTE_ATUALIZAR,
+    STATUS.EXISTENTE_APRESENTACAO_NOVA
+  ]);
+  for (const l of linhas || []) {
+    if (!importaveis.has(l.status)) continue;
+    const cl = l.classificacao || {};
+    if (cl.criar_categoria && cl.categoria_nome) {
+      cats.add(chaveCategoriaEquivalente(cl.categoria_nome));
+    }
+    if (cl.criar_subcategoria && cl.subcategoria_nome) {
+      const catNome = cl.categoria_nome || cl.categoria_atual_nome || '';
+      subs.add(`${chaveCategoriaEquivalente(catNome)}|${chaveCategoriaEquivalente(cl.subcategoria_nome)}`);
+    }
+  }
+  return { categorias_novas: cats.size, subcategorias_novas: subs.size };
 }
 
 async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_importacao } = {}) {
   const modoFiscal = validarModoFiscalImportacao(modo_fiscal_importacao);
   const itemFiscalNovos = itemFiscalDeModoImportacao(modoFiscal);
   const indices = await carregarIndicesExistentes(db);
+  const catalogoClassificacao = await carregarCatalogoClassificacao(db);
   const duplicidadesArquivo = mapearDuplicidadesCodigoArquivo(dadosExtraidos.produtos);
   const linhas = [];
   let prontos = 0;
   let erros = 0;
   let existentes = 0;
   let enriquecimentos = 0;
+  let atualizacoes = 0;
   let atencao = 0;
+  let pendentesClassificacao = 0;
   let estoqueInicialTotal = 0;
+  let quantidadePlanilhaTotal = 0;
   let apresentacoesNovasTotal = 0;
   let novosFiscais = 0;
   let novosNaoFiscais = 0;
+  let existentesEncontrados = 0;
 
   for (let idx = 0; idx < (dadosExtraidos.produtos || []).length; idx += 1) {
     const produtoRaw = dadosExtraidos.produtos[idx];
     const apresentacoes = vincularApresentacoes(produtoRaw, dadosExtraidos.apresentacoes);
     const pricing = resolverCustosEPrecos(produtoRaw, apresentacoes);
     const estoque = montarEstoquePreview(produtoRaw, pricing);
+    quantidadePlanilhaTotal = arredondarCasas(
+      quantidadePlanilhaTotal + Number(estoque.estoque_inicial || 0),
+      3
+    );
     const mensagens = [];
     let status = STATUS.PRONTO;
     let enriquecimento = null;
+    let previewAtualizacao = null;
+    let classificacao = null;
     const chaveCodigo = chaveNomeCadastroSimples(produtoRaw.codigo_origem);
     const duplicidadeArquivo = chaveCodigo ? duplicidadesArquivo.get(chaveCodigo) || null : null;
 
@@ -370,6 +480,7 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_
     const match = duplicidadeArquivo
       ? null
       : encontrarCorrespondencia(produtoRaw, indices);
+    if (match?.produto) existentesEncontrados += 1;
 
     // Produto novo: exige custo/preço válidos
     if (!match && !statusBloqueiaImportacao(status)) {
@@ -384,10 +495,38 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_
     }
 
     if (match && !statusBloqueiaImportacao(status)) {
+      if (campoNumericoInformado(produtoRaw.custo_informado) && Number(produtoRaw.custo_informado) < 0) {
+        status = STATUS.ERRO;
+        mensagens.push('Custo unitário inválido');
+      }
+      if (campoNumericoInformado(produtoRaw.preco_informado) && Number(produtoRaw.preco_informado) < 0) {
+        status = STATUS.ERRO;
+        mensagens.push('Preço de venda inválido');
+      }
+    }
+
+    if (match && !statusBloqueiaImportacao(status)) {
       if (!match.seguro) {
         status = STATUS.ATENCAO;
         mensagens.push(`Requer conferência (${match.motivo})`);
         atencao += 1;
+        const classificacaoExistente = resolverClassificacaoExistente(match.produto, {
+          descricao: produtoRaw.nome,
+          marca: produtoRaw.marca,
+          categoriaInformada: produtoRaw.categoria,
+          subcategoriaInformada: produtoRaw.subcategoria
+        }, catalogoClassificacao);
+        const atencaoApto = linhaAtencaoPermiteImportar({
+          status: STATUS.ATENCAO,
+          classificacao: classificacaoExistente
+        });
+        classificacao = atencaoApto
+          ? classificacaoExistente
+          : {
+            ...classificacaoExistente,
+            alterar_categoria: false,
+            alterar_subcategoria: false
+          };
       } else {
         const embDb = await carregarEmbalagensProduto(db, match.produto.id);
         const classif = classificarApresentacoesArquivo(pricing.apresentacoes, embDb);
@@ -424,7 +563,50 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_
         const barrasArq = texto(produtoRaw.codigo_barras);
         const corrigeCodigoBarras = !barrasDb && Boolean(barrasArq);
 
-        if (classif.novas.length > 0 || precisaStock || corrigeUnidade || corrigePreco || corrigeCodigoBarras) {
+        const alteraCusto = deveAtualizarCustoExistente(produtoRaw, pricing, match.produto);
+        const alteraPreco = deveAtualizarPrecoExistente(produtoRaw, pricing, match.produto);
+        const classificacaoExistente = resolverClassificacaoExistente(match.produto, {
+          descricao: produtoRaw.nome,
+          marca: produtoRaw.marca,
+          categoriaInformada: produtoRaw.categoria,
+          subcategoriaInformada: produtoRaw.subcategoria
+        }, catalogoClassificacao);
+        classificacao = classificacaoExistente;
+        const alteraClassificacao = Boolean(
+          classificacaoExistente.alterar_categoria || classificacaoExistente.alterar_subcategoria
+        );
+        const temEnriquecimento = classif.novas.length > 0
+          || corrigeUnidade
+          || corrigePreco
+          || corrigeCodigoBarras;
+        const temAtualizacao = precisaStock || alteraCusto || alteraPreco || alteraClassificacao;
+
+        previewAtualizacao = montarPreviewAtualizacao({
+          produtoDb: match.produto,
+          produtoRaw,
+          pricing,
+          estoque,
+          precisaStock,
+          alterarCategoria: alteraClassificacao && classificacaoExistente.alterar_categoria,
+          alterarSubcategoria: alteraClassificacao && classificacaoExistente.alterar_subcategoria
+        });
+
+        if (classificacaoExistente.status === STATUS_CLASSIFICACAO.PENDENTE_CLASSIFICACAO) {
+          status = STATUS.PENDENTE_CLASSIFICACAO;
+          mensagens.push(classificacaoExistente.motivo || 'Revisão de classificação necessária');
+          if (precisaStock) {
+            estoqueInicialTotal = arredondarCasas(
+              estoqueInicialTotal + Number(estoque.estoque_inicial || 0),
+              3
+            );
+          }
+        } else if (classificacaoExistente.status === STATUS_CLASSIFICACAO.CATEGORIA_NAO_ENCONTRADA) {
+          status = STATUS.CATEGORIA_NAO_ENCONTRADA;
+          mensagens.push(classificacaoExistente.motivo || 'Categoria não encontrada');
+        } else if (classificacaoExistente.status === STATUS_CLASSIFICACAO.SUBCATEGORIA_INCOMPATIVEL) {
+          status = STATUS.SUBCATEGORIA_INCOMPATIVEL;
+          mensagens.push(classificacaoExistente.motivo || 'Subcategoria incompatível');
+        } else if (temEnriquecimento) {
           status = STATUS.EXISTENTE_APRESENTACAO_NOVA;
           mensagens.push(
             corrigeCodigoBarras && classif.novas.length === 0 && !precisaStock && !corrigeUnidade && !corrigePreco
@@ -444,16 +626,73 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_
             corrigir_unidade_base: corrigeUnidade,
             corrigir_preco: corrigePreco,
             corrigir_codigo_barras: corrigeCodigoBarras,
+            alterar_custo: alteraCusto,
+            alterar_preco: alteraPreco,
+            alterar_categoria: classificacaoExistente.alterar_categoria === true,
+            alterar_subcategoria: classificacaoExistente.alterar_subcategoria === true,
             unidade_atual: match.produto.unidade,
             unidade_arquivo: produtoRaw.unidade_base
           };
+        } else if (temAtualizacao) {
+          status = STATUS.EXISTENTE_ATUALIZAR;
+          mensagens.push(
+            alteraClassificacao && !precisaStock && !alteraCusto && !alteraPreco
+              ? `Produto já existente (#${match.produto.id}) — classificação a aplicar`
+              : `Produto já existente (#${match.produto.id}) — estoque/custo/preço a atualizar`
+          );
+          atualizacoes += 1;
+          estoqueInicialTotal = arredondarCasas(
+            estoqueInicialTotal + (precisaStock ? Number(estoque.estoque_inicial || 0) : 0),
+            3
+          );
         } else {
           status = STATUS.EXISTENTE;
           mensagens.push(`Produto já existente (#${match.produto.id} via ${match.motivo})`);
           existentes += 1;
         }
       }
-    } else if (!match && status === STATUS.PRONTO) {
+    }
+
+    if (!classificacao && match?.produto) {
+      classificacao = resolverClassificacaoExistente(match.produto, {
+        descricao: produtoRaw.nome,
+        marca: produtoRaw.marca,
+        categoriaInformada: produtoRaw.categoria,
+        subcategoriaInformada: produtoRaw.subcategoria
+      }, catalogoClassificacao);
+    } else if (!match && !statusBloqueiaImportacao(status) && status === STATUS.PRONTO) {
+      classificacao = classificarProduto({
+        descricao: produtoRaw.nome,
+        marca: produtoRaw.marca,
+        categoriaInformada: produtoRaw.categoria,
+        subcategoriaInformada: produtoRaw.subcategoria
+      }, catalogoClassificacao);
+      classificacao = {
+        ...classificacao,
+        categoria_atual_id: null,
+        categoria_atual_nome: null,
+        subcategoria_atual_id: null,
+        subcategoria_atual_nome: null,
+        categoria_sugerida_id: classificacao.categoria_id,
+        categoria_sugerida_nome: classificacao.categoria_nome,
+        subcategoria_sugerida_id: classificacao.subcategoria_id,
+        subcategoria_sugerida_nome: classificacao.subcategoria_nome,
+        alterar_categoria: Boolean(classificacao.categoria_id || classificacao.criar_categoria),
+        alterar_subcategoria: Boolean(classificacao.subcategoria_id || classificacao.criar_subcategoria)
+      };
+      if (classificacao.status === STATUS_CLASSIFICACAO.CATEGORIA_NAO_ENCONTRADA) {
+        status = STATUS.CATEGORIA_NAO_ENCONTRADA;
+        mensagens.push(classificacao.motivo || 'Categoria não encontrada');
+      } else if (classificacao.status === STATUS_CLASSIFICACAO.SUBCATEGORIA_INCOMPATIVEL) {
+        status = STATUS.SUBCATEGORIA_INCOMPATIVEL;
+        mensagens.push(classificacao.motivo || 'Subcategoria incompatível');
+      } else if (classificacao.status === STATUS_CLASSIFICACAO.PENDENTE_CLASSIFICACAO) {
+        status = STATUS.PENDENTE_CLASSIFICACAO;
+        mensagens.push(classificacao.motivo || 'Revisão de classificação necessária');
+      }
+    }
+
+    if (!match && status === STATUS.PRONTO) {
       prontos += 1;
       estoqueInicialTotal = arredondarCasas(estoqueInicialTotal + Number(estoque.estoque_inicial || 0), 3);
     }
@@ -499,11 +738,16 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_
       existente_id: match?.produto?.id || null,
       match_motivo: match?.motivo || null,
       enriquecimento,
+      preview_atualizacao: previewAtualizacao,
+      classificacao,
       duplicidade_arquivo: duplicidadeArquivo
     });
   }
 
-  const importaveis = prontos + enriquecimentos;
+  pendentesClassificacao = linhas.filter(linhaBloqueiaPorClassificacao).length;
+  const atencaoImportaveis = linhas.filter(linhaAtencaoPermiteImportar).length;
+  const importaveis = prontos + enriquecimentos + atualizacoes + atencaoImportaveis;
+  const estruturasNovas = contarEstruturasNovas(linhas);
 
   return {
     arquivo: nomeArquivo || null,
@@ -511,26 +755,38 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_
     tratamento_fiscal: rotuloModoFiscalImportacao(modoFiscal),
     resumo: {
       produtos_encontrados: linhas.length,
-      produtos_validos: prontos + existentes + enriquecimentos + atencao,
+      produtos_validos: prontos + existentes + enriquecimentos + atualizacoes + atencao,
       com_erro: erros,
       possiveis_duplicados: existentes + atencao,
       prontos,
       existentes,
       enriquecimentos,
+      atualizacoes,
+      pendentes_classificacao: pendentesClassificacao,
+      atencao_importaveis: atencaoImportaveis,
+      produtos_classificados: importaveis,
+      produtos_pendentes: pendentesClassificacao,
+      exige_politica_pendentes: pendentesClassificacao > 0,
+      produtos_sem_alteracao: existentes,
       apresentacoes_novas: apresentacoesNovasTotal,
       atencao,
       erros,
       estoque_inicial_total: estoqueInicialTotal,
+      estoque_a_lancar: estoqueInicialTotal,
+      quantidade_planilha_total: quantidadePlanilhaTotal,
       estoque_inicial_unidade: 'UN',
       modo_fiscal_importacao: modoFiscal,
       tratamento_fiscal: rotuloModoFiscalImportacao(modoFiscal),
       produtos_novos: prontos,
-      produtos_existentes: existentes + enriquecimentos + atencao,
+      produtos_existentes: existentesEncontrados,
       produtos_fiscais_novos: novosFiscais,
-      produtos_nao_fiscais_novos: novosNaoFiscais
+      produtos_nao_fiscais_novos: novosNaoFiscais,
+      categorias_novas: estruturasNovas.categorias_novas,
+      subcategorias_novas: estruturasNovas.subcategorias_novas
     },
     linhas,
-    pode_importar: erros === 0 && importaveis > 0
+    pode_importar: erros === 0 && (importaveis > 0 || pendentesClassificacao > 0),
+    exige_politica_pendentes: pendentesClassificacao > 0
   };
 }
 
@@ -541,8 +797,10 @@ module.exports = {
   encontrarCorrespondencia,
   carregarIndicesExistentes,
   montarEstoquePreview,
+  montarPreviewAtualizacao,
   classificarApresentacoesArquivo,
   carregarEmbalagensProduto,
   mapearDuplicidadesCodigoArquivo,
-  statusBloqueiaImportacao
+  statusBloqueiaImportacao,
+  carregarCatalogoClassificacao
 };

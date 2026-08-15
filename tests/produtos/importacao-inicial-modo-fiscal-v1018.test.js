@@ -20,6 +20,7 @@ const {
 const { validarImportacao } = require('../../backend/services/importacao-inicial-produtos/validator');
 const { executarImportacao } = require('../../backend/services/importacao-inicial-produtos/importer');
 const Estado = require('../../frontend/erp/js/importacao-inicial-estado.js');
+const { seedParCategoriaSub } = require('./helpers-seed-catalogo-importacao');
 
 function openDb(file) {
   return new Promise((resolve, reject) => {
@@ -126,6 +127,7 @@ async function criarSchemaMinimo(db) {
     estoque_total_depois REAL DEFAULT 0,
     criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
+  await seedParCategoriaSub(db, run, get, 'Cat', 'Sub');
 }
 
 describe('V1.0.18 — validação do modo fiscal', () => {
@@ -247,7 +249,7 @@ describe('V1.0.18 — item_fiscal novos vs existentes', () => {
       modo_fiscal_importacao: 'NAO_FISCAL'
     });
     const linha = validacao.linhas[0];
-    assert.ok(['EXISTENTE', 'EXISTENTE_APRESENTACAO_NOVA'].includes(linha.status));
+    assert.ok(['EXISTENTE', 'EXISTENTE_APRESENTACAO_NOVA', 'EXISTENTE_ATUALIZAR'].includes(linha.status));
     assert.equal(linha.produto.item_fiscal, 1);
     assert.equal(linha.produto.fiscal_fonte, 'EXISTENTE');
 

@@ -247,17 +247,31 @@ async function imprimirDANFEFiscal(vendaId) {
 
     try {
         const token = localStorage.getItem('token');
-        const resposta = await fetch(`${API_URL}/fiscal/danfe/venda/${vendaId}`, {
+        const resposta = await fetch(`${API_URL}/fiscal/danfe/venda/${vendaId}?pacote=1`, {
             method: 'GET',
             headers: { Authorization: `Bearer ${token}` }
         });
 
-        const htmlDanfe = await resposta.text();
+        const contentType = String(resposta.headers.get('content-type') || '');
+        let htmlDanfe = '';
+        let htmlTermico = '';
+
+        if (contentType.includes('application/json')) {
+            const pacote = await resposta.json();
+            htmlDanfe = pacote.html || '';
+            htmlTermico = pacote.htmlTermico || pacote.html || '';
+        } else {
+            htmlDanfe = await resposta.text();
+            htmlTermico = htmlDanfe;
+        }
 
         if (!resposta.ok) {
-            console.error('Erro ao buscar DANFE:', { status: resposta.status, resposta: htmlDanfe });
+            const erroTxt = typeof htmlDanfe === 'string' && htmlDanfe
+                ? htmlDanfe
+                : 'Falha ao obter DANFE.';
+            console.error('Erro ao buscar DANFE:', { status: resposta.status, resposta: erroTxt });
             if (typeof showNotification === 'function') {
-                showNotification(`Erro ao abrir cupom fiscal: ${htmlDanfe}`, 'danger');
+                showNotification(`Erro ao abrir cupom fiscal: ${erroTxt}`, 'danger');
             }
             return;
         }
@@ -268,13 +282,14 @@ async function imprimirDANFEFiscal(vendaId) {
             window.electronAPI.abrirComprovante(htmlDanfe, {
                 silent: false,
                 autoFecharMs: 5000,
-                deviceName
+                deviceName,
+                htmlImpressao: htmlTermico
             });
             return;
         }
 
         if (window.electronAPI?.imprimirDANFESilencioso) {
-            await window.electronAPI.imprimirDANFESilencioso(htmlDanfe, deviceName);
+            await window.electronAPI.imprimirDANFESilencioso(htmlTermico || htmlDanfe, deviceName);
             if (typeof showNotification === 'function') {
                 showNotification('Cupom fiscal enviado para impressora.', 'success');
             }

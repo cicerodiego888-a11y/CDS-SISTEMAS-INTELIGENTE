@@ -166,7 +166,7 @@
     "test:central-entradas-sprint4": "node tests/central-entradas/central-entradas-sprint4.test.js",
     "test:dfe-retorno-parser": "node tests/services/fiscal/dfeRetornoParser.test.js",
     "test:danfe-itens-venda": "node tests/fiscal/danfe-itens-venda.test.js",
-    "test:print-layout": "node --test tests/fiscal/print-rc10-layout.test.js && node tests/fiscal/danfe-itens-venda.test.js",
+    "test:print-layout": "node --test tests/fiscal/print-rc10-layout.test.js tests/fiscal/danfe-termico.test.js && node tests/fiscal/danfe-itens-venda.test.js",
     "test:print-rc10": "npm run test:print-layout",
     "test:nfe-devolucao-rc1": "node --test tests/faturamento/rc1-nfe-devolucao-compra.test.js",
     "test:nfe-devolucao-rc2": "node --test tests/faturamento/rc2-espelhamento-fiscal-devolucao.test.js",

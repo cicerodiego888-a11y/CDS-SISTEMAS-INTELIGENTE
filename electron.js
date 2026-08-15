@@ -445,7 +445,8 @@ function criarMainWindow(opcoes = {}) {
     const {
       deviceName,
       silent = false,
-      autoFecharMs = 5000
+      autoFecharMs = 5000,
+      htmlImpressao = null
     } = options;
 
     const cupomWindow = new BrowserWindow({
@@ -522,18 +523,37 @@ function criarMainWindow(opcoes = {}) {
         printOptions.deviceName = deviceName;
       }
 
-      cupomWindow.webContents.print(printOptions, (success, errorType) => {
+      const concluir = (success, errorType) => {
         if (success) {
           console.log('[IMPRESSAO] DANFE NFC-e impresso.');
         } else {
           console.error('[IMPRESSAO] Falha:', errorType);
         }
-
         impressaoConcluida = true;
         if (typeof callback === 'function') {
           callback();
         }
-      });
+      };
+
+      if (htmlImpressao) {
+        const printWindow = new BrowserWindow({
+          width: 380,
+          height: 900,
+          show: false,
+          webPreferences: { nodeIntegration: false, contextIsolation: true }
+        });
+        printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(String(htmlImpressao))}`);
+        printWindow.webContents.once('did-finish-load', async () => {
+          await printWindow.webContents.executeJavaScript('new Promise(r => setTimeout(r, 600));');
+          printWindow.webContents.print(printOptions, (success, errorType) => {
+            if (!printWindow.isDestroyed()) printWindow.destroy();
+            concluir(success, errorType);
+          });
+        });
+        return;
+      }
+
+      cupomWindow.webContents.print(printOptions, concluir);
     }
 
     function fecharCupomComImpressao() {

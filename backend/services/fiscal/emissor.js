@@ -13,7 +13,8 @@ const { enviarAutorizacao } = require('./autorizacaoRuntime');
 const { compactarXml, extrairChaveEProtocoloAutorizados } = require('./utils');
 const { validarItensFiscal } = require('./validadorFiscal');
 const { validarXmlFiscal } = require('./validarXmlFiscal');
-const { gerarDanfeHtml } = require('./danfe');
+const { gerarDanfeHtml, montarDadosDanfe } = require('./danfe');
+const DanfeTermicoRenderer = require('./DanfeTermicoRenderer');
 const { getFiscalSubDir } = require('./paths');
 
 function itemEntraNaNfce(item) {
@@ -666,7 +667,7 @@ async function obterDanfeHtmlAtualizado(vendaId) {
   const config = await getFiscalConfig();
   const ambiente = Number(nota.ambiente || config.ambiente || 1);
 
-  const danfeHtml = await gerarDanfeHtml({
+  const payloadDanfe = {
     venda: {
       ...venda,
       tpAmb: ambiente
@@ -698,7 +699,11 @@ async function obterDanfeHtmlAtualizado(vendaId) {
       protocolo: nota.protocolo || null,
       data_autorizacao: nota.updated_at || nota.created_at || null
     }
-  });
+  };
+
+  const dadosDanfe = await montarDadosDanfe(payloadDanfe);
+  const danfeHtml = await gerarDanfeHtml(dadosDanfe);
+  const termico = DanfeTermicoRenderer.gerar(dadosDanfe);
 
   if (nota.id && danfeHtml) {
     db.run(
@@ -714,6 +719,8 @@ async function obterDanfeHtmlAtualizado(vendaId) {
 
   return {
     html: danfeHtml,
+    htmlTermico: termico.html,
+    textoTermico: termico.texto,
     nota
   };
 }

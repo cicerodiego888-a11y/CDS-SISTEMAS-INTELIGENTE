@@ -2020,7 +2020,7 @@ function bindEventosPDV() {
         if (e.key === 'F1') {
             e.preventDefault();
             e.stopPropagation();
-            abrirConsultaProdutosPDV();
+            abrirConsultaProdutosPdvDoCampoBusca();
         }
         if (e.key === 'F4') {
             e.preventDefault();
@@ -2093,14 +2093,7 @@ function bindEventosPDV() {
         });
 
         $('#btnBuscarProdutoPdv').off('click').on('click', function() {
-            const codigo = $('#buscaProdutoPdv').val().trim();
-            if (codigo) {
-                adicionarProdutoPorCodigo(codigo);
-                $('#buscaProdutoPdv').val('');
-            } else {
-                showNotification('Digite ou bip o código do produto.', 'warning');
-            }
-            focarCampoCodigo();
+            abrirConsultaProdutosPdvDoCampoBusca();
         });
     }
 
@@ -6385,8 +6378,65 @@ function confirmarTroco() {
 // CONSULTA DE PRODUTOS NO PDV - F1
 // =======================================================
 
-function abrirConsultaProdutosPDV() {
+const CHAVE_MODO_CONSULTA_PDV = 'pdv_consulta_f1_modo';
+
+function obterModoVisualizacaoConsultaPDV() {
+    try {
+        return localStorage.getItem(CHAVE_MODO_CONSULTA_PDV) === 'nomes' ? 'nomes' : 'categoria';
+    } catch (e) {
+        return 'categoria';
+    }
+}
+
+function salvarModoVisualizacaoConsultaPDV(modo) {
+    const valor = modo === 'nomes' ? 'nomes' : 'categoria';
+    try {
+        localStorage.setItem(CHAVE_MODO_CONSULTA_PDV, valor);
+    } catch (e) { /* ignore quota / private mode */ }
+    return valor;
+}
+
+function atualizarBotoesModoConsultaPDV() {
+    const modo = obterModoVisualizacaoConsultaPDV();
+    $('#btnConsultaPdvPorCategoria')
+        .toggleClass('btn-primary', modo === 'categoria')
+        .toggleClass('btn-outline-primary', modo !== 'categoria');
+    $('#btnConsultaPdvPorNome')
+        .toggleClass('btn-primary', modo === 'nomes')
+        .toggleClass('btn-outline-primary', modo !== 'nomes');
+}
+
+function definirModoVisualizacaoConsultaPDV(modo) {
+    salvarModoVisualizacaoConsultaPDV(modo);
+    atualizarBotoesModoConsultaPDV();
+    const termo = $('#inputConsultaProdutoPDV').val().trim();
+    if (termo) {
+        buscarProdutosConsultaPDV();
+        return;
+    }
+    carregarVisualizacaoVaziaConsultaPDV();
+}
+
+function carregarVisualizacaoVaziaConsultaPDV() {
+    if (obterModoVisualizacaoConsultaPDV() === 'nomes') {
+        carregarNomesConsultaPDV();
+        return;
+    }
+    carregarCategoriasConsultaPDV();
+}
+
+function abrirConsultaProdutosPdvDoCampoBusca() {
+    if (window.PdvBuscaProduto && typeof PdvBuscaProduto.fechar === 'function') {
+        PdvBuscaProduto.fechar();
+    }
+    const termo = ($('#buscaProdutoPdv').val() || '').trim();
+    abrirConsultaProdutosPDV(termo);
+}
+
+function abrirConsultaProdutosPDV(termoInicial) {
     $('#modalConsultaProdutosPDV').remove();
+
+    const termo = String(termoInicial || '').trim();
 
     const modalHtml = `
         <div class="modal fade" id="modalConsultaProdutosPDV" tabindex="-1" aria-hidden="true">
@@ -6402,6 +6452,18 @@ function abrirConsultaProdutosPDV() {
                     <div class="modal-body">
                         <div class="alert alert-info py-2 mb-3">
                             Use esta tela apenas para consultar preço/estoque. Clique em <strong>Adicionar</strong> somente se quiser mandar o produto para o carrinho.
+                        </div>
+
+                        <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+                            <span class="text-muted small mb-0">Mostrar:</span>
+                            <div class="btn-group" role="group" aria-label="Modo de visualização da consulta">
+                                <button type="button" class="btn btn-sm btn-outline-primary" id="btnConsultaPdvPorCategoria">
+                                    <i class="fas fa-folder me-1"></i> Por categoria
+                                </button>
+                                <button type="button" class="btn btn-sm btn-outline-primary" id="btnConsultaPdvPorNome">
+                                    <i class="fas fa-list me-1"></i> Apenas nomes
+                                </button>
+                            </div>
                         </div>
 
                         <div class="input-group mb-3">
@@ -6447,9 +6509,22 @@ function abrirConsultaProdutosPDV() {
 
     modal.show();
 
+    $('#btnConsultaPdvPorCategoria').off('click').on('click', function () {
+        definirModoVisualizacaoConsultaPDV('categoria');
+    });
+    $('#btnConsultaPdvPorNome').off('click').on('click', function () {
+        definirModoVisualizacaoConsultaPDV('nomes');
+    });
+    atualizarBotoesModoConsultaPDV();
+
     modalEl.addEventListener('shown.bs.modal', function () {
+        if (termo) {
+            $('#inputConsultaProdutoPDV').val(termo);
+            buscarProdutosConsultaPDV();
+        } else {
+            carregarVisualizacaoVaziaConsultaPDV();
+        }
         $('#inputConsultaProdutoPDV').trigger('focus');
-        carregarCategoriasConsultaPDV();
     });
 
     $('#inputConsultaProdutoPDV').off('keydown').on('keydown', function (e) {
@@ -6575,6 +6650,21 @@ function toggleProdutosCategoria(categoriaId) {
     }
 }
 
+function carregarNomesConsultaPDV() {
+    const lista = Array.isArray(produtosDisponiveis) ? produtosDisponiveis.slice() : [];
+    if (!lista.length) {
+        $('#resultadoConsultaProdutosPDV').html(`
+            <div class="alert alert-warning">
+                Nenhum produto carregado no PDV.
+            </div>
+        `);
+        return;
+    }
+
+    lista.sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR', { sensitivity: 'base' }));
+    renderizarProdutosConsultaPDV(lista);
+}
+
 function adicionarProdutoConsultaPDV(produtoId) {
     const produto = produtosDisponiveis.find(p => Number(p.id) === Number(produtoId));
     if (!produto) {
@@ -6600,7 +6690,7 @@ function buscarProdutosConsultaPDV() {
     const termo = $('#inputConsultaProdutoPDV').val().trim();
 
     if (!termo) {
-        carregarCategoriasConsultaPDV();
+        carregarVisualizacaoVaziaConsultaPDV();
         return;
     }
 
@@ -6616,7 +6706,12 @@ function buscarProdutosConsultaPDV() {
         method: 'GET',
         cache: false,
         success: function (produtos) {
-            renderizarProdutosConsultaPDV(produtos || []);
+            const lista = produtos || [];
+            if (obterModoVisualizacaoConsultaPDV() === 'categoria') {
+                renderizarProdutosConsultaPDVPorCategoria(lista);
+                return;
+            }
+            renderizarProdutosConsultaPDV(lista);
         },
         error: function (xhr) {
             console.error('Erro na consulta de produtos:', xhr.responseJSON || xhr.responseText || xhr);
@@ -6632,33 +6727,32 @@ function buscarProdutosConsultaPDV() {
     });
 }
 
-function renderizarProdutosConsultaPDV(produtos) {
-    if (!produtos.length) {
-        $('#resultadoConsultaProdutosPDV').html(`
-            <div class="alert alert-warning">
-                Nenhum produto encontrado.
-            </div>
-        `);
-        return;
+function nomeCategoriaProdutoConsulta(produto) {
+    const bruto = produto && (produto.categoria_nome || produto.categoria);
+    if (bruto && typeof bruto === 'object' && bruto.nome) {
+        return String(bruto.nome).trim() || 'Sem categoria';
     }
+    const nome = String(bruto || '').trim();
+    return nome || 'Sem categoria';
+}
 
-    const linhas = produtos.map(p => {
-        const estoque = pdvEstoqueDisponivel(p);
-        const preco = Number(p.preco_venda || 0);
-        const precoCompra = Number(p.preco_compra || 0);
-        const estoqueBaixo = estoque <= Number(p.estoque_minimo || 0);
-        const semEstoque = !pdvValidarEstoqueVenda(p, 1).sucesso;
-        const temPromocao = p.tem_promocao === 1 || p.tem_promocao === true;
-        const precoPromocional = Number(p.preco_promocional || 0);
-        const descontoPercentual = Number(p.desconto_percentual || 0);
-        
-        const precoExibido = temPromocao && precoPromocional > 0 ? precoPromocional : preco;
-        const marcaPromocao = temPromocao ? `<span class="badge bg-danger ms-2"><i class="fas fa-tag"></i> -${descontoPercentual}%</span>` : '';
-        const linhaDescontoPreco = temPromocao && precoPromocional > 0 
-            ? `<del class="text-muted small">${formatCurrency(preco)}</del> ${formatCurrency(precoPromocional)}`
-            : formatCurrency(preco);
+function montarLinhaProdutoConsultaPDV(p) {
+    const estoque = pdvEstoqueDisponivel(p);
+    const preco = Number(p.preco_venda || 0);
+    const precoCompra = Number(p.preco_compra || 0);
+    const estoqueBaixo = estoque <= Number(p.estoque_minimo || 0);
+    const semEstoque = !pdvValidarEstoqueVenda(p, 1).sucesso;
+    const temPromocao = p.tem_promocao === 1 || p.tem_promocao === true;
+    const precoPromocional = Number(p.preco_promocional || 0);
+    const descontoPercentual = Number(p.desconto_percentual || 0);
 
-        return `
+    const precoExibido = temPromocao && precoPromocional > 0 ? precoPromocional : preco;
+    const marcaPromocao = temPromocao ? `<span class="badge bg-danger ms-2"><i class="fas fa-tag"></i> -${descontoPercentual}%</span>` : '';
+    const linhaDescontoPreco = temPromocao && precoPromocional > 0
+        ? `<del class="text-muted small">${formatCurrency(preco)}</del> ${formatCurrency(precoPromocional)}`
+        : formatCurrency(precoExibido);
+
+    return `
             <tr ${temPromocao ? 'class="table-warning"' : ''}>
                 <td>${p.id}</td>
                 <td>
@@ -6690,9 +6784,11 @@ function renderizarProdutosConsultaPDV(produtos) {
                 </td>
             </tr>
         `;
-    }).join('');
+}
 
-    $('#resultadoConsultaProdutosPDV').html(`
+function htmlTabelaProdutosConsultaPDV(produtos) {
+    const linhas = produtos.map(montarLinhaProdutoConsultaPDV).join('');
+    return `
         <div class="table-responsive">
             <table class="table table-sm table-hover align-middle">
                 <thead class="table-light">
@@ -6713,7 +6809,56 @@ function renderizarProdutosConsultaPDV(produtos) {
                 </tbody>
             </table>
         </div>
-    `);
+    `;
+}
+
+function renderizarProdutosConsultaPDVPorCategoria(produtos) {
+    if (!produtos.length) {
+        $('#resultadoConsultaProdutosPDV').html(`
+            <div class="alert alert-warning">
+                Nenhum produto encontrado.
+            </div>
+        `);
+        return;
+    }
+
+    const grupos = new Map();
+    produtos.forEach((p) => {
+        const cat = nomeCategoriaProdutoConsulta(p);
+        if (!grupos.has(cat)) grupos.set(cat, []);
+        grupos.get(cat).push(p);
+    });
+
+    const nomes = Array.from(grupos.keys()).sort((a, b) => a.localeCompare(b, 'pt-BR', { sensitivity: 'base' }));
+    const html = nomes.map((cat, idx) => {
+        const id = `consulta-grupo-${idx}`;
+        return `
+            <div class="card mb-2">
+                <div class="card-header bg-light d-flex justify-content-between align-items-center">
+                    <strong><i class="fas fa-folder me-2"></i>${escapeHtml(cat)}</strong>
+                    <span class="badge bg-primary">${grupos.get(cat).length}</span>
+                </div>
+                <div class="card-body p-0" id="${id}">
+                    ${htmlTabelaProdutosConsultaPDV(grupos.get(cat))}
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    $('#resultadoConsultaProdutosPDV').html(html);
+}
+
+function renderizarProdutosConsultaPDV(produtos) {
+    if (!produtos.length) {
+        $('#resultadoConsultaProdutosPDV').html(`
+            <div class="alert alert-warning">
+                Nenhum produto encontrado.
+            </div>
+        `);
+        return;
+    }
+
+    $('#resultadoConsultaProdutosPDV').html(htmlTabelaProdutosConsultaPDV(produtos));
 }
 
 function atualizarDataHoraPdv() {
