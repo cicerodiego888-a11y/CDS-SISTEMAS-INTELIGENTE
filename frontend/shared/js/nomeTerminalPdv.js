@@ -209,6 +209,9 @@ async function salvarNomeTerminalPdv() {
         window.terminalNome = data.nome || nome;
         if (typeof terminalId !== 'undefined') terminalId = data.id;
         if (typeof terminalNome !== 'undefined') terminalNome = data.nome || nome;
+        if (typeof atualizarContextoTerminalAtual === 'function') {
+            atualizarContextoTerminalAtual(data);
+        }
         if (typeof sincronizarTerminalGlobalsPdv === 'function') sincronizarTerminalGlobalsPdv();
 
         atualizarRotuloTerminalPdvSidebar();

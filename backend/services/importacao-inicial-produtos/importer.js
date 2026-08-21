@@ -26,7 +26,9 @@ const {
   mesclarApresentacoesParaSync,
   normalizarUnidadeBaseCadastro,
   texto,
-  campoNumericoInformado
+  campoNumericoInformado,
+  valoresNumericosDivergem,
+  resolverLucroPercentualPersistido
 } = require('./helpers');
 const { chaveCategoriaEquivalente } = require('./classificadorCategoria');
 
@@ -282,44 +284,70 @@ async function registrarEstoqueInicial(db, {
 
 /**
  * Atualiza somente produtos.preco_compra / produtos.preco_venda quando a planilha
- * informou o campo. Vazio = não alterar. Nunca toca categoria, subcategoria ou item_fiscal.
+ * informou o campo E o valor diverge do banco. Vazio = não alterar.
+ * UPDATEs independentes: custo não toca venda e vice-versa.
+ * Nunca toca categoria, subcategoria ou item_fiscal.
  */
 async function aplicarCustoPrecoProdutoExistente(db, produtoId, linha, { forcarFalha } = {}) {
   if (forcarFalha) {
     throw new Error('Falha forçada na atualização de custo/preço (teste de rollback).');
   }
   const p = linha.produto || {};
-  const sets = [];
-  const params = [];
+  const atual = await dbGet(
+    db,
+    `SELECT preco_compra, preco_venda, lucro_percentual FROM produtos WHERE id = ?`,
+    [produtoId]
+  );
+  let custoFinal = Number(atual?.preco_compra);
+  let precoFinal = Number(atual?.preco_venda);
+  let alterouCusto = false;
+  let alterouPreco = false;
 
   if (campoNumericoInformado(p.custo_informado) && Number(p.custo_informado) >= 0) {
     const custo = Number(p.custo_unitario);
-    if (Number.isFinite(custo) && custo >= 0) {
-      sets.push('preco_compra = ?');
-      params.push(custo);
+    if (Number.isFinite(custo) && custo >= 0
+      && valoresNumericosDivergem(custo, atual?.preco_compra, 0.0001)) {
+      custoFinal = custo;
+      alterouCusto = true;
     }
   }
   if (campoNumericoInformado(p.preco_informado) && Number(p.preco_informado) >= 0) {
     const preco = Number(p.preco_venda);
-    if (Number.isFinite(preco) && preco >= 0) {
-      sets.push('preco_venda = ?');
-      params.push(preco);
-      const markup = Number(p.markup);
-      if (Number.isFinite(markup)) {
-        sets.push('lucro_percentual = ?');
-        params.push(markup);
-      }
+    if (Number.isFinite(preco) && preco >= 0
+      && valoresNumericosDivergem(preco, atual?.preco_venda, 0.02)) {
+      precoFinal = preco;
+      alterouPreco = true;
     }
   }
-  if (!sets.length) return { atualizado: false, custo: false, preco: false };
 
+  if (!alterouCusto && !alterouPreco) {
+    return { atualizado: false, custo: false, preco: false };
+  }
+
+  const lucro = resolverLucroPercentualPersistido({
+    markupInformado: p.markup_informado,
+    custo: custoFinal,
+    precoVenda: precoFinal,
+    usarPadraoQuandoSoCusto: false
+  });
+
+  const sets = [];
+  const params = [];
+  if (alterouCusto) {
+    sets.push('preco_compra = ?');
+    params.push(custoFinal);
+  }
+  if (alterouPreco) {
+    sets.push('preco_venda = ?');
+    params.push(precoFinal);
+  }
+  if (lucro !== null) {
+    sets.push('lucro_percentual = ?');
+    params.push(lucro);
+  }
   params.push(produtoId);
   await dbRun(db, `UPDATE produtos SET ${sets.join(', ')} WHERE id = ?`, params);
-  return {
-    atualizado: true,
-    custo: campoNumericoInformado(p.custo_informado),
-    preco: campoNumericoInformado(p.preco_informado)
-  };
+  return { atualizado: true, custo: alterouCusto, preco: alterouPreco };
 }
 
 /**
@@ -459,7 +487,12 @@ async function inserirProduto(db, linha, cache, usuarioId) {
       subcategoriaId,
       unidade,
       Number(p.custo_unitario) || 0,
-      Number(p.markup) || 100,
+      resolverLucroPercentualPersistido({
+        markupInformado: p.markup_informado,
+        custo: Number(p.custo_unitario) || 0,
+        precoVenda: Number(p.preco_venda) || 0,
+        usarPadraoQuandoSoCusto: true
+      }),
       Number(p.preco_venda) || 0,
       0,
       0,
@@ -593,7 +626,12 @@ async function enriquecerProdutoExistente(db, linha, {
   const p = linha.produto || {};
   const custo = Number(p.custo_unitario);
   const preco = Number(p.preco_venda);
-  const markup = Number(p.markup);
+  const lucro = resolverLucroPercentualPersistido({
+    markupInformado: p.markup_informado,
+    custo,
+    precoVenda: preco,
+    usarPadraoQuandoSoCusto: false
+  });
   if ((classif.novas.length > 0 || classif.existentes.length > 0)
     && Number.isFinite(custo) && custo > 0
     && Number.isFinite(preco) && preco > 0) {
@@ -602,7 +640,7 @@ async function enriquecerProdutoExistente(db, linha, {
       `UPDATE produtos
        SET preco_compra = ?, preco_venda = ?, lucro_percentual = COALESCE(?, lucro_percentual)
        WHERE id = ?`,
-      [custo, preco, Number.isFinite(markup) ? markup : null, produtoId]
+      [custo, preco, lucro, produtoId]
     );
   }
 

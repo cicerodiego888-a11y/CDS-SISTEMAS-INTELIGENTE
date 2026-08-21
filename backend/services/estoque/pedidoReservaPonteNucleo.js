@@ -94,8 +94,8 @@ function creditarDisponibilidadeComReservaPedido(calc, creditoProduto) {
 }
 
 /**
- * Consome reservas ATIVAS do pedido após a venda (baixa já feita pelo Núcleo).
- * - Decrementa produtos.reservado_fiscal
+ * Consome reservas ATIVAS do pedido após a venda (baixa física já feita pelo Núcleo).
+ * - Decrementa reservado_fiscal no produto
  * - Marca pedido_estoque_reservas como CONSUMIDA
  * Idempotente: linhas já CONSUMIDA/CANCELADA são ignoradas.
  */
@@ -115,17 +115,19 @@ async function consumirReservasPedidoNaVenda(pedidoId, vendaId = null, opts = {}
   let consumidas = 0;
   for (const row of rows) {
     const q = round3(row.quantidade_fiscal);
-    await dbRun(
-      db,
-      `UPDATE produtos
-       SET reservado_fiscal = CASE
-         WHEN COALESCE(reservado_fiscal, 0) - ? < 0 THEN 0
-         ELSE COALESCE(reservado_fiscal, 0) - ?
-       END,
-       updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
-      [q, q, row.produto_id]
-    );
+    if (q > 0) {
+      await dbRun(
+        db,
+        `UPDATE produtos
+         SET reservado_fiscal = CASE
+           WHEN COALESCE(reservado_fiscal, 0) - ? < 0 THEN 0
+           ELSE COALESCE(reservado_fiscal, 0) - ?
+         END,
+         updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [q, q, row.produto_id]
+      );
+    }
 
     await dbRun(
       db,

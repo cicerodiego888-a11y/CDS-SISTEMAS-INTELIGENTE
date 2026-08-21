@@ -278,7 +278,7 @@ async function faturarPedido(pedidoId, body = {}, reqHttp = {}) {
   // RC4.1.2 — garantia: consome reservas do pedido (idempotente se Núcleo já consumiu)
   try {
     const { consumirReservasPedidoNaVenda } = require('../estoque/pedidoReservaPonteNucleo');
-    await consumirReservasPedidoNaVenda(id, vendaId);
+    await consumirReservasPedidoNaVenda(id, vendaId, { db });
   } catch (pedResErr) {
     console.warn('[Faturamento] consumirReservasPedidoNaVenda:', pedResErr.message);
   }

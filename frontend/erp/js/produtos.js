@@ -2588,15 +2588,20 @@ function showProdutoModal(produto = null, opcoes = {}) {
     const title = isEdit ? 'Editar Produto' : 'Novo Produto';
     const lucro = (() => {
         if (!isEdit || !produto) return '';
-        if (produto.lucro_percentual !== undefined && produto.lucro_percentual !== null && produto.lucro_percentual !== '') {
-            return produto.lucro_percentual;
-        }
         const precoCompra = isEdit && produtoEhFracionado(produto)
             ? resolverCustoUnitarioProdutoCadastro(produto)
             : Number(produto.preco_compra || 0);
         const precoVenda = Number(produto.preco_venda || 0);
+        const F = window.FormacaoPrecoMargem;
         if (precoCompra > 0 && precoVenda > 0) {
+            if (F && typeof F.derivarMarkupPercentual === 'function') {
+                const derivado = F.derivarMarkupPercentual(precoCompra, precoVenda);
+                if (derivado !== null && derivado !== undefined) return derivado;
+            }
             return Number((((precoVenda - precoCompra) / precoCompra) * 100).toFixed(2));
+        }
+        if (produto.lucro_percentual !== undefined && produto.lucro_percentual !== null && produto.lucro_percentual !== '') {
+            return produto.lucro_percentual;
         }
         return '';
     })();
@@ -4368,8 +4373,39 @@ function sincronizarFormacaoPrecoProduto(origem = 'init') {
     const precoCompra = numero($precoCompra.val());
     const precoVenda = numero($precoVenda.val());
     const lucroInformado = String($lucro.val() ?? '').trim() !== '';
+    const F = window.FormacaoPrecoMargem;
+    const resolved = (F && typeof F.resolverFormacaoPrecoCadastro === 'function')
+        ? F.resolverFormacaoPrecoCadastro({
+            origem,
+            precoCompra,
+            precoVenda,
+            lucroInformado,
+            lucroValor: numero($lucro.val())
+        })
+        : null;
 
-    if (origem === 'venda') {
+    const origemNorm = String(origem || 'init');
+
+    if (resolved) {
+        if (origemNorm === 'init' || origemNorm === 'embalagem') {
+            if (resolved.lucroPercentual !== null && resolved.lucroPercentual !== undefined) {
+                $lucro.val(Number(resolved.lucroPercentual).toFixed(2));
+            }
+        } else if (origemNorm === 'venda') {
+            if (resolved.lucroPercentual !== null && resolved.lucroPercentual !== undefined) {
+                $lucro.val(Number(resolved.lucroPercentual).toFixed(2));
+            }
+        } else if (origemNorm === 'compra' || origemNorm === 'lucro') {
+            if (resolved.precoVenda !== null && resolved.precoVenda !== undefined) {
+                $precoVenda.val(Number(resolved.precoVenda).toFixed(2));
+            }
+        }
+        atualizarPreviewValorTotalEstoqueCadastro();
+        atualizarFormacaoPrecoMargemInfo();
+        return;
+    }
+
+    if (origemNorm === 'venda') {
         if (precoCompra > 0 && precoVenda > 0) {
             const lucro = ((precoVenda - precoCompra) / precoCompra) * 100;
             $lucro.val(lucro.toFixed(2));
@@ -4379,9 +4415,11 @@ function sincronizarFormacaoPrecoProduto(origem = 'init') {
         return;
     }
 
-    if (origem === 'init' && precoCompra > 0 && precoVenda > 0 && !lucroInformado) {
-        const lucro = ((precoVenda - precoCompra) / precoCompra) * 100;
-        $lucro.val(lucro.toFixed(2));
+    if (origemNorm === 'init' || origemNorm === 'embalagem') {
+        if (precoCompra > 0 && precoVenda > 0) {
+            const lucro = ((precoVenda - precoCompra) / precoCompra) * 100;
+            $lucro.val(lucro.toFixed(2));
+        }
         atualizarPreviewValorTotalEstoqueCadastro();
         atualizarFormacaoPrecoMargemInfo();
         return;
@@ -4512,8 +4550,6 @@ async function saveProduto() {
     }
 
     const saldosIniciais = obterSaldosIniciaisDoFormulario();
-
-    sincronizarFormacaoPrecoProduto('init');
 
     if (typeof ProdutoEmbalagensUI !== 'undefined') {
         const apresentacoes = ProdutoEmbalagensUI.coletarApresentacoesDoFormulario();

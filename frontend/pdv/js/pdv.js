@@ -589,10 +589,18 @@ async function autoRegistrarTerminal() {
             success: function(terminal) {
                 terminalId = terminal.id;
                 terminalNome = String(terminal.nome || terminal.hostname || '').trim();
+                if (typeof atualizarContextoTerminalAtual === 'function') {
+                    atualizarContextoTerminalAtual(terminal);
+                }
                 sincronizarTerminalGlobalsPdv();
                 console.log('Terminal PDV registrado:', terminal);
                 try {
-                    window.dispatchEvent(new CustomEvent('cds:terminal-registrado', { detail: { terminalId: terminalId } }));
+                    window.dispatchEvent(new CustomEvent('cds:terminal-registrado', {
+                        detail: {
+                            terminalId: terminal.id,
+                            caixaId: terminal.caixa_id || null
+                        }
+                    }));
                 } catch (e) { /* ignore */ }
                 if (typeof atualizarRotuloTerminalPdvSidebar === 'function') {
                     atualizarRotuloTerminalPdvSidebar();
@@ -604,6 +612,9 @@ async function autoRegistrarTerminal() {
             error: function(xhr) {
                 console.warn('Erro ao registrar terminal PDV:', xhr.status, xhr.responseText);
                 terminalId = null;
+                if (typeof atualizarContextoTerminalAtual === 'function') {
+                    atualizarContextoTerminalAtual(null);
+                }
             }
         });
 
@@ -613,6 +624,9 @@ async function autoRegistrarTerminal() {
     } catch (err) {
         console.error('Erro ao detectar terminal PDV:', err);
         terminalId = null;
+        if (typeof atualizarContextoTerminalAtual === 'function') {
+            atualizarContextoTerminalAtual(null);
+        }
     }
 }
 

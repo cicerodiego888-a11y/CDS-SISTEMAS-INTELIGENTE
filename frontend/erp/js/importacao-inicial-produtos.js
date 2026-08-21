@@ -88,6 +88,24 @@ function moedaImport(valor) {
   return `R$ ${n.toFixed(4).replace('.', ',')}`;
 }
 
+function moedaImport2(valor) {
+  const n = Number(valor);
+  if (!Number.isFinite(n)) return '—';
+  return `R$ ${n.toFixed(2).replace('.', ',')}`;
+}
+
+function htmlCampoMoedaExistente(prev, tipo) {
+  if (!prev) return '—';
+  const altera = tipo === 'custo' ? prev.alterar_custo === true : prev.alterar_preco === true;
+  const exibicao = tipo === 'custo' ? prev.custo_exibicao : prev.preco_exibicao;
+  const atual = tipo === 'custo' ? prev.custo_atual : prev.preco_atual;
+  const novo = tipo === 'custo' ? prev.novo_custo : prev.novo_preco;
+  const texto = exibicao
+    || (altera ? `${moedaImport2(atual)} → ${moedaImport2(novo)}` : moedaImport2(atual));
+  const hint = altera ? '' : '<div class="text-muted small">sem alteração</div>';
+  return `${escapeHtmlImport(texto)}${hint}`;
+}
+
 function badgeStatusImport(status) {
   const mapa = {
     PRONTO: '<span class="badge bg-success">NOVO</span>',
@@ -809,7 +827,9 @@ function renderResumoValidacaoImportacao(data, nomeArquivo) {
         <div class="col-md-3"><strong>Produtos encontrados:</strong> ${r.produtos_encontrados || 0}</div>
         <div class="col-md-3"><strong>Produtos novos:</strong> ${r.produtos_novos != null ? r.produtos_novos : (r.prontos || 0)}</div>
         <div class="col-md-3"><strong>Produtos existentes:</strong> ${r.produtos_existentes != null ? r.produtos_existentes : ((r.existentes || 0) + enriquecimentos + Number(r.atualizacoes || 0))}</div>
-        <div class="col-md-3"><strong>Produtos a atualizar:</strong> ${Number(r.atualizacoes || 0)}</div>
+        <div class="col-md-3"><strong>Produtos a atualizar:</strong> ${Number(r.produtos_a_atualizar != null ? r.produtos_a_atualizar : r.atualizacoes || 0)}</div>
+        <div class="col-md-3"><strong>Atualizações de custo:</strong> ${Number(r.atualizacoes_custo || 0)}</div>
+        <div class="col-md-3"><strong>Atualizações de preço de venda:</strong> ${Number(r.atualizacoes_preco_venda || 0)}</div>
         <div class="col-md-3"><strong>Produtos sem alteração:</strong> ${Number(r.produtos_sem_alteracao != null ? r.produtos_sem_alteracao : r.existentes || 0)}</div>
         <div class="col-md-3"><strong>Pendentes de classificação:</strong> ${Number(r.pendentes_classificacao || 0)}</div>
         <div class="col-md-3"><strong>Produtos classificados:</strong> ${Number(r.produtos_classificados != null ? r.produtos_classificados : ((r.prontos || 0) + enriquecimentos + Number(r.atualizacoes || 0) + Number(r.atencao_importaveis || 0)))}</div>
@@ -866,14 +886,22 @@ function renderPreviewImportacaoInicial() {
     const badgeFiscal = isFiscal
       ? '<span class="badge bg-primary">Fiscal</span>'
       : '<span class="badge bg-secondary">Não Fiscal</span>';
+    const isExistente = l.status === 'EXISTENTE' || l.status === 'EXISTENTE_ATUALIZAR';
+    const prev = l.preview_atualizacao || {};
+    const custoCel = isExistente && prev
+      ? htmlCampoMoedaExistente(prev, 'custo')
+      : moedaImport(p.custo_unitario);
+    const vendaCel = isExistente && prev
+      ? htmlCampoMoedaExistente(prev, 'venda')
+      : moedaImport(p.preco_venda);
     return `<tr>
       <td>${badgeStatusImport(l.status)}</td>
       <td>${escapeHtmlImport(p.nome)}</td>
       <td>${escapeHtmlImport(p.marca || '—')}</td>
       <td>${escapeHtmlImport(p.unidade_base || 'UN')}</td>
-      <td>${moedaImport(p.custo_unitario)}</td>
+      <td>${custoCel}</td>
       <td>${Number(p.markup || 0).toFixed(2).replace('.', ',')}%</td>
-      <td>${moedaImport(p.preco_venda)}</td>
+      <td>${vendaCel}</td>
       <td>${escapeHtmlImport(l.apresentacao_label || '—')}</td>
       <td>${escapeHtmlImport(e.qtd_origem_label || '—')}</td>
       <td>${escapeHtmlImport(e.conversao_label || '—')}</td>
@@ -931,23 +959,21 @@ function verDetalheImportacaoInicial(idx) {
       </dl>
     `
     : '';
-  const blocoAtualizar = (l.status === 'EXISTENTE_ATUALIZAR' && prev)
+  const blocoAtualizar = ((l.status === 'EXISTENTE_ATUALIZAR' || l.status === 'EXISTENTE') && prev)
     ? `
       <hr>
-      <h6>Atualização de produto existente</h6>
+      <h6>${l.status === 'EXISTENTE_ATUALIZAR' ? 'Atualização de produto existente' : 'Produto existente'}</h6>
       <dl class="row mb-0">
-        <dt class="col-sm-4">Status</dt><dd class="col-sm-8">EXISTENTE_ATUALIZAR</dd>
+        <dt class="col-sm-4">Status</dt><dd class="col-sm-8">${l.status === 'EXISTENTE_ATUALIZAR' ? 'EXISTENTE — ATUALIZAR' : 'EXISTENTE'}</dd>
         <dt class="col-sm-4">Estoque atual</dt><dd class="col-sm-8">${escapeHtmlImport(String(prev.estoque_atual ?? '—'))}</dd>
         <dt class="col-sm-4">Qtd. a lançar</dt><dd class="col-sm-8">${Number(prev.alterar_estoque) === true
           ? `+${escapeHtmlImport(String(prev.quantidade_importada ?? 0))} UN`
           : (Number(prev.quantidade_arquivo || 0) > 0
             ? `0 UN (já lançado — ${escapeHtmlImport(String(prev.quantidade_arquivo))} UN na planilha)`
-            : '—')}</dd>
+            : '— não alterar —')}</dd>
         <dt class="col-sm-4">= Estoque final</dt><dd class="col-sm-8">${escapeHtmlImport(String(prev.estoque_final ?? '—'))}</dd>
-        <dt class="col-sm-4">Custo atual</dt><dd class="col-sm-8">${moedaImport(prev.custo_atual)}</dd>
-        <dt class="col-sm-4">→ Novo custo</dt><dd class="col-sm-8">${typeof prev.novo_custo_label === 'number' ? moedaImport(prev.novo_custo_label) : escapeHtmlImport(prev.novo_custo_label || '— não alterar —')}</dd>
-        <dt class="col-sm-4">Venda atual</dt><dd class="col-sm-8">${moedaImport(prev.preco_atual)}</dd>
-        <dt class="col-sm-4">→ Nova venda</dt><dd class="col-sm-8">${typeof prev.novo_preco_label === 'number' ? moedaImport(prev.novo_preco_label) : escapeHtmlImport(prev.novo_preco_label || '— não alterar —')}</dd>
+        <dt class="col-sm-4">Custo</dt><dd class="col-sm-8">${htmlCampoMoedaExistente(prev, 'custo')}</dd>
+        <dt class="col-sm-4">Venda</dt><dd class="col-sm-8">${htmlCampoMoedaExistente(prev, 'venda')}</dd>
         <dt class="col-sm-4">Categoria</dt><dd class="col-sm-8">${prev.alterar_categoria
           ? 'a classificar (cadastro sem categoria)'
           : `preservada${prev.categoria_preservada ? ` (${escapeHtmlImport(prev.categoria_preservada)})` : ''}`}</dd>

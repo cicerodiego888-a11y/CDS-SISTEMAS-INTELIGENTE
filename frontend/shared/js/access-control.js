@@ -32,6 +32,7 @@ const PERMISSOES_PAGINAS = {
     categorias: 'categorias',
     fiscal: 'fiscal',
     configuracoes: 'configuracoes',
+    'f12-admin': 'configuracoes',
     'importacao-inicial-produtos': 'configuracoes',
     equipamentos: 'configuracoes',
     'central-equipamentos': 'configuracoes',

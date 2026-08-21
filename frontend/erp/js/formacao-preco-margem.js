@@ -62,12 +62,88 @@
     return `${arredondar2(valor).toFixed(2).replace('.', ',')}%`;
   }
 
+  /**
+   * V1.1.8 — markup derivado do preço persistido.
+   * markup = ((precoVenda − precoCompra) / precoCompra) × 100
+   */
+  function derivarMarkupPercentual(custo, preco) {
+    const c = Number(custo);
+    const p = Number(preco);
+    if (!(c > 0) || !Number.isFinite(p)) return null;
+    return arredondar2(((p - c) / c) * 100);
+  }
+
+  /** preço = custo + (custo × markup / 100) */
+  function calcularPrecoVendaPorMarkup(custo, markup) {
+    const c = Number(custo);
+    const m = Number(markup);
+    if (!(c > 0) || !Number.isFinite(m)) return null;
+    return arredondar2(c + (c * m / 100));
+  }
+
+  /**
+   * Formação do cadastro: preco_venda persistido é oficial no INIT.
+   * INIT/embalagem: preserva preço e deriva markup.
+   * compra/lucro: recalcula preço.
+   * venda: recalcula markup.
+   */
+  function resolverFormacaoPrecoCadastro(input = {}) {
+    const origem = String(input.origem || 'init');
+    const precoCompra = Number(input.precoCompra) || 0;
+    const precoVenda = Number(input.precoVenda) || 0;
+    const lucroInformado = input.lucroInformado === true;
+    const lucroValor = Number(input.lucroValor);
+
+    if (origem === 'init' || origem === 'embalagem') {
+      const markup = (precoCompra > 0 && precoVenda > 0)
+        ? derivarMarkupPercentual(precoCompra, precoVenda)
+        : (lucroInformado && Number.isFinite(lucroValor) ? arredondar2(lucroValor) : null);
+      return {
+        precoCompra,
+        precoVenda,
+        lucroPercentual: markup
+      };
+    }
+
+    if (origem === 'venda') {
+      const markup = (precoCompra > 0 && precoVenda > 0)
+        ? derivarMarkupPercentual(precoCompra, precoVenda)
+        : (lucroInformado && Number.isFinite(lucroValor) ? arredondar2(lucroValor) : null);
+      return {
+        precoCompra,
+        precoVenda,
+        lucroPercentual: markup
+      };
+    }
+
+    if (origem === 'compra' || origem === 'lucro') {
+      const lucro = lucroInformado && Number.isFinite(lucroValor) ? lucroValor : 0;
+      const novoPreco = precoCompra > 0
+        ? calcularPrecoVendaPorMarkup(precoCompra, lucro)
+        : precoVenda;
+      return {
+        precoCompra,
+        precoVenda: novoPreco == null ? precoVenda : novoPreco,
+        lucroPercentual: arredondar2(lucro)
+      };
+    }
+
+    return {
+      precoCompra,
+      precoVenda,
+      lucroPercentual: lucroInformado && Number.isFinite(lucroValor) ? arredondar2(lucroValor) : null
+    };
+  }
+
   return Object.freeze({
     PLACEHOLDER,
     arredondar2,
     calcularLucroBruto,
     calcularMargemBruta,
     calcularMargemBrutaPorPreco,
-    formatarPercentualPreview
+    formatarPercentualPreview,
+    derivarMarkupPercentual,
+    calcularPrecoVendaPorMarkup,
+    resolverFormacaoPrecoCadastro
   });
 }));

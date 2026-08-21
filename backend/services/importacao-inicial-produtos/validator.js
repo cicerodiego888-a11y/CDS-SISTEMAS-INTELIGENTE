@@ -24,7 +24,9 @@ const {
   rotuloModoFiscalImportacao,
   campoNumericoInformado,
   valoresNumericosDivergem,
-  LABEL_NAO_ALTERAR
+  LABEL_NAO_ALTERAR,
+  LABEL_SEM_ALTERACAO,
+  rotuloCampoMoedaExistente
 } = require('./helpers');
 const { classificarProduto, resolverClassificacaoExistente, STATUS_CLASSIFICACAO, chaveCategoriaEquivalente } = require('./classificadorCategoria');
 
@@ -110,7 +112,9 @@ function resolverCustosEPrecos(produto, apresentacoesDoProduto) {
     });
     if (!Number.isFinite(Number(custoUnitario))) custoUnitario = null;
     else custoUnitario = formacao.custo_unitario;
-    if (!Number.isFinite(Number(precoUnitario)) || Number(precoUnitario) <= 0) {
+    if (campoNumericoInformado(produto.preco_informado)) {
+      precoUnitario = Number(produto.preco_informado);
+    } else if (!Number.isFinite(Number(precoUnitario)) || Number(precoUnitario) <= 0) {
       precoUnitario = formacao.preco_venda;
     }
   }
@@ -257,7 +261,16 @@ function montarPreviewAtualizacao({
     alterar_preco: alteraPreco,
     alterar_estoque: qtdSomar > 0,
     alterar_categoria: alterarCategoria === true,
-    alterar_subcategoria: alterarSubcategoria === true
+    alterar_subcategoria: alterarSubcategoria === true,
+    custo_exibicao: rotuloCampoMoedaExistente({
+      atual: custoAtual, novo: pricing.custo_unitario, altera: alteraCusto
+    }),
+    preco_exibicao: rotuloCampoMoedaExistente({
+      atual: precoAtual, novo: pricing.preco_venda, altera: alteraPreco
+    }),
+    custo_sem_alteracao: alteraCusto !== true,
+    preco_sem_alteracao: alteraPreco !== true,
+    label_sem_alteracao: LABEL_SEM_ALTERACAO
   };
 }
 
@@ -440,6 +453,8 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_
   let existentes = 0;
   let enriquecimentos = 0;
   let atualizacoes = 0;
+  let atualizacoesCusto = 0;
+  let atualizacoesPreco = 0;
   let atencao = 0;
   let pendentesClassificacao = 0;
   let estoqueInicialTotal = 0;
@@ -565,6 +580,8 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_
 
         const alteraCusto = deveAtualizarCustoExistente(produtoRaw, pricing, match.produto);
         const alteraPreco = deveAtualizarPrecoExistente(produtoRaw, pricing, match.produto);
+        if (alteraCusto) atualizacoesCusto += 1;
+        if (alteraPreco) atualizacoesPreco += 1;
         const classificacaoExistente = resolverClassificacaoExistente(match.produto, {
           descricao: produtoRaw.nome,
           marca: produtoRaw.marca,
@@ -768,6 +785,9 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_
       produtos_pendentes: pendentesClassificacao,
       exige_politica_pendentes: pendentesClassificacao > 0,
       produtos_sem_alteracao: existentes,
+      produtos_a_atualizar: atualizacoes,
+      atualizacoes_custo: atualizacoesCusto,
+      atualizacoes_preco_venda: atualizacoesPreco,
       apresentacoes_novas: apresentacoesNovasTotal,
       atencao,
       erros,

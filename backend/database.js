@@ -2562,6 +2562,7 @@ function migrarRecalcularSaldosEstoque() {
 
 function inicializarBanco() {
   const { migrarDadosCaixaSessoes } = require('./utils/caixaSessaoHelpers');
+  const { executarMigracaoF12Policy } = require('./lib/migracaoF12Policy');
 
   db.serialize(() => {
     criarTabelas();
@@ -2577,6 +2578,16 @@ function inicializarBanco() {
     garantirColunasFinanceiro();
     recuperarItemFiscalComprasItens();
     recuperarQuantidadesFiscaisComprasItens();
+    
+    // F12 Policy Migration — Adiciona suporte a políticas de F12 por caixa
+    executarMigracaoF12Policy(db, (migErr) => {
+      if (migErr) {
+        console.error('[F12Policy] Erro na migração:', migErr.message);
+      } else {
+        console.log('[F12Policy] Migração concluída com sucesso');
+      }
+    });
+    
     db.run('SELECT 1', (readyErr) => sinalizarInicializacaoParcial(readyErr));
   });
 }

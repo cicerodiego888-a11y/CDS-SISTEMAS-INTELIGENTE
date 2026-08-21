@@ -309,7 +309,7 @@ function paginaPermitidaPorImplantacao(page) {
     if (p === 'nfe-central' || p === 'nfe-avulsa' || p === 'nfe-monitor' || p === 'nfe-fila' || p === 'nfe-diagnostico') {
         return possuiRecurso('nfe');
     }
-    if (p === 'central-entradas' || p === 'central-diagnostico' || p === 'dfe-auditoria' || p === 'monitoring' || p === 'central-contabil') {
+    if (p === 'central-entradas' || p === 'central-diagnostico' || p === 'dfe-auditoria' || p === 'monitoring' || p === 'central-contabil' || p === 'f12-admin') {
         return fiscalHabilitado();
     }
     if (p === 'caixas' && !implantacaoPermiteMultiCaixa()) return false;
@@ -408,6 +408,11 @@ function mensagemModuloNaoContratado(page) {
 
 function modoFiscalAtivoSistema() {
     if (!implantacaoPermiteFiscal()) return false;
+    if (typeof pdvUsaF12PolicyComoFonteOficial === 'function' && pdvUsaF12PolicyComoFonteOficial()) {
+        if (typeof window !== 'undefined' && typeof window.__cdsF12EstadoEfetivo === 'boolean') {
+            return window.__cdsF12EstadoEfetivo;
+        }
+    }
     return localStorage.getItem('pdv_modo_fiscal_ativo') === '1';
 }
 
@@ -503,8 +508,21 @@ async function salvarModoFiscalServidor(valor) {
 }
 
 function aplicarModoFiscalLocal(valor, opcoes = {}) {
+    const ehPdvF12 = typeof pdvUsaF12PolicyComoFonteOficial === 'function'
+        && pdvUsaF12PolicyComoFonteOficial();
+
+    // No PDV Express, só a resolução F12Policy pode alterar o estado efetivo.
+    if (ehPdvF12 && implantacaoPermiteFiscal() && opcoes.origemF12 !== true) {
+        console.warn('[F12] sincronização antiga ignorada — o estado efetivo do PDV vem do F12PolicyResolver.');
+        return false;
+    }
+
     const normalizado = normalizarValorModoFiscal(valor);
     const atual = localStorage.getItem('pdv_modo_fiscal_ativo');
+
+    if (ehPdvF12 && opcoes.origemF12 === true && typeof window !== 'undefined') {
+        window.__cdsF12EstadoEfetivo = normalizado === '1';
+    }
 
     if (atual === normalizado && !opcoes.forcar) {
         aplicarModoFiscalGlobal();
@@ -524,19 +542,92 @@ function aplicarModoFiscalLocal(valor, opcoes = {}) {
     return true;
 }
 
+function moduloAtualEhPdvExpress() {
+    return typeof window !== 'undefined' && window.CDS_MODULE === 'pdv';
+}
+
+function moduloAtualEhErp() {
+    return typeof window !== 'undefined' && window.CDS_MODULE === 'erp';
+}
+
+function moduloAtualUsaAtalhoF12() {
+    return moduloAtualEhPdvExpress() || moduloAtualEhErp();
+}
+
 async function carregarModoFiscalInicial() {
     if (!implantacaoPermiteFiscal()) {
         aplicarModoFiscalLocal('0', { recarregar: false, forcar: true });
         return;
     }
 
-    // Política do sistema: sempre abre com modo fiscal ativo.
+    // Resolução Terminal → Caixa é exclusiva do PDV Express.
+    if (moduloAtualEhPdvExpress() && typeof F12PolicyResolver !== 'undefined') {
+        try {
+            const resolucao = await obterCaixaAtualParaF12();
+            if (!resolucao.ok || !resolucao.caixaId) {
+                console.warn('[F12]', resolucao.erro || 'Não foi possível identificar o caixa atual.');
+                throw new Error('caixa-nao-identificado');
+            }
+            const caixaId = resolucao.caixaId;
+            const ativo = await F12PolicyResolver.resolveF12Estado(caixaId);
+            // If backend could not be reached, resolveF12Estado returns null.
+            // In that case, do not silently use localStorage — fallback to legacy flow.
+            if (ativo === null || typeof ativo === 'undefined') {
+                throw new Error('F12 backend indisponível');
+            }
+            const novoValor = ativo ? '1' : '0';
+            aplicarModoFiscalLocal(novoValor, { recarregar: false, forcar: true, origemF12: true });
+            return;
+        } catch (err) {
+            console.warn('[F12] Erro ao resolver F12 inicial via policy:', err);
+            if (typeof pdvUsaF12PolicyComoFonteOficial === 'function' && pdvUsaF12PolicyComoFonteOficial()) {
+                console.warn('[F12] mecanismo antigo não será usado como fonte do PDV.');
+                return;
+            }
+            // Continua com fallback legado (ERP / módulos sem F12Policy)
+        }
+    }
+
+    // Fallback legado: usado fora do PDV Express (dashboard/ERP).
     // F12 pode desligar na sessão; na próxima abertura volta ao padrão (aberto).
     aplicarModoFiscalLocal(MODO_FISCAL_PADRAO, { recarregar: false, forcar: true });
     await salvarModoFiscalServidor(MODO_FISCAL_PADRAO);
 }
 
+async function sincronizarEstadoF12Pdv(opcoes = {}) {
+    if (!implantacaoPermiteFiscal() || typeof F12PolicyResolver === 'undefined') {
+        return;
+    }
+
+    const resolucao = await obterCaixaAtualParaF12();
+    if (!resolucao.ok || !resolucao.caixaId) {
+        console.warn('[F12] sincronização: caixa não identificado — mecanismo antigo ignorado.');
+        return;
+    }
+
+    const ativo = await F12PolicyResolver.resolveF12Estado(resolucao.caixaId);
+    if (ativo === null || typeof ativo === 'undefined') {
+        return;
+    }
+
+    const novoValor = ativo ? '1' : '0';
+    const alterou = aplicarModoFiscalLocal(novoValor, { recarregar: true, origemF12: true });
+
+    if (alterou && opcoes.notificar) {
+        showNotification(
+            ativo
+                ? 'Modo fiscal ativado. Exibindo somente informações fiscais.'
+                : 'Modo completo ativado. Exibindo fiscal, não fiscal e total.',
+            'info'
+        );
+    }
+}
+
 async function sincronizarModoFiscalServidor(opcoes = {}) {
+    if (typeof pdvUsaF12PolicyComoFonteOficial === 'function' && pdvUsaF12PolicyComoFonteOficial()) {
+        return sincronizarEstadoF12Pdv(opcoes);
+    }
+
     if (!implantacaoPermiteFiscal() || modoFiscalSalvandoServidor) {
         return;
     }
@@ -580,12 +671,7 @@ function iniciarSincronizacaoModoFiscalServidor() {
     }, intervaloMs);
 }
 
-function alternarModoFiscalGlobal() {
-    if (!implantacaoPermiteFiscal()) {
-        showNotification('Emissão fiscal desabilitada para o tipo de implantação configurado.', 'warning');
-        return;
-    }
-
+function alternarModoFiscalLegadoSessao() {
     const novoValor = modoFiscalAtivoSistema() ? '0' : '1';
     localStorage.setItem('pdv_modo_fiscal_ativo', novoValor);
     localStorage.setItem('modo_dashboard_fiscal', novoValor);
@@ -598,12 +684,116 @@ function alternarModoFiscalGlobal() {
             : 'Modo completo ativado. Exibindo fiscal, não fiscal e total.',
         novoValor === '1' ? 'success' : 'info'
     );
+}
 
-    if (typeof recarregarModulosModoFiscal === 'function') {
-        recarregarModulosModoFiscal();
-    } else if (currentPage === 'vendas' && typeof loadVendas === 'function') {
-        loadVendas();
+function alternarModoFiscalGlobal() {
+    if (!implantacaoPermiteFiscal()) {
+        showNotification('Emissão fiscal desabilitada para o tipo de implantação configurado.', 'warning');
+        return;
     }
+
+    if (moduloAtualEhPdvExpress()) {
+        if (typeof F12PolicyResolver !== 'undefined') {
+            alternarModoFiscalComPolitica();
+        }
+        return;
+    }
+
+    if (moduloAtualEhErp()) {
+        alternarModoFiscalLegadoSessao();
+    }
+}
+
+async function obterCaixaAtualParaF12() {
+    if (typeof F12PolicyResolver !== 'undefined' && typeof F12PolicyResolver.obterCaixaAtual === 'function') {
+        return F12PolicyResolver.obterCaixaAtual();
+    }
+    if (typeof obterCaixaAtual === 'function') {
+        return obterCaixaAtual();
+    }
+    console.warn('[F12] Não foi possível identificar o caixa atual.');
+    return {
+        ok: false,
+        caixaId: null,
+        erro: 'Não foi possível identificar o caixa atual.'
+    };
+}
+
+// Nova função que respeita políticas de F12
+async function alternarModoFiscalComPolitica() {
+    if (!moduloAtualEhPdvExpress()) {
+        return;
+    }
+
+    try {
+        const resolucao = await obterCaixaAtualParaF12();
+        if (!resolucao.ok || !resolucao.caixaId) {
+            console.warn('[F12]', resolucao.erro || 'Não foi possível identificar o caixa atual.');
+            showNotification('Não foi possível identificar o caixa atual.', 'error');
+            return;
+        }
+        const caixaId = resolucao.caixaId;
+
+        const contexto = typeof F12PolicyResolver.obterContexto === 'function'
+            ? await F12PolicyResolver.obterContexto(caixaId)
+            : null;
+
+        // podeAlterar é decidido exclusivamente pelo backend. Sem bypass local por perfil.
+        const podeAlterar = contexto && typeof contexto.podeAlterar === 'boolean'
+            ? contexto.podeAlterar
+            : false;
+
+        if (!podeAlterar) {
+            showNotification(
+                'O modo Fiscal / Não Fiscal deste caixa é controlado pelo administrador.',
+                'warning'
+            );
+            return;
+        }
+
+        const result = await F12PolicyResolver.alternarF12(caixaId);
+        
+        if (result.success) {
+            const novoValor = result.novoEstado ? '1' : '0';
+            aplicarModoFiscalLocal(novoValor, { recarregar: false, origemF12: true });
+            
+            showNotification(
+                result.novoEstado
+                    ? 'Modo fiscal ativado. Exibindo somente informações fiscais.'
+                    : 'Modo completo ativado. Exibindo fiscal, não fiscal e total.',
+                'success'
+            );
+        } else {
+            showNotification(
+                result.error || 'Erro ao alterar F12',
+                'error'
+            );
+        }
+    } catch (err) {
+        console.error('[F12] Erro ao alterar com política:', err);
+        showNotification('Erro ao processar F12', 'error');
+    }
+}
+
+if (typeof window !== 'undefined' && !window.__cdsF12TerminalListener) {
+    window.__cdsF12TerminalListener = true;
+    let f12CaixaResolvidoId = null;
+    window.addEventListener('cds:terminal-registrado', async function () {
+        if (!moduloAtualEhPdvExpress()) return;
+        if (typeof F12PolicyResolver === 'undefined') return;
+        if (typeof implantacaoPermiteFiscal === 'function' && !implantacaoPermiteFiscal()) return;
+        try {
+            const resolucao = await obterCaixaAtualParaF12();
+            if (!resolucao.ok || !resolucao.caixaId) return;
+            if (f12CaixaResolvidoId === resolucao.caixaId) return;
+            const ativo = await F12PolicyResolver.resolveF12Estado(resolucao.caixaId);
+            if (ativo === null || typeof ativo === 'undefined') return;
+            f12CaixaResolvidoId = resolucao.caixaId;
+            aplicarModoFiscalLocal(ativo ? '1' : '0', { recarregar: false, forcar: true, origemF12: true });
+        } catch (err) {
+            console.warn('[F12] Não foi possível aplicar o estado do caixa após identificar o terminal:', err);
+        }
+    });
 }
 
 function handleUnauthorized() {
@@ -1135,7 +1325,7 @@ function inicializarShellModulo(options = {}) {
                 await carregarModoFiscalInicial();
                 iniciarSincronizacaoModoFiscalServidor();
 
-                if (implantacaoPermiteFiscal()) {
+                if (implantacaoPermiteFiscal() && moduloAtualUsaAtalhoF12()) {
                     $(document).off('keydown.modoFiscalF12').on('keydown.modoFiscalF12', function (e) {
                         if (e.key === 'F12') {
                             e.preventDefault();
@@ -1189,6 +1379,7 @@ window.limparFavoritosExpedicao = limparFavoritosExpedicao;
 window.mensagemModuloNaoContratado = mensagemModuloNaoContratado;
 window.PAGINAS_MODULO_FISCAL = PAGINAS_MODULO_FISCAL;
 window.ligarNavegacaoSidebar = ligarNavegacaoSidebar;
+window.inicializarShellModulo = inicializarShellModulo;
 
 /** @deprecated Alias legado — use produtoUsaConversaoUnidades */
 window.produtoEhFracionado = window.produtoUsaConversaoUnidades;

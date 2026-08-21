@@ -346,6 +346,19 @@ function valoresNumericosDivergem(informado, atual, eps = 0.0001) {
 }
 
 const LABEL_NAO_ALTERAR = '— não alterar —';
+const LABEL_SEM_ALTERACAO = 'sem alteração';
+
+function formatarMoedaBr(valor) {
+  if (!Number.isFinite(Number(valor))) return '—';
+  return `R$ ${Number(valor).toFixed(2).replace('.', ',')}`;
+}
+
+/** Prévia: "R$ 10,00 → R$ 12,00" ou só o atual quando não altera. */
+function rotuloCampoMoedaExistente({ atual, novo, altera }) {
+  const atualFmt = formatarMoedaBr(atual);
+  if (altera === true) return `${atualFmt} → ${formatarMoedaBr(novo)}`;
+  return atualFmt;
+}
 
 function arredondarCasas(valor, casas = 2) {
   const n = Number(valor);
@@ -364,6 +377,43 @@ function calcularPrecoPorMarkup(custo, markup = MARKUP_PADRAO, casas = 2) {
   if (!Number.isFinite(c) || c < 0) return null;
   if (!Number.isFinite(k)) return null;
   return arredondarCasas(c * (1 + k / 100), casas);
+}
+
+/**
+ * V1.1.8 — markup derivado do preço oficial persistido.
+ * markup = ((precoVenda − custo) / custo) × 100
+ */
+function derivarMarkupPercentual(custo, precoVenda, casas = 2) {
+  const c = Number(custo);
+  const p = Number(precoVenda);
+  if (!(c > 0) || !Number.isFinite(p)) return null;
+  return arredondarCasas(((p - c) / c) * 100, casas);
+}
+
+/**
+ * Markup a gravar em produtos.lucro_percentual.
+ * 1) markup informado no XLSX → usa o informado
+ * 2) senão, custo > 0 e venda > 0 → deriva do preço oficial
+ * 3) senão, só custo (produto novo) → MARKUP_PADRAO para formação
+ * 4) senão → null (não inventar 100 nem sobrescrever existente)
+ */
+function resolverLucroPercentualPersistido({
+  markupInformado,
+  custo,
+  precoVenda,
+  usarPadraoQuandoSoCusto = false
+} = {}) {
+  if (campoNumericoInformado(markupInformado)) {
+    return arredondarCasas(Number(markupInformado), 2);
+  }
+  const derivado = derivarMarkupPercentual(custo, precoVenda);
+  if (derivado !== null && Number(precoVenda) > 0) {
+    return derivado;
+  }
+  if (usarPadraoQuandoSoCusto && Number(custo) > 0) {
+    return MARKUP_PADRAO;
+  }
+  return null;
 }
 
 /**
@@ -631,12 +681,16 @@ function mapearLinhaQuantidade(row) {
       'custo_unitario',
       'custo',
       'preco_compra',
+      'preco_de_compra',
       'custo_un'
     )),
     preco_informado: numero(get(
       'preco_venda_unitario',
+      'preco_de_venda',
       'preco_venda',
+      'preco_unitario',
       'preco',
+      'venda',
       'preco_un'
     )),
     referencia_fabricante: texto(get('referencia_fabricante', 'referencia', 'ref')),
@@ -686,6 +740,7 @@ function mapearLinhaProduto(row) {
     'custo_unitario',
     'custo',
     'preco_compra',
+    'preco_de_compra',
     'custo_un'
   ));
   const markupInformado = numero(get(
@@ -697,7 +752,9 @@ function mapearLinhaProduto(row) {
   ));
   const precoInformado = numero(get(
     'preco_venda_unitario',
+    'preco_de_venda',
     'preco_venda',
+    'preco_unitario',
     'preco',
     'venda',
     'preco_un'
@@ -729,6 +786,7 @@ function mapearLinhaProduto(row) {
     custo_informado: custoInformado,
     custo_apresentacao: custoApresentacao,
     markup,
+    markup_informado: markupInformado,
     preco_informado: precoInformado,
     total_documento: numero(get('total_documento')),
     referencia_fabricante: texto(get('referencia_fabricante', 'referencia', 'ref')),
@@ -825,9 +883,14 @@ module.exports = {
   campoNumericoInformado,
   valoresNumericosDivergem,
   LABEL_NAO_ALTERAR,
+  LABEL_SEM_ALTERACAO,
+  formatarMoedaBr,
+  rotuloCampoMoedaExistente,
   arredondarMoeda,
   arredondarCasas,
   calcularPrecoPorMarkup,
+  derivarMarkupPercentual,
+  resolverLucroPercentualPersistido,
   calcularCustoUnitarioDeEmbalagem,
   calcularFormacaoPrecoOficial,
   precoInformadoPareceEmbalagem,
