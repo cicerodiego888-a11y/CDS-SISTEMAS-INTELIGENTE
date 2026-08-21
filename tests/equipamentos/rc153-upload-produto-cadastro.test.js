@@ -80,3 +80,14 @@ describe('RC15.3.1 — UX pós-salvar (não mantém modal aberto)', () => {
   });
 });
 
+describe('Cadastro sequencial — Salvar abre novo produto', () => {
+  it('após salvar produto novo reabre o modal em branco', () => {
+    const src = read('frontend/erp/js/produtos.js');
+    assert.match(src, /function abrirProximoCadastroProdutoAposSalvar/);
+    assert.match(src, /continuarCadastrando/);
+    assert.match(src, /origemCadastro !== 'COMPRA'/);
+    assert.match(src, /Salvar e Add Novo/);
+    assert.match(src, /showProdutoModal\(null\)/);
+  });
+});
+

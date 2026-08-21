@@ -309,6 +309,7 @@
     "seed:central-entradas": "node scripts/seed-central-entradas-demo.js",
     "test:produto-infra-01": "node tests/produtos/produto-infra-01.test.js",
     "test:produto-infra-02": "node tests/produtos/produto-infra-02.test.js",
+    "test:excluir-produto-movimentacao": "node tests/produtos/excluir-produto-movimentacao.test.js",
     "test:smart-select-marcas": "node tests/produtos/smart-select-marcas.test.js",
     "test:rc81-mpfc": "node --test tests/vendas/rc81-mpfc-infraestrutura.test.js",
     "test:rc82-mpfc": "node --test tests/vendas/rc82-mpfc-ativacao.test.js",

@@ -184,9 +184,9 @@ router.get('/:id', (req, res) => {
     }
 
     db.all(`
-      SELECT vi.*, p.nome as produto_nome, p.codigo as produto_codigo, p.unidade
+      SELECT vi.*, COALESCE(p.nome, 'Produto excluído') as produto_nome, p.codigo as produto_codigo, p.unidade
       FROM vendas_itens vi
-      JOIN produtos p ON vi.produto_id = p.id
+      LEFT JOIN produtos p ON vi.produto_id = p.id
       WHERE vi.venda_id = ?
     `, [id], (err, itens) => {
       if (err) {
@@ -216,9 +216,9 @@ router.get('/:id/detalhes', (req, res) => {
     }
 
     db.all(`
-      SELECT vi.*, p.nome as produto_nome
+      SELECT vi.*, COALESCE(p.nome, 'Produto excluído') as produto_nome
       FROM vendas_itens vi
-      JOIN produtos p ON p.id = vi.produto_id
+      LEFT JOIN produtos p ON p.id = vi.produto_id
       WHERE vi.venda_id = ?
     `, [vendaId], (errItens, itens) => {
       if (errItens) return res.status(500).json({ error: errItens.message });

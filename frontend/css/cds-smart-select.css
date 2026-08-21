@@ -63,9 +63,37 @@
   cursor: pointer;
 }
 
+.cds-smart-select__row {
+  display: flex;
+  align-items: stretch;
+}
+
+.cds-smart-select__row .cds-smart-select__option {
+  flex: 1;
+  min-width: 0;
+}
+
+.cds-smart-select__row:hover,
+.cds-smart-select__row:hover .cds-smart-select__option,
 .cds-smart-select__option:hover,
 .cds-smart-select__option.is-active {
   background: #eef3f8;
+}
+
+.cds-smart-select__option-delete {
+  flex-shrink: 0;
+  width: 2.1rem;
+  border: 0;
+  background: transparent;
+  color: #dc3545;
+  font-size: 1.15rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.cds-smart-select__option-delete:hover {
+  background: #f8d7da;
+  color: #b02a37;
 }
 
 .cds-smart-select__option--create {

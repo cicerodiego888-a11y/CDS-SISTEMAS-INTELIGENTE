@@ -85,6 +85,7 @@
       produto.descricao,
       produto.observacoes,
       produto.marca,
+      produto.marca_nome,
       produto.categoria,
       produto.categoria_nome,
       produto.fornecedor

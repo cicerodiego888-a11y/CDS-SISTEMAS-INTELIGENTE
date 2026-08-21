@@ -12,6 +12,7 @@ const {
   aplicarAjusteEstoqueProduto,
   definirSaldosIniciaisProduto
 } = require('../services/ajusteEstoqueService');
+const { excluirProdutoCadastro } = require('../services/excluirProdutoService');
 const { sqlRankingProdutos, isModoFiscalRelatorio } = require('../services/reportFiscalHelpers');
 const { espelharIdentificadoresSafe } = require('../motores/produto-identidade');
 const PdvProdutoIdentificacaoService = require('../motores/produto-identidade/services/PdvProdutoIdentificacaoService');
@@ -3034,14 +3035,14 @@ router.put('/:id', (req, res) => {
   });
 });
 
-// Deletar produto
-router.delete('/:id', (req, res) => {
+// Deletar produto — com movimentação, somente SUPER_ADMIN pode forçar.
+router.delete('/:id', async (req, res) => {
   const { id } = req.params;
-  db.run('DELETE FROM produtos WHERE id = ?', [id], function(err) {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
-    }
+  try {
+    const resultado = await excluirProdutoCadastro(db, {
+      produtoId: id,
+      usuario: req.user
+    });
     try {
       obterMibService().notificarProdutoRemovido(id);
     } catch (_) { /* ignore */ }
@@ -3049,14 +3050,25 @@ router.delete('/:id', (req, res) => {
       usuario_id: req.user?.id || null,
       usuario_nome: req.user?.username || req.user?.nome || null,
       modulo: 'produtos',
-      acao: 'deletar_produto',
+      acao: resultado.forcado ? 'deletar_produto_com_movimentacao' : 'deletar_produto',
       referencia_tipo: 'produto',
       referencia_id: id,
-      detalhes: { id },
+      detalhes: {
+        id,
+        nome: resultado.nome,
+        forcado: resultado.forcado,
+        tem_movimentacao: resultado.tem_movimentacao
+      },
       ip_requisicao: req.ip || null
     }).catch((auditErr) => console.error('Erro ao gravar auditoria de exclusão de produto:', auditErr));
-    res.json({ message: 'Produto deletado com sucesso' });
-  });
+    return res.json({
+      message: 'Produto deletado com sucesso',
+      forcado: resultado.forcado
+    });
+  } catch (err) {
+    const status = Number(err.statusCode) || 500;
+    return res.status(status).json({ error: err.message || 'Erro ao excluir produto' });
+  }
 });
 
 // Buscar produtos com estoque baixo

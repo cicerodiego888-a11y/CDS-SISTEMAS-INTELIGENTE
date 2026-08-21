@@ -15,7 +15,10 @@ const PRIORIDADE = {
   IDENTIFICADOR_EXATO: 1,
   NOME_EXATO: 2,
   NOME_PREFIXO: 3,
-  NOME_CONTEM: 4
+  NOME_CONTEM: 4,
+  MARCA_EXATO: 5,
+  MARCA_PREFIXO: 6,
+  MARCA_CONTEM: 7
 };
 
 function limitarResultados(valor) {
@@ -68,11 +71,24 @@ function classificarMatchNome(row, termoNorm) {
   return null;
 }
 
+function classificarMatchMarca(row, termoNorm) {
+  if (!termoNorm) return null;
+  const mb = normalizarNomeBusca(row && (row.marca || row.marca_nome));
+  if (!mb) return null;
+  if (mb === termoNorm) return 'MARCA_EXATO';
+  if (mb.startsWith(termoNorm)) return 'MARCA_PREFIXO';
+  if (mb.includes(termoNorm)) return 'MARCA_CONTEM';
+  return null;
+}
+
 function prioridadeDeMatch(tipo) {
   if (tipo === 'IDENTIFICADOR_EXATO') return PRIORIDADE.IDENTIFICADOR_EXATO;
   if (tipo === 'NOME_EXATO') return PRIORIDADE.NOME_EXATO;
   if (tipo === 'NOME_PREFIXO') return PRIORIDADE.NOME_PREFIXO;
   if (tipo === 'NOME_CONTEM') return PRIORIDADE.NOME_CONTEM;
+  if (tipo === 'MARCA_EXATO') return PRIORIDADE.MARCA_EXATO;
+  if (tipo === 'MARCA_PREFIXO') return PRIORIDADE.MARCA_PREFIXO;
+  if (tipo === 'MARCA_CONTEM') return PRIORIDADE.MARCA_CONTEM;
   return 99;
 }
 
@@ -192,6 +208,36 @@ class BuscaOperacionalProdutosService {
     return this._all(sql, [termoNorm, termoNorm, limite]);
   }
 
+  async _idsMarcasQueCorrespondem(termoNorm) {
+    if (!termoNorm) return [];
+    const marcas = await this._all(`SELECT id, nome FROM marcas`, []);
+    const ids = [];
+    for (const marca of marcas || []) {
+      const nb = normalizarNomeBusca(marca && marca.nome);
+      if (!nb) continue;
+      if (nb === termoNorm || nb.startsWith(termoNorm) || nb.includes(termoNorm)) {
+        const id = Number(marca.id);
+        if (id) ids.push(id);
+      }
+    }
+    return ids;
+  }
+
+  async _porMarca(termoNorm, limite, fiscal) {
+    const ids = await this._idsMarcasQueCorrespondem(termoNorm);
+    if (!ids.length) return [];
+    const placeholders = ids.map(() => '?').join(',');
+    const sql = `
+      ${this._selectBase()}
+      WHERE COALESCE(p.ativo, 1) = 1
+        AND p.marca_id IN (${placeholders})
+        ${fiscal}
+      ORDER BY p.nome ASC, p.id ASC
+      LIMIT ?
+    `;
+    return this._all(sql, [...ids, limite]);
+  }
+
   _anotar(row, tipo) {
     return {
       ...row,
@@ -280,6 +326,14 @@ class BuscaOperacionalProdutosService {
         const contem = await this._porNomeContem(termoNorm, limite, fiscal);
         push(contem, 'NOME_CONTEM');
       }
+
+      if (itens.length < limite) {
+        const porMarca = await this._porMarca(termoNorm, limite, fiscal);
+        for (const row of porMarca || []) {
+          const tipoMarca = classificarMatchMarca(row, termoNorm);
+          if (tipoMarca) push([row], tipoMarca);
+        }
+      }
     }
 
     const isolados = this._ordenar(itens).filter((p) => {
@@ -322,7 +376,7 @@ class BuscaOperacionalProdutosService {
         total_operacional: isolados.length,
         total_sugestoes: sugestoes.length,
         mib_consultado: mibConsultado,
-        prioridade: ['IDENTIFICADOR_EXATO', 'NOME_EXATO', 'NOME_PREFIXO', 'NOME_CONTEM']
+        prioridade: ['IDENTIFICADOR_EXATO', 'NOME_EXATO', 'NOME_PREFIXO', 'NOME_CONTEM', 'MARCA_EXATO', 'MARCA_PREFIXO', 'MARCA_CONTEM']
       }
     };
   }
@@ -342,6 +396,7 @@ module.exports = {
   normalizarTermoBusca,
   pareceIdentificador,
   classificarMatchNome,
+  classificarMatchMarca,
   produtoBateIdentificador,
   deveIgnorarRespostaBusca,
   limitarResultados

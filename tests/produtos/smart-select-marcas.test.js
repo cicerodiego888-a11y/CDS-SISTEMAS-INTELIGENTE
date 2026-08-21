@@ -145,6 +145,17 @@ async function main() {
     assert.strictEqual(smart.normalizeLabel('  a   b '), 'a b');
   });
 
+  await test('Smart Select de marca permite excluir item da lista', () => {
+    const smartSrc = fs.readFileSync(path.join(__dirname, '../../frontend/shared/js/cds-smart-select.js'), 'utf8');
+    assert.ok(smartSrc.includes('deleteItem'));
+    assert.ok(smartSrc.includes('cds-smart-select__option-delete'));
+    const produtosSrc = fs.readFileSync(path.join(__dirname, '../../frontend/erp/js/produtos.js'), 'utf8');
+    assert.ok(produtosSrc.includes("method: 'DELETE'"));
+    assert.ok(produtosSrc.includes('/marcas/${item.id}') || produtosSrc.includes('/marcas/'));
+    const rotas = fs.readFileSync(path.join(__dirname, '../../backend/rotas/marcas.js'), 'utf8');
+    assert.ok(rotas.includes("router.delete('/:id'"));
+  });
+
   console.log(`\nResultado: ${passou} ok, ${falhou} falha(s)\n`);
   process.exit(falhou > 0 ? 1 : 0);
 }

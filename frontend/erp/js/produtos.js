@@ -381,11 +381,28 @@ function fecharDialogoEnviarBalancaAposSalvar() {
     setTimeout(() => $(el).remove(), 400);
 }
 
+function abrirProximoCadastroProdutoAposSalvar() {
+    if (typeof showProdutoModal === 'function') {
+        showProdutoModal(null);
+    }
+}
+
 /**
  * RC15.3.1 — diálogo opcional após salvar produto pesável.
+ * @param {function} [aoConcluir] chamado ao fechar o diálogo (ou se o produto não for elegível).
  */
-function perguntarEnvioBalancaAposSalvar(produto, equipamentoIdPreferido = null) {
-    if (!produtoSalvoElegivelPerguntaBalanca(produto)) return;
+function perguntarEnvioBalancaAposSalvar(produto, equipamentoIdPreferido = null, aoConcluir = null) {
+    const concluirUmaVez = () => {
+        if (typeof aoConcluir !== 'function') return;
+        const fn = aoConcluir;
+        aoConcluir = null;
+        fn();
+    };
+
+    if (!produtoSalvoElegivelPerguntaBalanca(produto)) {
+        concluirUmaVez();
+        return;
+    }
 
     $('#modalEnviarBalancaAposSalvar').remove();
     const nome = escapeHtml(produto.nome || 'este produto');
@@ -422,6 +439,8 @@ function perguntarEnvioBalancaAposSalvar(produto, equipamentoIdPreferido = null)
     };
     // Aguarda o modal de produto fechar para não empilhar backdrop
     setTimeout(mostrar, 350);
+
+    $(el).one('hidden.bs.modal', () => concluirUmaVez());
 
     $('#btnBalancaAposSalvarDepois').on('click', () => {
         fecharDialogoEnviarBalancaAposSalvar();
@@ -1628,6 +1647,7 @@ function produtoCorrespondeBuscaInteligente(produto, termoNormalizado, termoDigi
         produto.categoria,
         produto.categoria_nome,
         produto.marca,
+        produto.marca_nome,
         produto.fornecedor
     ];
 
@@ -1650,6 +1670,7 @@ function produtoCorrespondeBuscaInteligente(produto, termoNormalizado, termoDigi
         produto.nome_busca,
         produto.descricao,
         produto.marca,
+        produto.marca_nome,
         produto.categoria,
         produto.categoria_nome
     ]
@@ -2418,7 +2439,7 @@ function renderProdutos(produtos) {
                             type="text"
                             class="form-control form-control-sm"
                             id="buscaProduto"
-                            placeholder="Buscar por nome, PLU, código ou código de barras..."
+                            placeholder="Buscar por nome, marca, PLU, código ou código de barras..."
                             aria-label="Buscar produtos"
                             autocomplete="off"
                         >
@@ -3203,7 +3224,7 @@ function showProdutoModal(produto = null, opcoes = {}) {
 
                     <div class="modal-footer">
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
-                        <button type="button" class="btn btn-primary" onclick="saveProduto()">Salvar</button>
+                        <button type="button" class="btn btn-primary" onclick="saveProduto()">${!isEdit && origemCadastro !== 'COMPRA' ? 'Salvar e Add Novo' : 'Salvar'}</button>
                     </div>
                 </div>
             </div>
@@ -3276,6 +3297,14 @@ function showProdutoModal(produto = null, opcoes = {}) {
 
     if (!isEdit) {
         aplicarPadraoFiscalNovoProduto();
+        setTimeout(() => {
+            const modal = document.getElementById('produtoModal');
+            const ativo = document.activeElement;
+            if (ativo && modal && modal.contains(ativo) && ativo.id && ativo.id !== 'nome') {
+                return;
+            }
+            $('#nome').trigger('focus');
+        }, 400);
     }
 
     // ...
@@ -3456,6 +3485,19 @@ function inicializarMarcasProdutoCadastro(produto, isEdit) {
                 showNotification('Marca reativada e selecionada.', 'success');
             }
             return { id: body.id, label: body.nome };
+        },
+        deleteItem: async (item) => {
+            const response = await fetch(`${API_URL}/marcas/${item.id}`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const body = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(body.erro || body.error || 'Erro ao excluir marca');
+            }
+        },
+        onDeleted: (item) => {
+            showNotification(`Marca "${item.label}" excluída.`, 'success');
         },
         onError: (err) => {
             showNotification(err.message || 'Erro no Smart Select de marca.', 'danger');
@@ -3650,48 +3692,147 @@ function inicializarControleLoteInicial() {
 
 
 // Inicializa categorias e subcategorias
+function restaurarModalProdutoAposDialogoRapido() {
+    const produtoEl = document.getElementById('produtoModal');
+    if (!produtoEl || !produtoEl.classList.contains('show')) return;
+    document.body.classList.add('modal-open');
+    if (!document.querySelector('.modal-backdrop')) {
+        const bd = document.createElement('div');
+        bd.className = 'modal-backdrop fade show';
+        document.body.appendChild(bd);
+    }
+}
+
+function pedirNomeClassificacaoRapida({ titulo, label, placeholder }) {
+    return new Promise((resolve) => {
+        $('#modalNomeClassificacaoRapida').remove();
+        const html = `
+            <div class="modal fade" id="modalNomeClassificacaoRapida" tabindex="-1" aria-hidden="true" data-bs-backdrop="static" style="z-index: 23000;">
+                <div class="modal-dialog modal-dialog-centered">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">${escapeHtml(titulo)}</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+                        </div>
+                        <div class="modal-body">
+                            <label for="inputNomeClassificacaoRapida" class="form-label">${escapeHtml(label)}</label>
+                            <input type="text" class="form-control" id="inputNomeClassificacaoRapida" placeholder="${escapeHtml(placeholder || '')}" autocomplete="off">
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                            <button type="button" class="btn btn-success" id="btnConfirmarNomeClassificacaoRapida">Criar</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        $('body').append(html);
+        const el = document.getElementById('modalNomeClassificacaoRapida');
+        const inst = (typeof bootstrap !== 'undefined' && bootstrap.Modal)
+            ? bootstrap.Modal.getOrCreateInstance(el)
+            : null;
+        let resolvido = false;
+        const concluir = (valor) => {
+            if (resolvido) return;
+            resolvido = true;
+            if (inst) inst.hide();
+            else $(el).modal('hide');
+            resolve(valor);
+        };
+
+        $('#btnConfirmarNomeClassificacaoRapida').on('click', () => {
+            const nome = String($('#inputNomeClassificacaoRapida').val() || '').trim();
+            if (!nome) {
+                showNotification('Informe o nome.', 'warning');
+                $('#inputNomeClassificacaoRapida').trigger('focus');
+                return;
+            }
+            concluir(nome);
+        });
+        $('#inputNomeClassificacaoRapida').on('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                $('#btnConfirmarNomeClassificacaoRapida').trigger('click');
+            }
+        });
+        $(el).one('shown.bs.modal', () => {
+            $('.modal-backdrop').last().css('z-index', '22990');
+            $('#inputNomeClassificacaoRapida').trigger('focus');
+        });
+        $(el).one('hidden.bs.modal', () => {
+            if (!resolvido) resolve(null);
+            $(el).remove();
+            restaurarModalProdutoAposDialogoRapido();
+        });
+
+        if (inst) inst.show();
+        else $(el).modal('show');
+    });
+}
+
 function inicializarBotoesCriacaoRapidaCategoriaSubcategoria() {
     const $btnCategoria = $('#btnCriarCategoriaRapida');
     const $btnSubcategoria = $('#btnCriarSubcategoriaRapida');
     if (!$btnCategoria.length && !$btnSubcategoria.length) return;
 
-    $btnCategoria.off('click.miipQuickCreate').on('click.miipQuickCreate', async function () {
-        const nome = window.prompt('Nome da categoria', '');
-        if (!nome || !nome.trim()) return;
+    const sincronizarBotaoSubcategoria = () => {
+        const temCategoria = Boolean(String($('#categoria_id').val() || '').trim());
+        $btnSubcategoria.prop('disabled', !temCategoria);
+    };
+
+    $btnCategoria.off('click.miipQuickCreate').on('click.miipQuickCreate', async function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!window.categoriasAPI || typeof window.categoriasAPI.criar !== 'function') {
+            showNotification('Cadastro de categorias indisponível nesta tela.', 'warning');
+            return;
+        }
+        const nome = await pedirNomeClassificacaoRapida({
+            titulo: 'Nova categoria',
+            label: 'Nome da categoria',
+            placeholder: 'Ex.: Mercearia'
+        });
+        if (!nome) return;
         try {
-            const criada = await window.categoriasAPI.criar({ nome: nome.trim(), tipo: 'produto' });
-            await window.categoriasAPI.listar('produto').done(function (categorias) {
-                const categoriasComSubs = (categorias || []).map((cat) => ({
-                    ...cat,
-                    subcategorias: (window.categoriasSistema || []).find((item) => String(item.id) === String(cat.id))?.subcategorias || []
-                }));
-                window.categoriasSistema = categoriasComSubs;
-                const catId = String(criada?.id || '');
-                const $cat = $('#categoria_id');
-                let options = '<option value="">Selecione</option>';
-                categoriasComSubs.forEach((cat) => {
-                    options += `<option value="${cat.id}"${String(cat.id) === catId ? ' selected' : ''}>${escapeHtml(cat.nome || '')}</option>`;
-                });
-                $cat.html(options);
-                $cat.val(catId);
-                $cat.trigger('change');
-                showNotification('Categoria criada com sucesso.', 'success');
-            });
+            const criada = await window.categoriasAPI.criar({ nome, tipo: 'produto' });
+            const categorias = await window.categoriasAPI.listar('produto');
+            const categoriasComSubs = (categorias || []).map((cat) => ({
+                ...cat,
+                subcategorias: (window.categoriasSistema || []).find((item) => String(item.id) === String(cat.id))?.subcategorias || []
+            }));
+            window.categoriasSistema = categoriasComSubs;
+            const catId = String(criada?.id || '');
+            const $cat = $('#categoria_id');
+            $cat.html(montarOptionsCategoriasProduto(categoriasComSubs));
+            $cat.val(catId);
+            $cat.trigger('change.cadastroCat');
+            $cat.trigger('change.miipQuickCreate');
+            showNotification('Categoria criada com sucesso.', 'success');
         } catch (err) {
-            showNotification(err?.responseJSON?.erro || 'Erro ao criar categoria.', 'danger');
+            showNotification(err?.responseJSON?.erro || err?.message || 'Erro ao criar categoria.', 'danger');
         }
     });
 
-    $btnSubcategoria.off('click.miipQuickCreate').on('click.miipQuickCreate', async function () {
+    $btnSubcategoria.off('click.miipQuickCreate').on('click.miipQuickCreate', async function (e) {
+        e.preventDefault();
+        e.stopPropagation();
         const categoriaId = $('#categoria_id').val();
         if (!categoriaId) {
             showNotification('Selecione uma categoria antes de criar uma subcategoria.', 'warning');
             return;
         }
-        const nome = window.prompt('Nome da subcategoria', '');
-        if (!nome || !nome.trim()) return;
+        if (!window.subcategoriasAPI || typeof window.subcategoriasAPI.criar !== 'function') {
+            showNotification('Cadastro de subcategorias indisponível nesta tela.', 'warning');
+            return;
+        }
+        const nome = await pedirNomeClassificacaoRapida({
+            titulo: 'Nova subcategoria',
+            label: 'Nome da subcategoria',
+            placeholder: 'Ex.: Grãos'
+        });
+        if (!nome) return;
         try {
-            const criada = await window.subcategoriasAPI.criar({ nome: nome.trim(), categoria_id: categoriaId });
+            const criada = await window.subcategoriasAPI.criar({ nome, categoria_id: categoriaId });
             const subs = await window.subcategoriasAPI.listarPorCategoria(categoriaId).catch(() => []);
             const $select = $('#subcategoria_id');
             let options = '<option value="">Nenhuma</option>';
@@ -3700,19 +3841,33 @@ function inicializarBotoesCriacaoRapidaCategoriaSubcategoria() {
             });
             $select.html(options);
             $select.val(String(criada?.id || ''));
+            const catCache = (window.categoriasSistema || []).find((c) => String(c.id) === String(categoriaId));
+            if (catCache) catCache.subcategorias = subs || [];
             showNotification('Subcategoria criada com sucesso.', 'success');
         } catch (err) {
-            showNotification(err?.responseJSON?.erro || 'Erro ao criar subcategoria.', 'danger');
+            showNotification(err?.responseJSON?.erro || err?.message || 'Erro ao criar subcategoria.', 'danger');
         }
     });
 
-    $('#categoria_id').off('change.miipQuickCreate').on('change.miipQuickCreate', function () {
-        const temCategoria = Boolean(String($(this).val() || '').trim());
-        $btnSubcategoria.prop('disabled', !temCategoria);
-    });
+    $('#categoria_id').off('change.miipQuickCreate').on('change.miipQuickCreate', sincronizarBotaoSubcategoria);
+    sincronizarBotaoSubcategoria();
 }
 
 window.inicializarBotoesCriacaoRapidaCategoriaSubcategoria = inicializarBotoesCriacaoRapidaCategoriaSubcategoria;
+
+function selectClassificacaoEmUso($el) {
+    const el = $el && $el[0];
+    if (!el) return false;
+    return document.activeElement === el;
+}
+
+function montarOptionsCategoriasProduto(categoriasComSubs) {
+    let catOptions = '<option value="">Selecione</option>';
+    (categoriasComSubs || []).forEach((cat) => {
+        catOptions += `<option value="${cat.id}">${escapeHtml(cat.nome || '')}</option>`;
+    });
+    return catOptions;
+}
 
 function inicializarCategoriasESubcategorias(produto, isEdit) {
     if (!(window.categoriasAPI && window.subcategoriasAPI)) {
@@ -3721,45 +3876,71 @@ function inicializarCategoriasESubcategorias(produto, isEdit) {
         return;
     }
 
+    let renderClassificacaoPendente = null;
+
     function renderCategorias(categoriasComSubs) {
+        const $cat = $('#categoria_id');
+        const $sub = $('#subcategoria_id');
+        if (!$cat.length) return;
+
+        if (selectClassificacaoEmUso($cat) || selectClassificacaoEmUso($sub)) {
+            renderClassificacaoPendente = categoriasComSubs;
+            $cat.add($sub).off('blur.cadastroCatSync').one('blur.cadastroCatSync', () => {
+                const pendente = renderClassificacaoPendente;
+                renderClassificacaoPendente = null;
+                if (pendente) renderCategorias(pendente);
+            });
+            return;
+        }
+
         window.categoriasSistema = categoriasComSubs;
-        let catOptions = '<option value="">Selecione</option>';
-        categoriasComSubs.forEach(cat => {
-            catOptions += `<option value="${cat.id}">${escapeHtml(cat.nome || '')}</option>`;
-        });
-        $('#categoria_id').html(catOptions);
-        if (isEdit && produto && produto.categoria_id) {
-            $('#categoria_id').val(String(produto.categoria_id));
+        const valorCatAtual = String($cat.val() || '');
+        const valorSubAtual = String($sub.val() || '');
+        const htmlNovo = montarOptionsCategoriasProduto(categoriasComSubs);
+        const catParaSelecionar = valorCatAtual
+            || (isEdit && produto && produto.categoria_id ? String(produto.categoria_id) : '');
+
+        if ($cat.html() !== htmlNovo) {
+            $cat.html(htmlNovo);
+        }
+        if (catParaSelecionar) {
+            $cat.val(catParaSelecionar);
         }
 
         function carregarSubs(catId, selectedSubId) {
+            if (selectClassificacaoEmUso($('#subcategoria_id')) && String($('#categoria_id').val() || '') === String(catId || '')) {
+                return;
+            }
             if (!catId) {
                 $('#subcategoria_id').html('<option value="">Selecione uma categoria</option>');
                 $('#btnCriarSubcategoriaRapida').prop('disabled', true);
                 return;
             }
-            const cat = categoriasComSubs.find(c => String(c.id) === String(catId));
+            const cat = categoriasComSubs.find((c) => String(c.id) === String(catId));
             let subOptions = '<option value="">Nenhuma</option>';
-            (cat && cat.subcategorias ? cat.subcategorias : []).forEach(sub => {
+            (cat && cat.subcategorias ? cat.subcategorias : []).forEach((sub) => {
                 subOptions += `<option value="${sub.id}">${escapeHtml(sub.nome || '')}</option>`;
             });
-            $('#subcategoria_id').html(subOptions);
+            const $subSel = $('#subcategoria_id');
+            if ($subSel.html() !== subOptions) {
+                $subSel.html(subOptions);
+            }
             $('#btnCriarSubcategoriaRapida').prop('disabled', false);
-            if (typeof selectedSubId !== 'undefined' && selectedSubId !== null) {
-                $('#subcategoria_id').val(String(selectedSubId));
+            if (typeof selectedSubId !== 'undefined' && selectedSubId !== null && selectedSubId !== '') {
+                $subSel.val(String(selectedSubId));
             }
         }
 
-        $('#categoria_id').off('change').on('change', function () {
+        $cat.off('change.cadastroCat').on('change.cadastroCat', function () {
             carregarSubs($(this).val());
         });
 
-        if (isEdit && produto && typeof produto.categoria_id !== 'undefined' && produto.categoria_id !== null) {
-            let subId = '';
-            if (typeof produto.subcategoria_id !== 'undefined' && produto.subcategoria_id !== null && produto.subcategoria_id !== 'null') {
-                subId = String(produto.subcategoria_id);
-            }
-            carregarSubs(produto.categoria_id, subId);
+        if (catParaSelecionar) {
+            const subId = valorSubAtual
+                || (isEdit && produto && produto.subcategoria_id != null && produto.subcategoria_id !== 'null'
+                    ? String(produto.subcategoria_id)
+                    : '');
+            carregarSubs(catParaSelecionar, subId);
         } else {
             $('#subcategoria_id').html('<option value="">Selecione uma categoria</option>');
             $('#btnCriarSubcategoriaRapida').prop('disabled', true);
@@ -3778,9 +3959,9 @@ function inicializarCategoriasESubcategorias(produto, isEdit) {
         categorias = categorias[0] || [];
         subcategorias = subcategorias[0] || [];
 
-        const categoriasComSubs = (categorias || []).map(cat => ({
+        const categoriasComSubs = (categorias || []).map((cat) => ({
             ...cat,
-            subcategorias: (subcategorias || []).filter(sub => String(sub.categoria_id) === String(cat.id))
+            subcategorias: (subcategorias || []).filter((sub) => String(sub.categoria_id) === String(cat.id))
         }));
 
         renderCategorias(categoriasComSubs);
@@ -4790,14 +4971,30 @@ async function saveProduto() {
             const eqPreferido = Number($('#balancaProdutoEquipamento').val() || 0) || null;
             const perguntarBalanca = typeof produtoSalvoElegivelPerguntaBalanca === 'function'
                 && produtoSalvoElegivelPerguntaBalanca(produtoNormalizado);
+            const origemCadastro = $modal.data('origemCadastroProduto');
+            const continuarCadastrando = !id && origemCadastro !== 'COMPRA';
+
+            const aposFecharCadastro = () => {
+                if (perguntarBalanca) {
+                    perguntarEnvioBalancaAposSalvar(produtoNormalizado, eqPreferido, () => {
+                        if (continuarCadastrando) abrirProximoCadastroProdutoAposSalvar();
+                    });
+                    return;
+                }
+                if (continuarCadastrando) abrirProximoCadastroProdutoAposSalvar();
+            };
 
             // RC15.3.1 — sempre fecha o modal (fluxo padrão do ERP)
             const modalEl = document.getElementById('produtoModal');
+            if (modalEl && typeof modalEl.addEventListener === 'function') {
+                modalEl.addEventListener('hidden.bs.modal', aposFecharCadastro, { once: true });
+            }
             if (modalEl && typeof bootstrap !== 'undefined' && bootstrap.Modal) {
                 const inst = bootstrap.Modal.getInstance(modalEl) || bootstrap.Modal.getOrCreateInstance(modalEl);
                 inst.hide();
             } else {
                 $modal.modal('hide');
+                if (!modalEl) aposFecharCadastro();
             }
 
             // Notificações ficam atrás do modal empilhado sobre a MIIP (z-index 22000).
@@ -4831,9 +5028,6 @@ async function saveProduto() {
                 loadProdutos();
             }
 
-            if (perguntarBalanca) {
-                perguntarEnvioBalancaAposSalvar(produtoNormalizado, eqPreferido);
-            }
         },
         error: function (xhr) {
             const erro = xhr.responseJSON?.error || 'Erro desconhecido';
@@ -5014,7 +5208,11 @@ window.historicoProduto = historicoProduto;
 
 // Excluir produto
 function deleteProduto(id) {
-    if (!confirm('Tem certeza que deseja excluir este produto?')) {
+    const superAdmin = typeof isSuperAdminUser === 'function' && isSuperAdminUser();
+    const mensagem = superAdmin
+        ? 'Como Super Administrador, você pode excluir mesmo se o produto tiver vendas, compras ou estoque. Vendas antigas são preservadas, mas o produto sai do cadastro. Continuar?'
+        : 'Tem certeza que deseja excluir este produto?';
+    if (!confirm(mensagem)) {
         return;
     }
 
@@ -5029,8 +5227,8 @@ function deleteProduto(id) {
             loadProdutos();
         },
         error: function (xhr) {
-            const erro = xhr.responseJSON?.error || 'Erro desconhecido';
-            showNotification('Erro ao excluir produto: ' + erro, 'danger');
+            const erro = xhr.responseJSON?.error || xhr.responseJSON?.erro || 'Erro desconhecido';
+            showNotification('Erro ao excluir produto: ' + erro, xhr.status === 409 ? 'warning' : 'danger');
         }
     });
 }

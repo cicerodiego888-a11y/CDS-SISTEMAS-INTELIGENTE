@@ -282,6 +282,26 @@ async function main() {
     assert.ok(!pdv.itens.some((p) => p.nome === 'CACHE LOCAL'));
   });
 
+  await test('busca também pela marca do produto', async () => {
+    await run(db, `INSERT INTO marcas (id, nome) VALUES (7, 'Tio João')`);
+    await run(
+      db,
+      `INSERT INTO produtos (codigo, codigo_barras, nome, nome_busca, categoria_id, marca_id, estoque_atual, preco_venda)
+       VALUES (?,?,?,?,?,?,?,?)`,
+      ['8801', '', 'ARROZ 5KG', normalizarNomeBusca('ARROZ 5KG'), null, 7, 3, 12]
+    );
+    const rExato = await svc.buscar({ q: 'tio joao', incluirSugestoes: false });
+    assert.ok(rExato.itens.some((p) => String(p.codigo) === '8801'));
+    assert.ok(rExato.itens.some((p) => p.busca_match_tipo === 'MARCA_EXATO' && String(p.codigo) === '8801'));
+
+    const rAcento = await svc.buscar({ q: 'Tio João', incluirSugestoes: false });
+    assert.ok(rAcento.itens.some((p) => String(p.codigo) === '8801'));
+
+    const rPrefixo = await svc.buscar({ q: 'Tio', incluirSugestoes: false });
+    assert.ok(rPrefixo.itens.some((p) => String(p.codigo) === '8801'));
+    assert.ok(rPrefixo.itens.some((p) => String(p.marca || '').toLowerCase().includes('tio')));
+  });
+
   await test('15. resultado antigo não sobrescreve busca nova', () => {
     assert.strictEqual(deveIgnorarRespostaBusca(1, 2), true);
     assert.strictEqual(deveIgnorarRespostaBusca(4, 4), false);

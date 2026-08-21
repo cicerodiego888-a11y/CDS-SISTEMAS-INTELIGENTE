@@ -25,7 +25,9 @@
     debounceMs: 180,
     minCharsCreate: 1,
     maxSuggestions: 12,
-    noResultsLabel: 'Nenhum resultado'
+    noResultsLabel: 'Nenhum resultado',
+    deleteTitle: 'Excluir',
+    confirmDeleteMessage: (item) => `Excluir "${item.label}"? Essa marca sai da lista, mas produtos já vinculados permanecem.`
   };
 
   function debounce(fn, wait) {
@@ -137,10 +139,18 @@
       }
 
       items.slice(0, opts.maxSuggestions).forEach((item, index) => {
+        const podeExcluir = typeof opts.deleteItem === 'function';
         html += `
-          <button type="button" class="cds-smart-select__option" data-index="${index}" data-id="${escapeHtml(item.id)}" role="option">
-            ${escapeHtml(item.label)}
-          </button>
+          <div class="cds-smart-select__row">
+            <button type="button" class="cds-smart-select__option" data-index="${index}" data-id="${escapeHtml(item.id)}" role="option">
+              ${escapeHtml(item.label)}
+            </button>
+            ${podeExcluir ? `
+              <button type="button" class="cds-smart-select__option-delete" data-delete-id="${escapeHtml(item.id)}" title="${escapeHtml(opts.deleteTitle)}" aria-label="${escapeHtml(opts.deleteTitle)} ${escapeHtml(item.label)}">
+                &times;
+              </button>
+            ` : ''}
+          </div>
         `;
       });
 
@@ -217,6 +227,35 @@
       }
     }
 
+    async function removeItem(item) {
+      if (!item || typeof opts.deleteItem !== 'function') return;
+      const mensagem = typeof opts.confirmDeleteMessage === 'function'
+        ? opts.confirmDeleteMessage(item)
+        : `Excluir "${item.label}"?`;
+      if (!window.confirm(mensagem)) return;
+      try {
+        await opts.deleteItem(item);
+        items = items.filter((row) => String(row.id) !== String(item.id));
+        if (selected && String(selected.id) === String(item.id)) {
+          selected = null;
+          input.value = '';
+          syncSelectedUi();
+          if (typeof opts.onChange === 'function') {
+            opts.onChange(null);
+          }
+        }
+        renderDropdown(input.value);
+        if (typeof opts.onDeleted === 'function') {
+          opts.onDeleted(item);
+        }
+      } catch (err) {
+        console.error('[CdsSmartSelect] deleteItem:', err);
+        if (typeof opts.onError === 'function') {
+          opts.onError(err);
+        }
+      }
+    }
+
     function clearSelection() {
       selected = null;
       input.value = '';
@@ -266,6 +305,15 @@
     });
 
     dropdown.addEventListener('click', (e) => {
+      const del = e.target.closest('.cds-smart-select__option-delete');
+      if (del) {
+        e.preventDefault();
+        e.stopPropagation();
+        const id = del.getAttribute('data-delete-id');
+        const item = items.find((row) => String(row.id) === String(id));
+        if (item) removeItem(item);
+        return;
+      }
       const btn = e.target.closest('.cds-smart-select__option');
       if (!btn) return;
       if (btn.dataset.create === '1') {
