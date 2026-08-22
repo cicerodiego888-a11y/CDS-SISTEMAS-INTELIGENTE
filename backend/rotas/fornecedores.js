@@ -3,10 +3,16 @@ const router = express.Router();
 const db = require('../database');
 const { gravarAuditoria } = require('../services/auditoria');
 const { obterSearchService } = require('../motores/mib');
+const {
+  listarFornecedores,
+  filtrarFornecedoresPorTermo,
+  findOrCreateFornecedor
+} = require('../services/FornecedorCadastroSimplesService');
 
 // LISTAR TODOS (com busca via SearchService quando há termo)
 router.get('/', async (req, res) => {
   const { busca } = req.query;
+  const termoSimples = String(req.query.q || '').trim();
 
   if (busca && String(busca).trim() !== '') {
     try {
@@ -29,13 +35,41 @@ router.get('/', async (req, res) => {
     }
   }
 
-  db.all('SELECT * FROM fornecedores ORDER BY nome ASC', [], (err, rows) => {
-    if (err) {
-      console.error('Erro ao listar fornecedores:', err.message);
-      return res.status(500).json({ error: 'Erro ao listar fornecedores.' });
-    }
-    res.json(rows || []);
-  });
+  try {
+    const lista = await listarFornecedores(db);
+    return res.json(filtrarFornecedoresPorTermo(lista, termoSimples));
+  } catch (err) {
+    console.error('Erro ao listar fornecedores:', err.message);
+    return res.status(500).json({ error: 'Erro ao listar fornecedores.' });
+  }
+});
+
+// Smart Select — encontra ou cria pelo nome (campo opcional no cadastro de produto)
+router.post('/find-or-create', async (req, res) => {
+  try {
+    const resultado = await findOrCreateFornecedor(db, req.body?.nome, {
+      auditar: (acao, fornecedorId, detalhes) => {
+        gravarAuditoria({
+          usuario_id: req.user?.id || null,
+          usuario_nome: req.user?.nome || req.user?.username || null,
+          modulo: 'fornecedores',
+          acao,
+          referencia_tipo: 'fornecedor',
+          referencia_id: fornecedorId || null,
+          detalhes,
+          ip_requisicao: req.ip || null
+        }).catch((auditErr) => console.error('Erro ao gravar auditoria de fornecedor:', auditErr));
+      }
+    });
+    const status = resultado.criado ? 201 : 200;
+    return res.status(status).json({
+      ...resultado.fornecedor,
+      criado: resultado.criado
+    });
+  } catch (err) {
+    const status = err.status || 500;
+    return res.status(status).json({ error: err.message || 'Erro ao processar fornecedor' });
+  }
 });
 
 // BUSCAR POR ID

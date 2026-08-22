@@ -2604,7 +2604,8 @@ function renderProdutosRows(produtos, opcoes = {}) {
 // RC4.31.27 — opcoes.origem === 'COMPRA' NÃO substitui #modal-container (preserva Lançamento de Compra)
 function showProdutoModal(produto = null, opcoes = {}) {
     const origemCadastro = opcoes && typeof opcoes === 'object' ? (opcoes.origem || null) : null;
-    const preservarOutrosModais = origemCadastro === 'COMPRA' || opcoes?.preservarOutrosModais === true;
+    const preservarOutrosModais = origemCadastro === 'COMPRA' || origemCadastro === 'MIIP'
+        || opcoes?.preservarOutrosModais === true;
     const isEdit = produto !== null;
     const title = isEdit ? 'Editar Produto' : 'Novo Produto';
     const lucro = (() => {
@@ -2741,20 +2742,11 @@ function showProdutoModal(produto = null, opcoes = {}) {
                                                 <div id="marca_smart_select_host"></div>
                                                 <input type="hidden" id="marca_id" value="${isEdit && produto.marca_id ? escapeHtml(String(produto.marca_id)) : ''}">
                                             </div>
-                                            <div class="col-md-6 position-relative">
-                                                <label for="fornecedor" class="form-label">Fornecedor</label>
-                                                <input
-                                                    type="text"
-                                                    class="form-control"
-                                                    id="fornecedor"
-                                                    autocomplete="off"
-                                                    value="${isEdit ? escapeHtml(produto.fornecedor || '') : ''}"
-                                                >
-                                                <div
-                                                    id="fornecedor-autocomplete"
-                                                    class="list-group position-absolute w-100"
-                                                    style="z-index: 9999; display: none;"
-                                                ></div>
+                                            <div class="col-md-6">
+                                                <label for="fornecedor_smart_input" class="form-label">Fornecedor</label>
+                                                <div id="fornecedor_smart_select_host"></div>
+                                                <input type="hidden" id="fornecedor" value="${isEdit ? escapeHtml(produto.fornecedor || '') : ''}">
+                                                <input type="hidden" id="fornecedor_id" value="">
                                             </div>
                                             <div class="col-md-6">
                                                 <label for="unidade" class="form-label" id="label_unidade_produto">Unidade Base</label>
@@ -3224,7 +3216,7 @@ function showProdutoModal(produto = null, opcoes = {}) {
 
                     <div class="modal-footer">
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
-                        <button type="button" class="btn btn-primary" onclick="saveProduto()">${!isEdit && origemCadastro !== 'COMPRA' ? 'Salvar e Add Novo' : 'Salvar'}</button>
+                        <button type="button" class="btn btn-primary" onclick="saveProduto()">${!isEdit && origemCadastro !== 'COMPRA' && origemCadastro !== 'MIIP' ? 'Salvar e Add Novo' : 'Salvar'}</button>
                     </div>
                 </div>
             </div>
@@ -3269,7 +3261,7 @@ function showProdutoModal(produto = null, opcoes = {}) {
     inicializarCategoriasESubcategorias(produto, isEdit);
     inicializarBotoesCriacaoRapidaCategoriaSubcategoria();
     inicializarMarcasProdutoCadastro(produto, isEdit);
-    inicializarAutocompleteFornecedor();
+    inicializarFornecedorProdutoCadastro(produto, isEdit);
     inicializarCalculoPreco(produto, isEdit);
     if (typeof ProdutoEmbalagensUI !== 'undefined') {
         ProdutoEmbalagensUI.inicializarApresentacoes(produto);
@@ -3521,6 +3513,117 @@ function inicializarMarcasProdutoCadastro(produto, isEdit) {
     }
 }
 window.inicializarMarcasProdutoCadastro = inicializarMarcasProdutoCadastro;
+
+function obterNomeFornecedorCadastro() {
+    const inst = $('#produtoModal').data('fornecedorSmartSelect');
+    const selecionado = inst && typeof inst.getSelected === 'function' ? inst.getSelected() : null;
+    if (selecionado && selecionado.label) {
+        return String(selecionado.label).trim();
+    }
+    return ($('#fornecedor_smart_input').val() || $('#fornecedor').val() || '').trim();
+}
+
+function inicializarFornecedorProdutoCadastro(produto, isEdit) {
+    const $host = $('#fornecedor_smart_select_host');
+    const $hiddenId = $('#fornecedor_id');
+    const $hiddenNome = $('#fornecedor');
+    if (!$host.length) return;
+
+    if (typeof CdsSmartSelect === 'undefined' || typeof CdsSmartSelect.mount !== 'function') {
+        console.warn('[Fornecedor] CdsSmartSelect indisponível');
+        return;
+    }
+
+    const token = localStorage.getItem('token') || '';
+    const nomeInicial = isEdit
+        ? String(produto?.fornecedor || '').trim()
+        : String($hiddenNome.val() || '').trim();
+
+    const gravarNome = (item) => {
+        $hiddenNome.val(item && item.label ? String(item.label).trim() : '');
+    };
+
+    const instance = CdsSmartSelect.mount({
+        container: $host.get(0),
+        hiddenInput: $hiddenId.length ? $hiddenId.get(0) : null,
+        inputId: 'fornecedor_smart_input',
+        placeholder: 'Buscar ou criar fornecedor (opcional)...',
+        allowClear: true,
+        createPrefix: 'Criar fornecedor',
+        emptyHint: 'Digite para buscar ou criar. Campo opcional.',
+        initialItem: nomeInicial ? { id: nomeInicial, label: nomeInicial } : null,
+        fetchItems: async (query) => {
+            const url = query
+                ? `${API_URL}/fornecedores?q=${encodeURIComponent(query)}`
+                : `${API_URL}/fornecedores`;
+            const response = await fetch(url, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            if (!response.ok) {
+                throw new Error('Falha ao buscar fornecedores');
+            }
+            const lista = await response.json();
+            return (lista || []).map((f) => ({
+                id: f.id,
+                label: f.nome || f.razao_social || `Fornecedor #${f.id}`
+            }));
+        },
+        createItem: async (nome) => {
+            const response = await fetch(`${API_URL}/fornecedores/find-or-create`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`
+                },
+                body: JSON.stringify({ nome })
+            });
+            const body = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(body.error || body.erro || 'Erro ao criar fornecedor');
+            }
+            if (body.criado) {
+                showNotification('Fornecedor criado com sucesso.', 'success');
+            }
+            return { id: body.id, label: body.nome };
+        },
+        deleteItem: async (item) => {
+            const id = String(item?.id || '').trim();
+            if (!/^\d+$/.test(id)) {
+                throw new Error('Selecione um fornecedor cadastrado para excluir.');
+            }
+            const response = await fetch(`${API_URL}/fornecedores/${encodeURIComponent(id)}`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const body = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(body.error || body.erro || 'Erro ao excluir fornecedor');
+            }
+        },
+        confirmDeleteMessage: (item) =>
+            `Excluir "${item.label}"? Esse fornecedor sai da lista, mas produtos já vinculados permanecem.`,
+        onDeleted: (item) => {
+            showNotification(`Fornecedor "${item.label}" excluído.`, 'success');
+        },
+        onChange: gravarNome,
+        onError: (err) => {
+            showNotification(err.message || 'Erro no campo de fornecedor.', 'danger');
+        }
+    });
+
+    gravarNome(instance.getSelected && instance.getSelected());
+    $('#produtoModal').data('fornecedorSmartSelect', instance);
+
+    $('#produtoModal').off('shown.bs.modal.fornecedorPrefill').on('shown.bs.modal.fornecedorPrefill', () => {
+        const nomePrefill = ($('#fornecedor').val() || '').trim();
+        const atual = instance.getSelected && instance.getSelected();
+        if (nomePrefill && (!atual || String(atual.label) !== nomePrefill)) {
+            instance.setValue({ id: nomePrefill, label: nomePrefill });
+        }
+    });
+}
+window.inicializarFornecedorProdutoCadastro = inicializarFornecedorProdutoCadastro;
+window.obterNomeFornecedorCadastro = obterNomeFornecedorCadastro;
 
 /** Sprint INFRA 01 — upload persistente de imagem (caminho em imagem_principal). */
 function inicializarImagemProdutoCadastro(produto = null, isEdit = false) {
@@ -3974,81 +4077,6 @@ function inicializarCategoriasESubcategorias(produto, isEdit) {
     });
 }
 
-
-// Inicializa autocomplete de fornecedor
-function inicializarAutocompleteFornecedor() {
-    $('#fornecedor').off('input').on('input', function () {
-        const termo = ($(this).val() || '').trim();
-        const termoNumerico = termo.replace(/\D/g, '');
-        const $lista = $('#fornecedor-autocomplete');
-
-        if (termo.length < 2) {
-            $lista.hide().html('');
-            return;
-        }
-
-        $.ajax({
-            url: `${API_URL}/fornecedores?busca=${encodeURIComponent(termo)}`,
-            method: 'GET',
-            headers: {
-                Authorization: 'Bearer ' + (localStorage.getItem('token') || '')
-            },
-            success: function (fornecedores) {
-                const termoLower = termo.toLowerCase();
-                const filtrados = (fornecedores || []).filter(f => {
-                    if (!f) return false;
-
-                    const nome = String(f.nome || '').toLowerCase();
-                    const razao = String(f.razao_social || '').toLowerCase();
-                    const cpfCnpj = String(f.cpf_cnpj || '');
-                    const cpfCnpjNumerico = cpfCnpj.replace(/\D/g, '');
-
-                    const correspondeTexto = nome.includes(termoLower) || razao.includes(termoLower) || cpfCnpj.toLowerCase().includes(termoLower);
-                    const correspondeCnpjNumerico = termoNumerico.length > 0 && cpfCnpjNumerico.includes(termoNumerico);
-
-                    return correspondeTexto || correspondeCnpjNumerico;
-                });
-
-                if (filtrados.length === 0) {
-                    $lista.hide().html('');
-                    return;
-                }
-
-                let html = '';
-                filtrados.forEach(f => {
-                    const label = f.cpf_cnpj
-                        ? `${escapeHtml(f.nome || '')} - CNPJ: ${escapeHtml(f.cpf_cnpj)}`
-                        : `${escapeHtml(f.nome || '')}`;
-                    html += `
-                        <button
-                            type="button"
-                            class="list-group-item list-group-item-action fornecedor-item"
-                            data-nome="${escapeHtml(f.nome)}"
-                        >
-                            ${label}
-                        </button>
-                    `;
-                });
-
-                $lista.html(html).show();
-
-                $('.fornecedor-item').off('click').on('click', function () {
-                    $('#fornecedor').val($(this).text().trim());
-                    $lista.hide().html('');
-                });
-            },
-            error: function () {
-                $lista.hide().html('');
-            }
-        });
-    });
-
-    $('#fornecedor').off('blur').on('blur', function () {
-        setTimeout(() => {
-            $('#fornecedor-autocomplete').hide().html('');
-        }, 200);
-    });
-}
 
 // ---------- Venda em Atacado (frontend helpers) ----------
 function inicializarVendaAtacado(produto, isEdit) {
@@ -4818,7 +4846,7 @@ async function saveProduto() {
                 : null
         ),
         estoque_minimo: parseFloat($('#estoque_minimo').val()) || 0,
-        fornecedor: ($('#fornecedor').val() || '').trim(),
+        fornecedor: obterNomeFornecedorCadastro(),
         data_validade: ($('#data_validade').val() || '').trim() || null,
         lote: ($('#lote').val() || '').trim(),
         dias_alerta_validade: parseInt($('#dias_alerta_validade').val(), 10) || 30,
@@ -4972,7 +5000,7 @@ async function saveProduto() {
             const perguntarBalanca = typeof produtoSalvoElegivelPerguntaBalanca === 'function'
                 && produtoSalvoElegivelPerguntaBalanca(produtoNormalizado);
             const origemCadastro = $modal.data('origemCadastroProduto');
-            const continuarCadastrando = !id && origemCadastro !== 'COMPRA';
+            const continuarCadastrando = !id && origemCadastro !== 'COMPRA' && origemCadastro !== 'MIIP';
 
             const aposFecharCadastro = () => {
                 if (perguntarBalanca) {

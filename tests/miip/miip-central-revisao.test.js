@@ -4,6 +4,8 @@
  */
 
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const utils = require('../../backend/motores/miip/utils/miipCentralRevisaoUtils');
 
 let passou = 0;
@@ -188,6 +190,15 @@ async function main() {
   await test('formatar tempo de processamento', () => {
     assert.strictEqual(utils.formatarTempoProcessamento(105000), '00:01:45');
     assert.strictEqual(utils.formatarTempoProcessamento(0), '00:00:00');
+  });
+
+  await test('cadastro pela nota fecha e vincula (origem MIIP, sem Add Novo)', () => {
+    const revisao = fs.readFileSync(path.join(__dirname, '../../frontend/erp/js/miip-central-revisao.js'), 'utf8');
+    const produtos = fs.readFileSync(path.join(__dirname, '../../frontend/erp/js/produtos.js'), 'utf8');
+    assert.match(revisao, /showProdutoModal\(null,\s*\{\s*origem:\s*['"]MIIP['"]\s*\}\)/);
+    assert.match(revisao, /incluirProdutoNoCatalogoRevisao/);
+    assert.match(produtos, /origemCadastro !== 'COMPRA' && origemCadastro !== 'MIIP'/);
+    assert.match(produtos, /origemCadastro === 'COMPRA' \|\| origemCadastro === 'MIIP'/);
   });
 
   await test('extrair evidências do candidato', () => {

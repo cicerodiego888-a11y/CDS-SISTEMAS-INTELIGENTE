@@ -24,6 +24,7 @@
     createPrefix: 'Criar',
     debounceMs: 180,
     minCharsCreate: 1,
+    minCharsSuggest: 1,
     maxSuggestions: 12,
     noResultsLabel: 'Nenhum resultado',
     deleteTitle: 'Excluir',
@@ -94,6 +95,7 @@
     let items = [];
     let highlightIndex = -1;
     let creating = false;
+    let fetchSeq = 0;
 
     function setHidden(value) {
       if (hiddenInput) {
@@ -170,16 +172,29 @@
       highlightIndex = -1;
     }
 
+    function queryProntoParaLista(rawQuery) {
+      return normalizeLabel(rawQuery).length >= Number(opts.minCharsSuggest || 1);
+    }
+
     async function refreshSuggestions(rawQuery) {
       const query = normalizeLabel(rawQuery);
+      if (!queryProntoParaLista(query)) {
+        fetchSeq += 1;
+        items = [];
+        closeDropdown();
+        return;
+      }
+      const seq = ++fetchSeq;
       try {
         const result = await opts.fetchItems(query);
+        if (seq !== fetchSeq) return;
         items = Array.isArray(result) ? result.map((row) => ({
           id: row.id,
           label: row.label != null ? String(row.label) : String(row.nome || row.name || row.id)
         })) : [];
         renderDropdown(query);
       } catch (err) {
+        if (seq !== fetchSeq) return;
         console.error('[CdsSmartSelect] fetchItems:', err);
         items = [];
         dropdown.innerHTML = `<div class="cds-smart-select__hint">Erro ao carregar sugestões</div>`;
@@ -268,7 +283,13 @@
     }
 
     input.addEventListener('focus', () => {
-      refreshSuggestions(input.value);
+      // Lista só aparece depois que o usuário começar a digitar
+      if (selected) return;
+      if (queryProntoParaLista(input.value)) {
+        refreshSuggestions(input.value);
+      } else {
+        closeDropdown();
+      }
     });
 
     input.addEventListener('input', () => {
@@ -282,7 +303,7 @@
       const options = Array.from(dropdown.querySelectorAll('.cds-smart-select__option'));
       if (e.key === 'ArrowDown') {
         e.preventDefault();
-        if (dropdown.hidden) refreshSuggestions(input.value);
+        if (dropdown.hidden && queryProntoParaLista(input.value)) refreshSuggestions(input.value);
         highlightIndex = Math.min(highlightIndex + 1, options.length - 1);
         options.forEach((el, i) => el.classList.toggle('is-active', i === highlightIndex));
       } else if (e.key === 'ArrowUp') {

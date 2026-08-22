@@ -1712,12 +1712,13 @@
   }
 
   function abrirBuscaProduto() {
-    const produtos = estado.opcoes.produtos || [];
+    const obterCatalogo = () => estado.opcoes.produtos || [];
     const modalEl = document.getElementById('miipCentralBuscaModal');
     if (!modalEl) return;
     const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
     elevarModalSobreMiip(modalEl);
     const renderBusca = (termo) => {
+      const produtos = obterCatalogo();
       const I = intel();
       const filtrados = I?.filtrarProdutosBuscaManual
         ? I.filtrarProdutosBuscaManual(produtos, termo)
@@ -1743,7 +1744,7 @@
     });
     $('#miipCentralBuscaResultados').off('click.miip').on('click.miip', '.miip-central-busca-item', function onSelect() {
       const produtoId = Number($(this).data('produto-id'));
-      const produto = produtos.find((p) => Number(p.id) === produtoId);
+      const produto = obterCatalogo().find((p) => Number(p.id) === produtoId);
       const pendencia = estado.sessao.pendencias[estado.sessao.indiceAtual];
       modal.hide();
       if (produto && pendencia) {
@@ -2389,22 +2390,51 @@
     }
   }
 
-  async function resolverProdutoRecemCadastrado(nomeHint) {
+  function incluirProdutoNoCatalogoRevisao(produto) {
+    if (!produto?.id || !estado?.opcoes) return;
+    if (!Array.isArray(estado.opcoes.produtos)) estado.opcoes.produtos = [];
+    const ja = estado.opcoes.produtos.some((p) => Number(p.id) === Number(produto.id));
+    if (!ja) estado.opcoes.produtos.unshift(produto);
+  }
+
+  function normalizarProdutoRecemSalvo(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const produto = raw.id ? raw : (raw.produto && raw.produto.id ? raw.produto : raw);
+    return produto?.id ? produto : null;
+  }
+
+  async function resolverProdutoRecemCadastrado(nomeHint, extraHint) {
     try {
       const token = localStorage.getItem('token') || '';
       const resp = await fetch(`${estado.opcoes.apiUrl}/produtos`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (!resp.ok) return null;
-      const lista = await resp.json().catch(() => []);
+      const raw = await resp.json().catch(() => []);
+      const lista = Array.isArray(raw) ? raw : (raw.itens || raw.produtos || []);
       if (!Array.isArray(lista) || !lista.length) return null;
 
       const hint = String(nomeHint || '').trim().toLowerCase();
+      const gtin = String(extraHint?.codigo_barras || extraHint?.gtin || extraHint?.cean || '').replace(/\D/g, '');
+      const codigo = String(extraHint?.codigo || extraHint?.cProd || '').trim().toLowerCase();
+
+      if (gtin) {
+        const porGtin = [...lista].reverse().find((p) =>
+          String(p.codigo_barras || '').replace(/\D/g, '') === gtin
+        );
+        if (porGtin) return porGtin;
+      }
       if (hint) {
         const porNome = [...lista].reverse().find((p) =>
           String(p.nome || '').trim().toLowerCase() === hint
         );
         if (porNome) return porNome;
+      }
+      if (codigo) {
+        const porCodigo = [...lista].reverse().find((p) =>
+          String(p.codigo || '').trim().toLowerCase() === codigo
+        );
+        if (porCodigo) return porCodigo;
       }
 
       return lista.reduce((a, b) => (Number(a?.id || 0) > Number(b?.id || 0) ? a : b));
@@ -2477,7 +2507,7 @@
       await encerrarModalTemporarioCompleto(document.getElementById('miipMieSugestaoModal'));
       await encerrarModalTemporarioCompleto(document.getElementById('miipPerguntaEmbalagemModal'));
 
-      showProdutoModal(null);
+      showProdutoModal(null, { origem: 'MIIP' });
 
       if (typeof window.aplicarPadraoFiscalNovoProduto === 'function') {
         window.aplicarPadraoFiscalNovoProduto().catch(() => {});
@@ -2540,7 +2570,7 @@
         });
 
         const $modal = $('#produtoModal');
-        const salvoDireto = $modal.data('produtoRecemSalvo') || null;
+        const salvoDireto = normalizarProdutoRecemSalvo($modal.data('produtoRecemSalvo') || null);
         const salvouOk = $modal.data('produtoSalvoComSucesso') === true;
         $modal.removeData('produtoRecemSalvo');
         $modal.removeData('produtoSalvoComSucesso');
@@ -2554,13 +2584,10 @@
         const nomeHint = item?.produto_nome || item?.descricao || item?.nome || '';
         let produto = salvoDireto && salvoDireto.id ? salvoDireto : null;
         if (!produto) {
-          produto = await resolverProdutoRecemCadastrado(nomeHint);
+          produto = await resolverProdutoRecemCadastrado(nomeHint, item);
         }
 
-        if (produto?.id && Array.isArray(estado?.opcoes?.produtos)) {
-          const ja = estado.opcoes.produtos.some((p) => Number(p.id) === Number(produto.id));
-          if (!ja) estado.opcoes.produtos.unshift(produto);
-        }
+        incluirProdutoNoCatalogoRevisao(produto);
 
         if (typeof callback === 'function') callback(produto || null);
         if (!produto) {

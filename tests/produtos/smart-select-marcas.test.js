@@ -145,6 +145,13 @@ async function main() {
     assert.strictEqual(smart.normalizeLabel('  a   b '), 'a b');
   });
 
+  await test('lista de marca/fornecedor só abre após digitação', () => {
+    const smartSrc = fs.readFileSync(path.join(__dirname, '../../frontend/shared/js/cds-smart-select.js'), 'utf8');
+    assert.ok(smartSrc.includes('minCharsSuggest'));
+    assert.ok(smartSrc.includes('queryProntoParaLista'));
+    assert.ok(smartSrc.includes('Lista só aparece depois que o usuário começar a digitar'));
+  });
+
   await test('Smart Select de marca permite excluir item da lista', () => {
     const smartSrc = fs.readFileSync(path.join(__dirname, '../../frontend/shared/js/cds-smart-select.js'), 'utf8');
     assert.ok(smartSrc.includes('deleteItem'));

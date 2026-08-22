@@ -3,24 +3,24 @@
 ## Ambiente
 
 - Versão: 1.0.3
-- Commit: 033889f
-- Build: 2026-08-21T15:47:25.615Z
-- Hash app.asar: `ccb79b55b4563cab80fcc3cded674248b30301d557f77c73b47eddab187ddbe4`
-- Origem: instalador-desatualizado
-- Data: 2026-08-21T18:09:24.445Z
+- Commit: b7a1da8
+- Build: 2026-08-21T22:29:35.360Z
+- Hash app.asar: `aa90ca45394594faa6e4837b92f054fb1cedf0d4ad620fe07c05e8edfbafe8a1`
+- Origem: fonte
+- Data: 2026-08-22T18:55:34.632Z
 
 ## Resultados
 
 ✔ Inicialização do ERP
-  - DB ok | pacote: instalador-desatualizado | asar: ccb79b55b456…
+  - DB ok | pacote: fonte | asar: N/A…
 ✔ Login
-  - user=rc4320_1787335763661 perfil=SUPER_ADMIN
+  - user=rc4320_1787424933794 perfil=SUPER_ADMIN
 ✔ Cadastro de Produtos
-  - CRUD ok | embalagem CX×12 | codigo=RC4320-1787335762274-P
+  - CRUD ok | embalagem CX×12 | codigo=RC4320-1787424932914-P
 ✔ Compras
-  - NF-e …00000064 | status=EM_REVISAO
+  - NF-e …00000064 | status=PRONTA_IMPORTACAO
 ✔ Financeiro
-  - parser financeiro OK | parcela R$500 | registros financeiro=2
+  - parser financeiro OK | parcela R$500 | registros financeiro=0
 ✔ Estoque
   - fiscal=6+3 | total=15 UN
 ✔ MIIP
@@ -32,15 +32,15 @@
 ✔ NF-e
   - autorização cStat=100 | protocolo=123
 ✔ Relatórios
-  - compras=0 fin=2 prod=700
+  - compras=0 fin=0 prod=8
 ✔ Performance
-  - 2.2s | mem 27.2MB | sql=16
+  - 1.7s | mem 23.6MB | sql=16
 
 ## Estatísticas
 
-- Tempo total: 2.2s
-- Memória máxima: 27.2 MB
-- CPU user: 1437 ms
+- Tempo total: 1.7s
+- Memória máxima: 23.6 MB
+- CPU user: 1063 ms
 - Testes/etapas: 12
 - Exceções: 0
 - Consultas SQL: 16

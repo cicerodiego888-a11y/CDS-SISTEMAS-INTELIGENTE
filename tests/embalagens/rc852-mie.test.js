@@ -100,8 +100,8 @@ test('RC8.5.3.1 — MIE fecha completamente antes do Cadastro', () => {
   assert.match(src, /focarCampoCadastroAposMiip/);
   assert.match(src, /RC8\.5\.3\.1/);
   // Decisão MIE ocorre antes de showProdutoModal
-  const idxMie = src.indexOf('resolverEmbalagemComMie(item)');
-  const idxShow = src.indexOf('showProdutoModal(null)');
+  const idxMie = src.indexOf('const decisao = await resolverEmbalagemComMie(item)');
+  const idxShow = src.indexOf("showProdutoModal(null, { origem: 'MIIP' })");
   assert.ok(idxMie > 0 && idxShow > idxMie, 'MIE deve ser resolvido antes de abrir o Cadastro');
 });
 
