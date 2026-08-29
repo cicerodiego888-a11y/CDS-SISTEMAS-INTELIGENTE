@@ -3908,6 +3908,7 @@ function inicializarBotoesCriacaoRapidaCategoriaSubcategoria() {
             const $cat = $('#categoria_id');
             $cat.html(montarOptionsCategoriasProduto(categoriasComSubs));
             $cat.val(catId);
+            sincronizarDropdownClassificacao($cat[0]);
             $cat.trigger('change.cadastroCat');
             $cat.trigger('change.miipQuickCreate');
             showNotification('Categoria criada com sucesso.', 'success');
@@ -3944,6 +3945,7 @@ function inicializarBotoesCriacaoRapidaCategoriaSubcategoria() {
             });
             $select.html(options);
             $select.val(String(criada?.id || ''));
+            sincronizarDropdownClassificacao($select[0]);
             const catCache = (window.categoriasSistema || []).find((c) => String(c.id) === String(categoriaId));
             if (catCache) catCache.subcategorias = subs || [];
             showNotification('Subcategoria criada com sucesso.', 'success');
@@ -3961,7 +3963,22 @@ window.inicializarBotoesCriacaoRapidaCategoriaSubcategoria = inicializarBotoesCr
 function selectClassificacaoEmUso($el) {
     const el = $el && $el[0];
     if (!el) return false;
+    if (window.CdsStableDropdown && typeof window.CdsStableDropdown.isOpen === 'function' && CdsStableDropdown.isOpen(el)) {
+        return true;
+    }
     return document.activeElement === el;
+}
+
+function sincronizarDropdownClassificacao(el) {
+    if (!el || !window.CdsStableDropdown || typeof CdsStableDropdown.mount !== 'function') return;
+    CdsStableDropdown.mount(el);
+}
+
+function ensureClassificacaoDropdowns() {
+    const cat = document.getElementById('categoria_id');
+    const sub = document.getElementById('subcategoria_id');
+    sincronizarDropdownClassificacao(cat);
+    sincronizarDropdownClassificacao(sub);
 }
 
 function montarOptionsCategoriasProduto(categoriasComSubs) {
@@ -3976,6 +3993,7 @@ function inicializarCategoriasESubcategorias(produto, isEdit) {
     if (!(window.categoriasAPI && window.subcategoriasAPI)) {
         $('#categoria_id').html('<option value="">Categorias indisponíveis</option>');
         $('#subcategoria_id').html('<option value="">Subcategorias indisponíveis</option>');
+        ensureClassificacaoDropdowns();
         return;
     }
 
@@ -3985,15 +4003,10 @@ function inicializarCategoriasESubcategorias(produto, isEdit) {
         const $cat = $('#categoria_id');
         const $sub = $('#subcategoria_id');
         if (!$cat.length) return;
+        ensureClassificacaoDropdowns();
 
         if (selectClassificacaoEmUso($cat) || selectClassificacaoEmUso($sub)) {
             renderClassificacaoPendente = categoriasComSubs;
-            $cat.add($sub).off('blur.cadastroCatSync').one('blur.cadastroCatSync', () => {
-                const pendente = renderClassificacaoPendente;
-                renderClassificacaoPendente = null;
-                if (pendente) renderCategorias(pendente);
-            });
-            return;
         }
 
         window.categoriasSistema = categoriasComSubs;
@@ -4009,14 +4022,13 @@ function inicializarCategoriasESubcategorias(produto, isEdit) {
         if (catParaSelecionar) {
             $cat.val(catParaSelecionar);
         }
+        sincronizarDropdownClassificacao($cat[0]);
 
         function carregarSubs(catId, selectedSubId) {
-            if (selectClassificacaoEmUso($('#subcategoria_id')) && String($('#categoria_id').val() || '') === String(catId || '')) {
-                return;
-            }
             if (!catId) {
                 $('#subcategoria_id').html('<option value="">Selecione uma categoria</option>');
                 $('#btnCriarSubcategoriaRapida').prop('disabled', true);
+                sincronizarDropdownClassificacao(document.getElementById('subcategoria_id'));
                 return;
             }
             const cat = categoriasComSubs.find((c) => String(c.id) === String(catId));
@@ -4025,6 +4037,7 @@ function inicializarCategoriasESubcategorias(produto, isEdit) {
                 subOptions += `<option value="${sub.id}">${escapeHtml(sub.nome || '')}</option>`;
             });
             const $subSel = $('#subcategoria_id');
+            const subAberta = selectClassificacaoEmUso($subSel);
             if ($subSel.html() !== subOptions) {
                 $subSel.html(subOptions);
             }
@@ -4032,6 +4045,8 @@ function inicializarCategoriasESubcategorias(produto, isEdit) {
             if (typeof selectedSubId !== 'undefined' && selectedSubId !== null && selectedSubId !== '') {
                 $subSel.val(String(selectedSubId));
             }
+            sincronizarDropdownClassificacao($subSel[0]);
+            void subAberta;
         }
 
         $cat.off('change.cadastroCat').on('change.cadastroCat', function () {
@@ -4047,6 +4062,11 @@ function inicializarCategoriasESubcategorias(produto, isEdit) {
         } else {
             $('#subcategoria_id').html('<option value="">Selecione uma categoria</option>');
             $('#btnCriarSubcategoriaRapida').prop('disabled', true);
+            sincronizarDropdownClassificacao(document.getElementById('subcategoria_id'));
+        }
+
+        if (renderClassificacaoPendente) {
+            renderClassificacaoPendente = null;
         }
     }
 
@@ -4074,6 +4094,7 @@ function inicializarCategoriasESubcategorias(produto, isEdit) {
         }
         $('#categoria_id').html('<option value="">Erro ao carregar categorias</option>');
         $('#subcategoria_id').html('<option value="">Erro ao carregar subcategorias</option>');
+        ensureClassificacaoDropdowns();
     });
 }
 

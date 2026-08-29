@@ -1393,8 +1393,12 @@ function abrirModalNFeDevolucaoVenda(vendaId) {
           — ${escapeHtml(ui.emoji || '')} ${escapeHtml(ui.label || n.status || '-')}
           <div class="text-muted small" style="word-break:break-all">Chave: ${escapeHtml(n.chave_acesso || '-')}</div>
           <div class="d-flex flex-wrap gap-2 mt-1">
-            ${n.tem_xml ? `<a class="btn btn-sm btn-outline-primary" target="_blank" href="${API_URL}/vendas/nfe-devolucao/${n.id}/xml">XML</a>` : ''}
-            ${n.tem_danfe ? `<a class="btn btn-sm btn-outline-secondary" target="_blank" href="${API_URL}/vendas/nfe-devolucao/${n.id}/danfe">DANFE</a>` : ''}
+            ${/autorizad/i.test(String(n.status || '')) ? `
+            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="abrirDanfe({tipo:'DEVOLUCAO_VENDA',id:${n.id},chave:'${escapeHtml(n.chave_acesso || '')}'})">👁 DANFE</button>
+            <button type="button" class="btn btn-sm btn-outline-primary" onclick="abrirDanfe({tipo:'DEVOLUCAO_VENDA',id:${n.id},imprimir:true})">🖨 Reimprimir</button>
+            <button type="button" class="btn btn-sm btn-outline-primary" onclick="baixarDanfePdf({tipo:'DEVOLUCAO_VENDA',id:${n.id}})">📄 PDF</button>
+            <button type="button" class="btn btn-sm btn-outline-dark" onclick="baixarXmlNfe55({tipo:'DEVOLUCAO_VENDA',id:${n.id}})">&lt;/&gt; XML</button>
+            ` : ''}
             ${acoes.consultar ? `<button type="button" class="btn btn-sm btn-outline-info" onclick="consultarSituacaoNfeDevolucaoVenda(${n.id}, ${id})">Consultar Situação</button>` : ''}
             ${acoes.reenviar ? `<button type="button" class="btn btn-sm btn-outline-warning" onclick="reenviarNfeDevolucaoVenda(${n.id}, ${id})">Reenviar</button>` : ''}
             ${acoes.cancelar ? `<button type="button" class="btn btn-sm btn-outline-danger" onclick="cancelarNfeDevolucaoVendaUi(${n.id}, ${id})">Cancelar (SEFAZ)</button>` : ''}
@@ -1521,6 +1525,17 @@ function confirmarEmissaoNFeDevolucaoVenda(vendaId) {
       showNotification(msg, r.success ? 'success' : 'warning');
     }
     $('#modalNFeDevolucaoVenda').modal('hide');
+    if ((r.success || r.status === 'autorizada') && typeof abrirDanfe === 'function' && r.notaId) {
+      abrirDanfe({
+        tipo: 'DEVOLUCAO_VENDA',
+        id: r.notaId,
+        chave: r.chaveAcesso || r.chave,
+        numero: r.numero,
+        serie: r.serie,
+        auto: true
+      });
+      return;
+    }
     abrirModalNFeDevolucaoVenda(vendaId);
   }).fail(function (xhr) {
     const body = xhr.responseJSON || {};

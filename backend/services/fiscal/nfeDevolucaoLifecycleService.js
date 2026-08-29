@@ -28,7 +28,10 @@ const {
   uiDoEstado,
   podeReenviarDevolucao,
   podeCancelarDevolucao,
-  mensagemRejeicaoDetalhada
+  mensagemRejeicaoDetalhada,
+  xmlRejeicaoFiscalDefinitiva,
+  codigoRejeicaoNota,
+  mensagemReenvioXmlEstruturalmenteRejeitado
 } = require('./nfeDevolucaoEstados');
 const {
   cancelarNfeDevolucaoCompra,
@@ -125,7 +128,12 @@ async function garantirSchemaLifecycle() {
     `ALTER TABLE nfe_devolucoes_compra ADD COLUMN ultimo_ip TEXT`,
     `ALTER TABLE nfe_devolucoes_compra ADD COLUMN ultimo_computador TEXT`,
     `ALTER TABLE nfe_devolucoes_compra ADD COLUMN rejeicao_codigo TEXT`,
-    `ALTER TABLE nfe_devolucoes_compra ADD COLUMN rejeicao_motivo TEXT`
+    `ALTER TABLE nfe_devolucoes_compra ADD COLUMN rejeicao_motivo TEXT`,
+    `ALTER TABLE nfe_devolucoes_compra ADD COLUMN xml_hash TEXT`,
+    `ALTER TABLE nfe_devolucoes_compra ADD COLUMN xml_assinado_hash TEXT`,
+    `ALTER TABLE nfe_devolucoes_compra ADD COLUMN cnf TEXT`,
+    `ALTER TABLE nfe_devolucoes_compra ADD COLUMN tp_emis TEXT`,
+    `ALTER TABLE nfe_devolucoes_compra ADD COLUMN identidade_congelada INTEGER DEFAULT 0`
   ];
   for (const sql of alters) {
     try {
@@ -180,9 +188,12 @@ async function obterNota(notaId) {
 
 async function atualizarNota(notaId, fields = {}) {
   await garantirSchemaLifecycle();
+  const nota = await obterNota(notaId);
+  const { filtrarCamposIdentidadeSeCongelado } = require('./nfeIdentityService');
+  const seguro = filtrarCamposIdentidadeSeCongelado(nota, fields);
   const cols = [];
   const params = [];
-  for (const [k, v] of Object.entries(fields)) {
+  for (const [k, v] of Object.entries(seguro)) {
     if (v === undefined) continue;
     cols.push(`${k} = ?`);
     params.push(v);
@@ -217,6 +228,35 @@ async function persistirXmlsVersionados(notaId, {
   if (Object.keys(patch).length) await atualizarNota(notaId, patch);
 }
 
+async function consultarChaveParaDiagnostico539(chave, ambienteNota) {
+  try {
+    const config = await getFiscalConfig();
+    const consulta = await consultarProtocolo({
+      chave,
+      modelo: ModelType.NFE,
+      ambiente: ambienteNota || config.ambiente,
+      cUF: config.codigoUf,
+      certificadoPath: config.certificadoPath,
+      certificadoSenha: config.certificadoSenha
+    });
+    if (!consulta || !consulta.success) {
+      return {
+        indeterminado: true,
+        erro: (consulta && (consulta.error || consulta.message)) || 'consulta SEFAZ indisponível'
+      };
+    }
+    const parsed = parseRetornoAutorizacaoNfe(String(consulta.body || ''));
+    return {
+      cStat: parsed.cStat,
+      nProt: parsed.nProt,
+      chNFe: chave,
+      xMotivo: parsed.xMotivo
+    };
+  } catch (e) {
+    return { indeterminado: true, erro: String(e.message || e) };
+  }
+}
+
 async function registrarEvento({
   notaId,
   compraId,
@@ -233,6 +273,21 @@ async function registrarEvento({
   detalhes
 } = {}) {
   await garantirSchemaLifecycle();
+  let detalhesFinal = detalhes && typeof detalhes === 'object' ? { ...detalhes } : detalhes;
+  if (notaId && (!detalhesFinal || typeof detalhesFinal === 'object')) {
+    try {
+      const notaEv = await obterNota(notaId);
+      if (notaEv) {
+        detalhesFinal = {
+          chave: notaEv.chave_acesso || null,
+          xmlHash: notaEv.xml_hash || notaEv.xml_assinado_hash || null,
+          numero: notaEv.numero || null,
+          serie: notaEv.serie || null,
+          ...(typeof detalhesFinal === 'object' && detalhesFinal ? detalhesFinal : {})
+        };
+      }
+    } catch (_) { /* histórico ainda útil sem enriquecimento */ }
+  }
   await dbRun(`
     INSERT INTO nfe_devolucao_compra_eventos (
       nfe_devolucao_id, compra_id, evento, status, cstat, xmotivo, mensagem,
@@ -251,7 +306,7 @@ async function registrarEvento({
     ip || null,
     computador || null,
     tempoRespostaMs != null ? Number(tempoRespostaMs) : null,
-    detalhes != null ? JSON.stringify(detalhes) : null
+    detalhesFinal != null ? JSON.stringify(detalhesFinal) : null
   ]);
   appendLog('eventos.log', {
     notaId, compraId, evento, status, cStat, xMotivo, mensagem
@@ -454,20 +509,53 @@ async function aposPersistirEmissao(notaId, ctx = {}) {
       status, mensagem: ctx.message || parsed.xMotivo || status
     });
   } else {
-    // rejeitada / outros
-    patch.status = ESTADOS.REJEITADA;
+    const { acaoDoCstat, ACOES } = require('./classificarRetornoSefaz');
+    const acao = acaoDoCstat(parsed.cStat);
     patch.fila_estado = 'erro';
     patch.rejeicao_codigo = parsed.cStat;
     patch.rejeicao_motivo = parsed.xMotivo;
-    await atualizarNota(notaId, patch);
-    await registrarEvento({
-      notaId, compraId: nota.compra_id, evento: EVENTOS.REJEITADO,
-      status: ESTADOS.REJEITADA,
-      cStat: parsed.cStat,
-      xMotivo: parsed.xMotivo,
-      mensagem: mensagemRejeicaoDetalhada(parsed.cStat, parsed.xMotivo),
-      detalhes: { xmlEnviado: Boolean(nota.xml_enviado || ctx.xmlAssinado), xmlRetorno: Boolean(raw) }
-    });
+    if (acao === ACOES.EXIGE_NOVA_IDENTIDADE) {
+      const { diagnosticarDuplicidadeNfe } = require('./nfeIdentityService');
+      const consultaSefaz = typeof ctx.consultaSefaz === 'function'
+        ? ctx.consultaSefaz
+        : (chave) => consultarChaveParaDiagnostico539(chave, nota.ambiente);
+      const diag = await diagnosticarDuplicidadeNfe({
+        compraId: nota.compra_id,
+        nota: { ...nota, numero: nota.numero, serie: nota.serie, chave_acesso: nota.chave_acesso, ambiente: nota.ambiente, id: notaId },
+        parsed,
+        xmlAtual: ctx.xmlAssinado || nota.xml_enviado,
+        consultaSefaz,
+        documentosRelacionados: ctx.documentosRelacionados
+      });
+      patch.status = diag.estadoFinal || ESTADOS.CONFLITO_IDENTIDADE;
+      if (diag.decisao === 'SINCRONIZAR_DOCUMENTO_AUTORIZADO') {
+        patch.status = ESTADOS.AUTORIZADA;
+        patch.fila_estado = 'autorizado';
+        patch.rejeicao_codigo = null;
+        patch.rejeicao_motivo = null;
+        if (diag.consultaSefaz && diag.consultaSefaz.nProt) patch.protocolo = diag.consultaSefaz.nProt;
+      }
+      await atualizarNota(notaId, patch);
+      await registrarEvento({
+        notaId, compraId: nota.compra_id, evento: EVENTOS.REJEITADO,
+        status: patch.status,
+        cStat: parsed.cStat,
+        xMotivo: parsed.xMotivo,
+        mensagem: mensagemRejeicaoDetalhada(parsed.cStat, parsed.xMotivo),
+        detalhes: { diagnostico539: diag, decisao: diag.decisao }
+      });
+    } else {
+      patch.status = ESTADOS.REJEITADA;
+      await atualizarNota(notaId, patch);
+      await registrarEvento({
+        notaId, compraId: nota.compra_id, evento: EVENTOS.REJEITADO,
+        status: ESTADOS.REJEITADA,
+        cStat: parsed.cStat,
+        xMotivo: parsed.xMotivo,
+        mensagem: mensagemRejeicaoDetalhada(parsed.cStat, parsed.xMotivo),
+        detalhes: { xmlEnviado: Boolean(nota.xml_enviado || ctx.xmlAssinado), xmlRetorno: Boolean(raw) }
+      });
+    }
   }
 
   await registrarAuditoria({
@@ -955,6 +1043,12 @@ async function reenviarNfeDevolucao(notaId, ctx = {}) {
     });
   }
   if (!podeReenviarDevolucao(nota)) {
+    if (xmlRejeicaoFiscalDefinitiva(nota)) {
+      throw Object.assign(
+        new Error(mensagemReenvioXmlEstruturalmenteRejeitado(nota)),
+        { code: 'REENVIO_XML_INVALIDO', statusCode: 400 }
+      );
+    }
     throw Object.assign(
       new Error(`Reenvio não permitido para status "${nota.status}".`),
       { code: 'REENVIO_BLOQUEADO', statusCode: 400 }
@@ -966,6 +1060,17 @@ async function reenviarNfeDevolucao(notaId, ctx = {}) {
       code: 'XML_AUSENTE',
       statusCode: 400
     });
+  }
+  const { calcularHashXml } = require('./nfeXmlIdentityService');
+  const hashAtual = calcularHashXml(xmlAssinado);
+  const hashPersistido = nota.xml_assinado_hash || nota.xml_hash;
+  if (hashPersistido && hashPersistido !== hashAtual) {
+    throw Object.assign(
+      new Error(
+        'Conflito fiscal: esta chave de acesso já está associada a um documento com conteúdo diferente. Uma nova NF-e deve receber nova identidade fiscal.'
+      ),
+      { code: 'CHAVE_XML_CONFLITO', statusCode: 400 }
+    );
   }
 
   const config = await getFiscalConfig();

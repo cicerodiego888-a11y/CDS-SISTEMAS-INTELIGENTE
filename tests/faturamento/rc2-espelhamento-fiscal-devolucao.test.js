@@ -150,6 +150,7 @@ describe('RC2 — Builder XML final com espelhamento', () => {
         chave_acesso: CHAVE44,
         fornecedor: 'Fornecedor Teste',
         fornecedor_cnpj: '12345678000199',
+        cidade: 'Juazeiro do Norte',
         uf: 'CE'
       },
       itens,
@@ -159,7 +160,8 @@ describe('RC2 — Builder XML final com espelhamento', () => {
     assert.match(built.xmlSemAssinatura, /<finNFe>4<\/finNFe>/);
     assert.match(built.xmlSemAssinatura, /<ICMS00>/);
     assert.match(built.xmlSemAssinatura, /<ICMS10>/);
-    assert.match(built.xmlSemAssinatura, /<ICMSSN102>/);
+    assert.match(built.xmlSemAssinatura, /<ICMS40>/);
+    assert.doesNotMatch(built.xmlSemAssinatura, /<ICMSSN/);
     assert.match(built.xmlSemAssinatura, /<vICMSST>13\.20<\/vICMSST>/);
     assert.match(built.xmlSemAssinatura, /<ICMSUFDest>/);
     assert.match(built.xmlSemAssinatura, /<CEST>0300100<\/CEST>/);

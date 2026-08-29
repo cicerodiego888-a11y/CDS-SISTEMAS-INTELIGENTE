@@ -36,6 +36,8 @@ async function getFiscalConfig({ validarUrls = true } = {}) {
     'fiscal_codigo_uf',
     'fiscal_serie',
     'fiscal_numero_atual',
+    'fiscal_serie_nfe',
+    'fiscal_numero_atual_nfe',
     'fiscal_token_csc',
     'fiscal_id_csc',
     'fiscal_certificado_path',
@@ -107,12 +109,26 @@ async function getFiscalConfig({ validarUrls = true } = {}) {
     );
   }
 
-  return {
+  const out = {
     ambiente: ambienteFiscal,
     uf: cfg.fiscal_uf_sigla || cfg.fiscal_uf || 'CE',
     codigoUf: String(cfg.fiscal_codigo_uf || '23'),
     serie: Number(cfg.fiscal_serie || 1),
     numeroAtual: Number(cfg.fiscal_numero_atual || 1),
+    serieNfe: Number(cfg.fiscal_serie_nfe || cfg.fiscal_serie || 1),
+    numeroAtualNfe: Number(cfg.fiscal_numero_atual_nfe || 0),
+    numeracaoDocumentos: {
+      nfce: {
+        modelo: '65',
+        serie: Number(cfg.fiscal_serie || 1),
+        proximoNumero: Number(cfg.fiscal_numero_atual || 0) + 1
+      },
+      nfe: {
+        modelo: '55',
+        serie: Number(cfg.fiscal_serie_nfe || cfg.fiscal_serie || 1),
+        proximoNumero: Number(cfg.fiscal_numero_atual_nfe || 0) || 1
+      }
+    },
     tokenCSC: cfg.fiscal_token_csc || '',
     idCSC: cfg.fiscal_id_csc || '',
     certificadoPath: cfg.fiscal_certificado_path || '',
@@ -141,6 +157,24 @@ async function getFiscalConfig({ validarUrls = true } = {}) {
     urlsHomologacao,
     urlsProducao
   };
+  try {
+    const numeracao = require('./numeracaoFiscalService');
+    await numeracao.migrarNumeracaoSeNecessario({ cnpj: out.cnpj, ambiente: out.ambiente });
+    const nfe = await numeracao.obterProximaNumeracaoFiscal({
+      cnpj: out.cnpj,
+      ambiente: out.ambiente,
+      modelo: '55',
+      serie: out.serieNfe
+    });
+    out.serieNfe = nfe.serie;
+    out.numeroAtualNfe = nfe.numero;
+    out.numeracaoDocumentos.nfe = {
+      modelo: '55',
+      serie: nfe.serie,
+      proximoNumero: nfe.numero
+    };
+  } catch (_) { /* numeração opcional no GET */ }
+  return out;
 }
 
 function setConfiguracao(chave, valor, tipo = 'string', descricao = '') {
@@ -199,6 +233,14 @@ async function incrementaNumeroFiscal() {
         console.log(`[FISCAL] Próximo número salvo: ${numeroSeguro + 1}`);
 
         resolve(numeroSeguro);
+        const numeracao = require('./numeracaoFiscalService');
+        getConfiguracoes(['cnpj']).then((cnpjRow) => numeracao.upsertNumeracao({
+          cnpj: cnpjRow.cnpj,
+          ambiente,
+          modelo: '65',
+          serie,
+          proximoNumero: numeroSeguro + 1
+        })).catch(() => {});
       } catch (e) {
         reject(e);
       }

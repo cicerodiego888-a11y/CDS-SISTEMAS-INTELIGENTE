@@ -28,7 +28,9 @@ const {
   uiDoEstado,
   podeReenviarDevolucao,
   podeCancelarDevolucao,
-  mensagemRejeicaoDetalhada
+  mensagemRejeicaoDetalhada,
+  xmlRejeicaoFiscalDefinitiva,
+  mensagemReenvioXmlEstruturalmenteRejeitado
 } = require('./nfeDevolucaoEstados');
 const {
   cancelarNfeDevolucaoVenda,
@@ -125,7 +127,12 @@ async function garantirSchemaLifecycle() {
     `ALTER TABLE nfe_devolucoes_venda ADD COLUMN ultimo_ip TEXT`,
     `ALTER TABLE nfe_devolucoes_venda ADD COLUMN ultimo_computador TEXT`,
     `ALTER TABLE nfe_devolucoes_venda ADD COLUMN rejeicao_codigo TEXT`,
-    `ALTER TABLE nfe_devolucoes_venda ADD COLUMN rejeicao_motivo TEXT`
+    `ALTER TABLE nfe_devolucoes_venda ADD COLUMN rejeicao_motivo TEXT`,
+    `ALTER TABLE nfe_devolucoes_venda ADD COLUMN xml_hash TEXT`,
+    `ALTER TABLE nfe_devolucoes_venda ADD COLUMN xml_assinado_hash TEXT`,
+    `ALTER TABLE nfe_devolucoes_venda ADD COLUMN cnf TEXT`,
+    `ALTER TABLE nfe_devolucoes_venda ADD COLUMN tp_emis TEXT`,
+    `ALTER TABLE nfe_devolucoes_venda ADD COLUMN identidade_congelada INTEGER DEFAULT 0`
   ];
   for (const sql of alters) {
     try {
@@ -180,9 +187,12 @@ async function obterNota(notaId) {
 
 async function atualizarNota(notaId, fields = {}) {
   await garantirSchemaLifecycle();
+  const nota = await obterNota(notaId);
+  const { filtrarCamposIdentidadeSeCongelado } = require('./nfeIdentityService');
+  const seguro = filtrarCamposIdentidadeSeCongelado(nota, fields);
   const cols = [];
   const params = [];
-  for (const [k, v] of Object.entries(fields)) {
+  for (const [k, v] of Object.entries(seguro)) {
     if (v === undefined) continue;
     cols.push(`${k} = ?`);
     params.push(v);
@@ -454,20 +464,72 @@ async function aposPersistirEmissao(notaId, ctx = {}) {
       status, mensagem: ctx.message || parsed.xMotivo || status
     });
   } else {
-    // rejeitada / outros
-    patch.status = ESTADOS.REJEITADA;
+    const { acaoDoCstat, ACOES } = require('./classificarRetornoSefaz');
+    const acao = acaoDoCstat(parsed.cStat);
     patch.fila_estado = 'erro';
     patch.rejeicao_codigo = parsed.cStat;
     patch.rejeicao_motivo = parsed.xMotivo;
-    await atualizarNota(notaId, patch);
-    await registrarEvento({
-      notaId, compraId: nota.venda_id, evento: EVENTOS.REJEITADO,
-      status: ESTADOS.REJEITADA,
-      cStat: parsed.cStat,
-      xMotivo: parsed.xMotivo,
-      mensagem: mensagemRejeicaoDetalhada(parsed.cStat, parsed.xMotivo),
-      detalhes: { xmlEnviado: Boolean(nota.xml_enviado || ctx.xmlAssinado), xmlRetorno: Boolean(raw) }
-    });
+    if (acao === ACOES.EXIGE_NOVA_IDENTIDADE) {
+      const { diagnosticarDuplicidadeNfe } = require('./nfeIdentityService');
+      const consultaSefaz = typeof ctx.consultaSefaz === 'function'
+        ? ctx.consultaSefaz
+        : async (chave) => {
+          try {
+            const config = await getFiscalConfig();
+            const consulta = await consultarProtocolo({
+              chave,
+              modelo: ModelType.NFE,
+              ambiente: nota.ambiente || config.ambiente,
+              cUF: config.codigoUf,
+              certificadoPath: config.certificadoPath,
+              certificadoSenha: config.certificadoSenha
+            });
+            if (!consulta || !consulta.success) {
+              return { indeterminado: true, erro: (consulta && consulta.error) || 'consulta falhou' };
+            }
+            const p = parseRetornoAutorizacaoNfe(String(consulta.body || ''));
+            return { cStat: p.cStat, nProt: p.nProt, chNFe: chave, xMotivo: p.xMotivo };
+          } catch (e) {
+            return { indeterminado: true, erro: String(e.message || e) };
+          }
+        };
+      const diag = await diagnosticarDuplicidadeNfe({
+        vendaId: nota.venda_id,
+        nota: { ...nota, id: notaId },
+        parsed,
+        xmlAtual: ctx.xmlAssinado || nota.xml_enviado,
+        consultaSefaz,
+        documentosRelacionados: ctx.documentosRelacionados
+      });
+      patch.status = diag.estadoFinal || ESTADOS.CONFLITO_IDENTIDADE;
+      if (diag.decisao === 'SINCRONIZAR_DOCUMENTO_AUTORIZADO') {
+        patch.status = ESTADOS.AUTORIZADA;
+        patch.fila_estado = 'autorizado';
+        patch.rejeicao_codigo = null;
+        patch.rejeicao_motivo = null;
+        if (diag.consultaSefaz && diag.consultaSefaz.nProt) patch.protocolo = diag.consultaSefaz.nProt;
+      }
+      await atualizarNota(notaId, patch);
+      await registrarEvento({
+        notaId, compraId: nota.venda_id, evento: EVENTOS.REJEITADO,
+        status: patch.status,
+        cStat: parsed.cStat,
+        xMotivo: parsed.xMotivo,
+        mensagem: mensagemRejeicaoDetalhada(parsed.cStat, parsed.xMotivo),
+        detalhes: { diagnostico539: diag, decisao: diag.decisao }
+      });
+    } else {
+      patch.status = ESTADOS.REJEITADA;
+      await atualizarNota(notaId, patch);
+      await registrarEvento({
+        notaId, compraId: nota.venda_id, evento: EVENTOS.REJEITADO,
+        status: ESTADOS.REJEITADA,
+        cStat: parsed.cStat,
+        xMotivo: parsed.xMotivo,
+        mensagem: mensagemRejeicaoDetalhada(parsed.cStat, parsed.xMotivo),
+        detalhes: { xmlEnviado: Boolean(nota.xml_enviado || ctx.xmlAssinado), xmlRetorno: Boolean(raw) }
+      });
+    }
   }
 
   await registrarAuditoria({
@@ -955,6 +1017,12 @@ async function reenviarNfeDevolucao(notaId, ctx = {}) {
     });
   }
   if (!podeReenviarDevolucao(nota)) {
+    if (xmlRejeicaoFiscalDefinitiva(nota)) {
+      throw Object.assign(
+        new Error(mensagemReenvioXmlEstruturalmenteRejeitado(nota)),
+        { code: 'REENVIO_XML_INVALIDO', statusCode: 400 }
+      );
+    }
     throw Object.assign(
       new Error(`Reenvio não permitido para status "${nota.status}".`),
       { code: 'REENVIO_BLOQUEADO', statusCode: 400 }
@@ -966,6 +1034,17 @@ async function reenviarNfeDevolucao(notaId, ctx = {}) {
       code: 'XML_AUSENTE',
       statusCode: 400
     });
+  }
+  const { calcularHashXml } = require('./nfeXmlIdentityService');
+  const hashAtual = calcularHashXml(xmlAssinado);
+  const hashPersistido = nota.xml_assinado_hash || nota.xml_hash;
+  if (hashPersistido && hashPersistido !== hashAtual) {
+    throw Object.assign(
+      new Error(
+        'Conflito fiscal: esta chave de acesso já está associada a um documento com conteúdo diferente. Uma nova NF-e deve receber nova identidade fiscal.'
+      ),
+      { code: 'CHAVE_XML_CONFLITO', statusCode: 400 }
+    );
   }
 
   const config = await getFiscalConfig();

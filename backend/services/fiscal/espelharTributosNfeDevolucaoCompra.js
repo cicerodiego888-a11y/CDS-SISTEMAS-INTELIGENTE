@@ -377,6 +377,10 @@ function espelharDet(origemDet, qtdDevolvida) {
 
   const valorUnit = Number(origemDet.vUnCom) || 0;
   const vProd = round2(qDev * valorUnit);
+  const vFrete = round2((Number(origemDet.vFrete) || 0) * fator);
+  const vSeg = round2((Number(origemDet.vSeg) || 0) * fator);
+  const vDesc = round2((Number(origemDet.vDesc) || 0) * fator);
+  const vOutro = round2((Number(origemDet.vOutro) || 0) * fator);
 
   return {
     nItemOrigem: origemDet.nItem,
@@ -389,6 +393,10 @@ function espelharDet(origemDet, qtdDevolvida) {
     quantidade_original: qOrig,
     quantidade: qDev,
     vProd,
+    vFrete,
+    vSeg,
+    vDesc,
+    vOutro,
     tributos: tributosEspelhados,
     original: {
       nItem: origemDet.nItem,
@@ -436,6 +444,12 @@ function flattenParaItem(espelhado) {
     p_ipi: ipi.pIPI,
     v_ipi: ipi.vIPI,
     v_ipi_devol: ipi.vIPI,
+    v_ipi_original: Number(espelhado.original?.tributos?.ipi?.vIPI) || 0,
+    quantidade_original: espelhado.quantidade_original,
+    vFrete: espelhado.vFrete || 0,
+    vSeg: espelhado.vSeg || 0,
+    vDesc: espelhado.vDesc || 0,
+    vOutro: espelhado.vOutro || 0,
     tributosEspelhados: t,
     impostoEspelhadoXml: montarImpostoXmlEspelhado(espelhado),
     espelhamento: espelhado

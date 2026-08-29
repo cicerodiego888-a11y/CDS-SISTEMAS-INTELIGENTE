@@ -1477,6 +1477,13 @@ function aplicarPoliticaEntradaCompra() {
     reenriquecerItensFiscalCompra();
 }
 
+/** Evita duplicar XML grande no JSON enviado às APIs fiscais de compra. */
+function dadosCompraSemXmlParaApi(dados = {}) {
+    if (!dados || typeof dados !== 'object') return {};
+    const { xml, ...rest } = dados;
+    return rest;
+}
+
 async function classificarEntradaCompraApi(dadosCompra) {
     try {
         const resp = await fetch(`${API_URL}/compras/classificar-entrada`, {
@@ -1486,7 +1493,7 @@ async function classificarEntradaCompraApi(dadosCompra) {
                 Authorization: `Bearer ${localStorage.getItem('token') || ''}`
             },
             body: JSON.stringify({
-                dadosCompra: dadosCompra || {},
+                dadosCompra: dadosCompraSemXmlParaApi(dadosCompra),
                 fornecedor_cnpj: dadosCompra?.fornecedor_cnpj,
                 xml: dadosCompra?.xml || null
             })
@@ -5567,7 +5574,7 @@ async function mostrarResumoFiscalObrigatorio(data, isUsoConsumo, isNotaAvulsa) 
             body: JSON.stringify({
                 xml: data.xml,
                 tipo_entrada: data.tipo_entrada,
-                dadosCompra: data,
+                dadosCompra: dadosCompraSemXmlParaApi(data),
                 fornecedor: data.fornecedor,
                 valor_total_nota: data.valor_total_nota || data.total
             })
@@ -6273,6 +6280,173 @@ function confirmarDevolucaoCompra(id) {
     });
 }
 
+/** Descrições oficiais dos CFOPs usados em devolução (somente UX / exibição). */
+const CFOP_DESCRICOES_DEVOLUCAO = Object.freeze({
+    '1202': 'Devolução de venda de mercadoria adquirida ou recebida de terceiros',
+    '1411': 'Devolução de mercadoria adquirida ou recebida de terceiros em operação com ST',
+    '2202': 'Devolução de venda de mercadoria adquirida ou recebida de terceiros',
+    '2411': 'Devolução de mercadoria adquirida ou recebida de terceiros em operação com ST',
+    '5201': 'Devolução de compra para industrialização',
+    '5202': 'Devolução de compra para comercialização',
+    '5411': 'Devolução de compra para comercialização em operação com ST',
+    '6201': 'Devolução de compra para industrialização',
+    '6202': 'Devolução de compra para comercialização',
+    '6411': 'Devolução de compra para comercialização em operação com ST'
+});
+
+function formatarCodigoCfopExibicao(cfop) {
+    const d = String(cfop || '').replace(/\D/g, '').slice(0, 4);
+    if (d.length !== 4) return d || '—';
+    return `${d[0]}.${d.slice(1)}`;
+}
+
+function obterDescricaoCfopDevolucao(cfop) {
+    const d = String(cfop || '').replace(/\D/g, '').slice(0, 4);
+    if (!d) return '';
+    const desc = CFOP_DESCRICOES_DEVOLUCAO[d];
+    if (desc) return `${formatarCodigoCfopExibicao(d)} — ${desc}`;
+    return `${formatarCodigoCfopExibicao(d)} — CFOP informado`;
+}
+
+function atualizarDescricaoCfopNfeDevolucao() {
+    const cfop = String($('#nfeDevCfopPadrao').val() || '').replace(/\D/g, '').slice(0, 4);
+    const $el = $('#nfeDevCfopDescricao');
+    if (!$el.length) return;
+    $el.text(cfop ? obterDescricaoCfopDevolucao(cfop) : 'Informe o CFOP para ver a descrição.');
+}
+
+function filtrarProdutosNfeDevolucaoCompra() {
+    const termo = String($('#nfeDevBuscaProduto').val() || '').trim().toLowerCase();
+    const $rows = $('#nfeDevProdutosTabela tbody tr.nfe-dev-produto-row');
+    let visiveis = 0;
+
+    $rows.each(function() {
+        if (!termo) {
+            $(this).show();
+            visiveis += 1;
+            return;
+        }
+        const nome = String($(this).attr('data-produto-nome') || '').toLowerCase();
+        const codigo = String($(this).attr('data-produto-codigo') || '').toLowerCase();
+        const match = nome.includes(termo) || codigo.includes(termo);
+        $(this).toggle(match);
+        if (match) visiveis += 1;
+    });
+
+    const $vazio = $('#nfeDevBuscaVazio');
+    if ($vazio.length) {
+        $vazio.toggle(termo.length > 0 && visiveis === 0);
+    }
+}
+
+function coletarItensFormularioNfeDevolucaoCompra(opcoes = {}) {
+    const itens = [];
+    let excedeu = false;
+    $('#modalNFeDevolucaoCompra .nfe-dev-qtd').each(function() {
+        const qtd = Number($(this).val() || 0);
+        if (!(qtd > 0)) return;
+        const max = Number($(this).data('max') || 0);
+        if (qtd > max + 1e-9) {
+            if (opcoes.notificarExcesso !== false) {
+                showNotification(
+                    `Quantidade ${qtd} excede o Disponível para Devolver (${max}).`,
+                    'warning'
+                );
+            }
+            excedeu = true;
+            return false;
+        }
+        itens.push({
+            compra_item_id: Number($(this).data('compra-item-id')),
+            produto_id: Number($(this).data('produto-id')) || null,
+            produto_nome: String($(this).closest('tr').attr('data-produto-nome') || '').trim() || null,
+            quantidade: qtd,
+            valor_unitario: Number($(this).data('valor-unitario') || 0),
+            cfop: String($('#nfeDevCfopPadrao').val() || '').replace(/\D/g, '').slice(0, 4)
+        });
+    });
+    return { itens, excedeu };
+}
+
+function coletarPayloadRascunhoDevolucaoCompra(compraId) {
+    const chave = String($('#chaveNFeFornecedorDevolucao').val() || '').replace(/\D/g, '');
+    const fornecedor = String($('#nfeDevFornecedorNome').val() || '').trim();
+    const { itens, excedeu } = coletarItensFormularioNfeDevolucaoCompra();
+    return {
+        excedeu,
+        payload: {
+            compra_id: Number(compraId),
+            fornecedor,
+            chave_nfe_original: chave,
+            refNFe: chave,
+            cfop: String($('#nfeDevCfopPadrao').val() || '').replace(/\D/g, '').slice(0, 4) || undefined,
+            observacoes: String($('#nfeDevObservacoes').val() || '').trim() || undefined,
+            itens
+        }
+    };
+}
+
+function aplicarRascunhoNfeDevolucaoCompra(rascunho) {
+    if (!rascunho) return;
+    if (rascunho.cfop) $('#nfeDevCfopPadrao').val(String(rascunho.cfop));
+    if (rascunho.observacoes != null) $('#nfeDevObservacoes').val(String(rascunho.observacoes));
+    const mapa = new Map(
+        (rascunho.itens || []).map((i) => [Number(i.compra_item_id), i])
+    );
+    $('#modalNFeDevolucaoCompra .nfe-dev-qtd').each(function() {
+        const itemId = Number($(this).data('compra-item-id'));
+        const salvo = mapa.get(itemId);
+        $(this).val(salvo ? Number(salvo.quantidade || 0) : 0);
+    });
+    atualizarDescricaoCfopNfeDevolucao();
+}
+
+function oferecerRetomarRascunhoDevolucaoCompra(compraId, rascunho) {
+    if (!rascunho || rascunho.status !== 'RASCUNHO') return;
+    const quando = rascunho.updated_at || rascunho.created_at || '';
+    const qtdItens = (rascunho.itens || []).length;
+    const msg = `Existe um rascunho salvo${quando ? ` em ${quando}` : ''} com ${qtdItens} produto(s).\n\nDeseja continuar de onde parou?`;
+    if (confirm(msg)) {
+        aplicarRascunhoNfeDevolucaoCompra(rascunho);
+        showNotification('Rascunho carregado. Revise as quantidades antes de emitir.', 'info');
+        return;
+    }
+    if (confirm('Descartar o rascunho salvo e começar do zero?')) {
+        $.ajax({
+            url: `${API_URL}/compras/${compraId}/nfe-devolucao/rascunho`,
+            method: 'DELETE'
+        }).done(function() {
+            showNotification('Rascunho descartado.', 'info');
+        });
+    }
+}
+
+function salvarRascunhoDevolucaoCompra(compraId) {
+    const { excedeu, payload } = coletarPayloadRascunhoDevolucaoCompra(compraId);
+    if (excedeu) return;
+    if (!payload.itens.length) {
+        showNotification('Informe a quantidade a devolver de pelo menos um produto para salvar o rascunho.', 'warning');
+        return;
+    }
+
+    const $btn = $('#btnSalvarRascunhoNfeDev');
+    $btn.prop('disabled', true).text('Salvando…');
+
+    $.ajax({
+        url: `${API_URL}/compras/${compraId}/nfe-devolucao/rascunho`,
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify(payload)
+    }).done(function(resp) {
+        showNotification(resp.message || 'Rascunho salvo. Você pode continuar depois.', 'success');
+        $('#modalNFeDevolucaoCompra').modal('hide');
+    }).fail(function(xhr) {
+        showNotification(xhr.responseJSON?.error || 'Erro ao salvar rascunho.', 'danger');
+    }).always(function() {
+        $btn.prop('disabled', false).text('Salvar e Continuar Depois');
+    });
+}
+
 function abrirModalNFeDevolucaoCompra(id) {
     $.ajax({
         url: `${API_URL}/compras/${id}/nfe-devolucao/preparar`,
@@ -6300,46 +6474,54 @@ function abrirModalNFeDevolucaoCompra(id) {
             return `<span class="badge bg-secondary">${escapeHtml(ui.label || '-')}</span>`;
         };
 
-        const linhasPainel = (itensPainel.length ? itensPainel : itens).map((item) => `
-            <tr>
-                <td>${escapeHtml(item.produto_nome || '-')}</td>
-                <td class="text-end">${Number(item.quantidade_comprada != null ? item.quantidade_comprada : (item.quantidade || 0))}</td>
-                <td class="text-end">${Number(item.quantidade_devolvida || 0)}</td>
-                <td class="text-end fw-semibold">${Number(item.saldo != null ? item.saldo : (item.quantidade_maxima || 0))}</td>
-                <td>${badgeSaldo(item.status_ui)}</td>
-            </tr>
-        `).join('');
+        // Tabela única: itens emitíveis + itens sem saldo (somente leitura), sem duplicar.
+        const mapaEmitiveis = new Map(
+            (itens || []).map((it) => [Number(it.compra_item_id), it])
+        );
+        const basePainel = (itensPainel && itensPainel.length) ? itensPainel : (itens || []);
+        const idsPainel = new Set(basePainel.map((it) => Number(it.compra_item_id)));
+        const produtosTabela = [
+            ...basePainel.map((p) => {
+                const emitivel = mapaEmitiveis.get(Number(p.compra_item_id));
+                return emitivel ? { ...p, ...emitivel } : p;
+            }),
+            ...itens.filter((it) => !idsPainel.has(Number(it.compra_item_id)))
+        ];
 
-        const linhas = itens.map((item, idx) => `
-            <tr data-idx="${idx}">
-                <td>${escapeHtml(item.produto_nome || '-')}</td>
-                <td class="text-end small">${Number(item.quantidade_comprada || 0)}</td>
-                <td class="text-end small">${Number(item.quantidade_devolvida || 0)}</td>
-                <td class="text-end small text-primary">${Number(item.saldo != null ? item.saldo : (item.quantidade_maxima || 0))}</td>
+        const linhas = produtosTabela.map((item, idx) => {
+            const disponivel = Number(
+                item.saldo != null
+                    ? item.saldo
+                    : (item.quantidade_maxima != null ? item.quantidade_maxima : 0)
+            );
+            const semSaldo = !(disponivel > 0);
+            const inputDesabilitado = bloqueado || semSaldo;
+            const nomeProduto = item.produto_nome || '-';
+            const codigoProduto = item.produto_codigo || '';
+            return `
+            <tr class="nfe-dev-produto-row" data-idx="${idx}"
+                data-produto-nome="${escapeHtml(nomeProduto)}"
+                data-produto-codigo="${escapeHtml(codigoProduto)}">
                 <td>
-                    <input type="number" min="0.001" step="0.001"
+                    <strong>${escapeHtml(nomeProduto)}</strong>
+                    ${codigoProduto ? `<br><small class="text-muted">Cód: ${escapeHtml(codigoProduto)}</small>` : ''}
+                </td>
+                <td class="text-end">${Number(item.quantidade_comprada != null ? item.quantidade_comprada : 0)}</td>
+                <td class="text-end">${Number(item.quantidade_devolvida || 0)}</td>
+                <td class="text-end fw-semibold text-primary">${disponivel}</td>
+                <td>
+                    <input type="number" min="0" step="0.001"
                         class="form-control form-control-sm nfe-dev-qtd"
                         data-compra-item-id="${item.compra_item_id}"
                         data-produto-id="${item.produto_id || ''}"
                         data-valor-unitario="${Number(item.valor_unitario || 0)}"
-                        data-max="${Number(item.saldo != null ? item.saldo : (item.quantidade_maxima || item.quantidade || 0))}"
-                        value="${Number(item.quantidade || 0)}"
-                        ${bloqueado ? 'disabled' : ''}
+                        data-max="${disponivel}"
+                        value="0"
+                        ${inputDesabilitado ? 'disabled' : ''}
                     >
                 </td>
-                <td>
-                    <input type="text" maxlength="4" class="form-control form-control-sm nfe-dev-cfop"
-                        value="${escapeHtml(item.cfop || prep.cfopSugerido || '5202')}"
-                        ${bloqueado ? 'disabled' : ''}
-                    >
-                </td>
-                <td class="small text-muted">
-                    ${badgeSaldo(item.status_ui)}
-                    <br>CSOSN/CST: ${escapeHtml(item.csosn || item.cst || '-')}
-                    ${item.espelhamento_ok ? '<br><span class="badge bg-success">Espelhado</span>' : ''}
-                </td>
-            </tr>
-        `).join('');
+            </tr>`;
+        }).join('');
 
         const tribOrig = prep.tributacaoOriginal || {};
         const painelTribHtml = Object.keys(tribOrig).length
@@ -6411,13 +6593,20 @@ Protocolo: ${escapeHtml(n.protocolo || '-')}
 Última consulta: ${escapeHtml(n.consultado_em || n.sincronizado_em || '-')}
 ═══════════════════════════════</pre>
                             ${n.rejeicao ? `<div class="alert alert-danger py-2 small mb-2" style="white-space:pre-wrap">${escapeHtml(n.rejeicao)}</div>` : ''}
+                            ${acoes.gerarNovaIdentidade && acoes.mensagemNovaIdentidade ? `<div class="alert alert-warning py-2 small mb-2" style="white-space:pre-wrap">${escapeHtml(acoes.mensagemNovaIdentidade)}</div>` : ''}
                             <div class="text-muted small" style="word-break:break-all">Chave: ${escapeHtml(n.chave_acesso || '-')}</div>
                             <div class="d-flex flex-wrap gap-2 mt-2">
-                                ${acoes.downloadXml || n.tem_xml ? `<a class="btn btn-sm btn-outline-primary" target="_blank" href="${API_URL}/compras/nfe-devolucao/${n.id}/xml?tipo=assinado">XML</a>` : ''}
-                                ${n.tem_danfe ? `<a class="btn btn-sm btn-outline-secondary" target="_blank" href="${API_URL}/compras/nfe-devolucao/${n.id}/danfe">DANFE</a>` : ''}
+                                ${/autorizad/i.test(String(n.status || '')) ? `
+                                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="abrirDanfe({tipo:'DEVOLUCAO_COMPRA',id:${n.id},chave:'${escapeHtml(n.chave_acesso || '')}',numero:'${escapeHtml(String(n.numero || ''))}',serie:'${escapeHtml(String(n.serie || ''))}'})">👁 DANFE</button>
+                                <button type="button" class="btn btn-sm btn-outline-primary" onclick="abrirDanfe({tipo:'DEVOLUCAO_COMPRA',id:${n.id},imprimir:true})">🖨 Reimprimir</button>
+                                <button type="button" class="btn btn-sm btn-outline-primary" onclick="baixarDanfePdf({tipo:'DEVOLUCAO_COMPRA',id:${n.id},chave:'${escapeHtml(n.chave_acesso || '')}'})">📄 PDF</button>
+                                <button type="button" class="btn btn-sm btn-outline-dark" onclick="baixarXmlNfe55({tipo:'DEVOLUCAO_COMPRA',id:${n.id},chave:'${escapeHtml(n.chave_acesso || '')}'})">&lt;/&gt; XML</button>
+                                ` : ''}
+                                ${!/autorizad/i.test(String(n.status || '')) && (acoes.downloadXml || n.tem_xml) ? `<a class="btn btn-sm btn-outline-secondary" target="_blank" href="${API_URL}/compras/nfe-devolucao/${n.id}/xml?tipo=assinado">XML assinado</a>` : ''}
                                 ${n.tem_danfe_cancelado ? `<a class="btn btn-sm btn-outline-secondary" target="_blank" href="${API_URL}/compras/nfe-devolucao/${n.id}/danfe?tipo=cancelado">DANFE cancelado</a>` : ''}
                                 ${acoes.consultar !== false && n.chave_acesso ? `<button type="button" class="btn btn-sm btn-outline-info" onclick="consultarSituacaoNfeDevolucao(${n.id}, ${compra.id || id})">Consultar Situação</button>` : ''}
                                 ${acoes.reenviar ? `<button type="button" class="btn btn-sm btn-outline-warning" onclick="reenviarNfeDevolucaoCompra(${n.id}, ${compra.id || id})">Reenviar</button>` : ''}
+                                ${acoes.gerarNovaIdentidade ? `<button type="button" class="btn btn-sm btn-danger" onclick="gerarNovaNfeDevolucaoCompra(${compra.id || id}, ${n.id})">Gerar nova NF-e</button>` : ''}
                                 ${acoes.cancelar ? `<button type="button" class="btn btn-sm btn-outline-danger" onclick="cancelarNfeDevolucaoCompra(${n.id}, ${compra.id || id})">Cancelar (SEFAZ)</button>` : ''}
                                 <button type="button" class="btn btn-sm btn-outline-dark" onclick="abrirTimelineNfeDevolucao(${n.id})">Histórico / Timeline</button>
                             </div>
@@ -6429,16 +6618,27 @@ Protocolo: ${escapeHtml(n.protocolo || '-')}
             : '<div class="text-muted small mt-3" id="nfeDevHistoricoVazio">Nenhuma NF-e de devolução emitida ainda.</div>';
 
         const modalHtml = `
-            <div class="modal fade" id="modalNFeDevolucaoCompra" tabindex="-1">
+            <div class="modal fade" id="modalNFeDevolucaoCompra" tabindex="-1" data-modo="EDICAO">
                 <div class="modal-dialog modal-xl modal-dialog-scrollable">
                     <div class="modal-content">
+                        <style>
+                            #modalNFeDevolucaoCompra[data-modo="EDICAO"] #nfeDevPainelPrevia,
+                            #modalNFeDevolucaoCompra[data-modo="EDICAO"] [data-etapa="PREVIA"] {
+                                display: none !important;
+                            }
+                            #modalNFeDevolucaoCompra[data-modo="PREVIA"] #nfeDevPainelFormulario,
+                            #modalNFeDevolucaoCompra[data-modo="PREVIA"] [data-etapa="EDICAO"] {
+                                display: none !important;
+                            }
+                        </style>
                         <div class="modal-header bg-danger text-white">
-                            <h5 class="modal-title">
+                            <h5 class="modal-title" id="nfeDevModalTitulo">
                                 <i class="fas fa-file-invoice"></i> Central NF-e — Modo DEVOLUÇÃO
                             </h5>
                             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body">
+                            <div id="nfeDevPainelFormulario">
                             <pre class="border rounded p-3 bg-dark text-warning text-center mb-3" style="font-family: Consolas, monospace; white-space: pre-wrap;">═══════════════════════════════
         NF-e DE DEVOLUÇÃO
 
@@ -6448,6 +6648,11 @@ Referenciando NF-e: ${escapeHtml(chave || '-')}
 ═══════════════════════════════</pre>
 
                             ${prep.motivoBloqueio ? `<div class="alert alert-warning">${escapeHtml(prep.motivoBloqueio)}</div>` : ''}
+                            ${prep.rascunho ? `<div class="alert alert-info py-2 small mb-3" id="nfeDevRascunhoAlert">
+                                <i class="fas fa-save me-1"></i>
+                                Rascunho salvo${prep.rascunho.updated_at ? ` em ${escapeHtml(String(prep.rascunho.updated_at))}` : ''}.
+                                Ao abrir, você pode continuar de onde parou.
+                            </div>` : ''}
                             ${prep.fonteXmlOrigem ? `<div class="alert alert-success py-2 small">XML original carregado (${escapeHtml(prep.fonteXmlOrigem)}). Tributação espelhada item a item.</div>` : ''}
 
                             <ul class="nav nav-tabs mb-3" role="tablist">
@@ -6465,40 +6670,13 @@ Referenciando NF-e: ${escapeHtml(chave || '-')}
                                     </div>
                                     <div class="col-md-4">
                                         <label class="form-label">Destinatário (fornecedor)</label>
+                                        <input type="hidden" id="nfeDevFornecedorNome" value="${escapeHtml(compra.fornecedor || '')}">
                                         <input class="form-control" value="${escapeHtml(compra.fornecedor || '')}" disabled>
                                     </div>
                                     <div class="col-md-4">
                                         <label class="form-label">Chave referenciada (NF original)</label>
                                         <input type="text" id="chaveNFeFornecedorDevolucao" class="form-control"
                                             maxlength="44" value="${escapeHtml(chave)}" disabled>
-                                    </div>
-                                </div>
-
-                                <div class="border rounded p-3 mb-3">
-                                    <div class="d-flex flex-wrap justify-content-between align-items-center mb-2 gap-2">
-                                        <h6 class="mb-0">Controle de Saldo</h6>
-                                        ${badgeSaldo(statusCompraUi)}
-                                    </div>
-                                    <div class="row small mb-2">
-                                        <div class="col-md-4"><strong>Comprado:</strong> ${Number(ctrl.totais?.comprado || 0)}</div>
-                                        <div class="col-md-4"><strong>Devolvido:</strong> ${Number(ctrl.totais?.devolvido || 0)}</div>
-                                        <div class="col-md-4"><strong>Saldo:</strong> ${Number(ctrl.totais?.saldo || 0)}</div>
-                                    </div>
-                                    <div class="table-responsive">
-                                        <table class="table table-sm table-bordered mb-0">
-                                            <thead>
-                                                <tr>
-                                                    <th>Produto</th>
-                                                    <th class="text-end">Comprado</th>
-                                                    <th class="text-end">Devolvido</th>
-                                                    <th class="text-end">Saldo</th>
-                                                    <th>Status</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                ${linhasPainel || '<tr><td colspan="5" class="text-center text-muted">Sem itens</td></tr>'}
-                                            </tbody>
-                                        </table>
                                     </div>
                                 </div>
 
@@ -6513,6 +6691,9 @@ Referenciando NF-e: ${escapeHtml(chave || '-')}
                                         <input type="text" id="nfeDevCfopPadrao" class="form-control"
                                             maxlength="4" value="${escapeHtml(prep.cfopSugerido || '5202')}"
                                             ${bloqueado ? 'disabled' : ''}>
+                                        <div id="nfeDevCfopDescricao" class="form-text text-muted mt-1">
+                                            ${escapeHtml(obterDescricaoCfopDevolucao(prep.cfopSugerido || '5202'))}
+                                        </div>
                                     </div>
                                     <div class="col-md-9">
                                         <label class="form-label">Observações</label>
@@ -6523,24 +6704,39 @@ Referenciando NF-e: ${escapeHtml(chave || '-')}
                                     </div>
                                 </div>
 
-                                <h6>Itens desta emissão (somente com saldo; qtd ≤ saldo)</h6>
+                                <div class="d-flex flex-wrap justify-content-between align-items-center mb-2 gap-2">
+                                    <h6 class="mb-0">Produtos para Devolução</h6>
+                                    ${badgeSaldo(statusCompraUi)}
+                                </div>
+                                <p class="small text-muted mb-2">
+                                    Informe a quantidade que deseja devolver de cada produto. Deixe 0 nos produtos que não serão devolvidos.
+                                </p>
+                                <div class="mb-2">
+                                    <div class="input-group">
+                                        <span class="input-group-text"><i class="fas fa-search"></i></span>
+                                        <input type="search" id="nfeDevBuscaProduto" class="form-control"
+                                            placeholder="Buscar produto por nome ou código"
+                                            autocomplete="off">
+                                    </div>
+                                </div>
                                 <div class="table-responsive">
-                                    <table class="table table-sm table-bordered align-middle">
+                                    <table id="nfeDevProdutosTabela" class="table table-sm table-bordered align-middle">
                                         <thead>
                                             <tr>
                                                 <th>Produto</th>
-                                                <th class="text-end">Comprado</th>
-                                                <th class="text-end">Devolvido</th>
-                                                <th class="text-end">Saldo</th>
-                                                <th>Qtd desta NF-e</th>
-                                                <th>CFOP</th>
-                                                <th>Status / Tributos</th>
+                                                <th class="text-end">Qtd. Comprada</th>
+                                                <th class="text-end">Já Devolvido</th>
+                                                <th class="text-end">Disponível para Devolver</th>
+                                                <th>Quantidade a Devolver</th>
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            ${linhas || '<tr><td colspan="7" class="text-center text-danger">Nenhum item com saldo disponível.</td></tr>'}
+                                            ${linhas || '<tr><td colspan="5" class="text-center text-danger">Nenhum produto disponível para devolução.</td></tr>'}
                                         </tbody>
                                     </table>
+                                    <div id="nfeDevBuscaVazio" class="text-center text-muted small py-2" style="display:none;">
+                                        Nenhum produto encontrado para a busca.
+                                    </div>
                                 </div>
 
                                 ${historicoDev}
@@ -6554,14 +6750,30 @@ Referenciando NF-e: ${escapeHtml(chave || '-')}
                                 ${historicoDev}
                               </div>
                             </div>
+                            </div>
+                            <div id="nfeDevPainelPrevia" class="d-none"></div>
                         </div>
-                        <div class="modal-footer">
-                            <button class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
-                            <button class="btn btn-danger"
+                        <div class="modal-footer" id="nfeDevFooter">
+                            <button type="button" class="btn btn-outline-secondary" data-etapa="EDICAO" data-bs-dismiss="modal">Cancelar</button>
+                            <button type="button" class="btn btn-primary" data-etapa="EDICAO"
+                                id="btnSalvarRascunhoNfeDev"
+                                onclick="salvarRascunhoDevolucaoCompra(${compra.id || id})"
+                                ${bloqueado ? 'disabled' : ''}>
+                                Salvar e Continuar Depois
+                            </button>
+                            <button type="button" class="btn btn-danger" data-etapa="EDICAO"
                                 id="btnEmitirNfeDevolucao"
-                                onclick="confirmarEmissaoNFeDevolucaoCompra(${compra.id || id})"
+                                onclick="abrirPreviaNfeDevolucaoCompra(${compra.id || id})"
                                 ${bloqueado || !itens.length ? 'disabled' : ''}>
                                 Emitir NF-e de Devolução
+                            </button>
+                            <button type="button" class="btn btn-outline-secondary d-none" data-etapa="PREVIA" id="btnVoltarEditarNfeDev"
+                                onclick="voltarEditarPreviaNfeDevolucaoCompra()">
+                                ← Voltar e Editar
+                            </button>
+                            <button type="button" class="btn btn-danger d-none" data-etapa="PREVIA" id="btnConfirmarEmitirNfeDev"
+                                onclick="confirmarEmissaoNFeDevolucaoCompra(${compra.id || id})">
+                                Confirmar e Emitir NF-e
                             </button>
                         </div>
                     </div>
@@ -6572,9 +6784,24 @@ Referenciando NF-e: ${escapeHtml(chave || '-')}
         $('#modalNFeDevolucaoCompra').remove();
         $('body').append(modalHtml);
         $('#modalNFeDevolucaoCompra').modal('show');
+        aplicarModoNfeDevolucao('EDICAO');
         $('#modalNFeDevolucaoCompra').on('hidden.bs.modal', function () {
             $('#modalNFeDevolucaoCompra').remove();
         });
+
+        $('#nfeDevCfopPadrao')
+            .off('input.nfeDevCfop change.nfeDevCfop')
+            .on('input.nfeDevCfop change.nfeDevCfop', atualizarDescricaoCfopNfeDevolucao);
+        atualizarDescricaoCfopNfeDevolucao();
+
+        $('#nfeDevBuscaProduto')
+            .off('input.nfeDevBusca')
+            .on('input.nfeDevBusca', filtrarProdutosNfeDevolucaoCompra);
+
+        if (prep.rascunho && prep.rascunho.status === 'RASCUNHO') {
+            window.__nfeDevRascunhoAtual = prep.rascunho;
+            oferecerRetomarRascunhoDevolucaoCompra(compra.id || id, prep.rascunho);
+        }
 
         if (bloqueado) {
             $('#btnEmitirNfeDevolucao').prop('disabled', true);
@@ -6630,6 +6857,13 @@ function consultarSituacaoNfeDevolucao(notaId, compraId) {
     }).fail(function(xhr) {
         showNotification(xhr.responseJSON?.error || 'Erro na consulta SEFAZ.', 'danger');
     });
+}
+
+function gerarNovaNfeDevolucaoCompra(compraId) {
+    const rascunho = window.__nfeDevRascunhoAtual;
+    if (rascunho) aplicarRascunhoNfeDevolucaoCompra(rascunho);
+    showNotification('Dados da devolução preservados. A nova NF-e usará nova numeração fiscal.', 'info');
+    abrirPreviaNfeDevolucaoCompra(compraId);
 }
 
 function reenviarNfeDevolucaoCompra(notaId, compraId) {
@@ -6699,43 +6933,191 @@ function salvarChaveNFeFornecedor(id) {
     });
 }
 
-function confirmarEmissaoNFeDevolucaoCompra(id) {
-    const chave = String($('#chaveNFeFornecedorDevolucao').val() || '').replace(/\D/g, '');
+function renderizarBannerAuditoriaPreviaNfe(auditoria) {
+    if (!auditoria) return '';
+    const resumo = auditoria.resumo || {};
+    const itens = resumo.itensAuditados != null ? resumo.itensAuditados : resumo.totalItens;
+    if (auditoria.aprovado) {
+        return `<div class="alert alert-success py-2 mb-3">
+            <strong>AUDITORIA FISCAL APROVADA</strong>
+            <div class="small mb-0">Itens auditados: ${itens || 0} · Erros: 0 · Avisos: ${resumo.avisos || 0}</div>
+        </div>`;
+    }
+    const erros = (auditoria.erros || []).map((e) =>
+        `<li><code>${escapeHtml(e.codigo || '')}</code> ${escapeHtml(e.mensagem || '')}</li>`
+    ).join('');
+    return `<div class="alert alert-danger py-2 mb-3">
+        <strong>AUDITORIA FISCAL REPROVADA</strong>
+        <div class="small">A NF-e não será assinada nem transmitida até corrigir:</div>
+        <ul class="small mb-0 mt-1">${erros}</ul>
+    </div>`;
+}
 
+function formatarMoedaNfeDev(valor) {
+    const n = Number(valor || 0);
+    return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+}
+
+function formatarQtdNfeDev(valor) {
+    const n = Number(valor || 0);
+    if (Number.isInteger(n)) return String(n);
+    return n.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 4 });
+}
+
+function linhaTotalPreviaNfeDev(label, valor, opcoes = {}) {
+    const n = Number(valor || 0);
+    if (opcoes.ocultarSeZero && !(n > 0)) return '';
+    return `<div class="d-flex justify-content-between py-1 ${opcoes.classe || ''}">
+        <span>${escapeHtml(label)}</span>
+        <span>${formatarMoedaNfeDev(n)}</span>
+    </div>`;
+}
+
+function renderizarHtmlPreviaNfeDevolucao(previa) {
+    const tot = previa.totais || {};
+    const trib = previa.tributos || {};
+    const itens = previa.itens || [];
+    const linhasItens = itens.map((it) => `
+        <tr>
+            <td>${escapeHtml(String(it.codigo || '—'))}</td>
+            <td>${escapeHtml(String(it.produto || '—'))}</td>
+            <td>${escapeHtml(String(it.unidade || 'UN'))}</td>
+            <td class="text-end">${formatarQtdNfeDev(it.quantidade)}</td>
+            <td class="text-end">${formatarMoedaNfeDev(it.valor_unitario)}</td>
+            <td class="text-end">${formatarMoedaNfeDev(it.desconto)}</td>
+            <td class="text-end fw-semibold">${formatarMoedaNfeDev(it.total)}</td>
+        </tr>
+    `).join('');
+
+    const tribLinhas = [
+        Number(trib.vICMS) > 0 ? linhaTotalPreviaNfeDev('ICMS', trib.vICMS) : '',
+        Number(trib.vST) > 0 ? linhaTotalPreviaNfeDev('ICMS ST', trib.vST) : '',
+        Number(trib.vIPI) > 0 ? linhaTotalPreviaNfeDev('IPI', trib.vIPI) : '',
+        Number(trib.vIPIDevol) > 0 ? linhaTotalPreviaNfeDev('IPI Devolvido', trib.vIPIDevol) : '',
+        Number(trib.vPIS) > 0 ? linhaTotalPreviaNfeDev('PIS (informativo)', trib.vPIS) : '',
+        Number(trib.vCOFINS) > 0 ? linhaTotalPreviaNfeDev('COFINS (informativo)', trib.vCOFINS) : ''
+    ].filter(Boolean).join('');
+
+    return `
+        <h5 class="mb-3"><i class="fas fa-eye me-1"></i> Prévia da NF-e de Devolução</h5>
+        <p class="small text-muted">Revise os dados abaixo. Nada será enviado à SEFAZ até você confirmar a emissão.</p>
+        ${renderizarBannerAuditoriaPreviaNfe(previa.auditoria)}
+
+        <div class="border rounded p-3 mb-3">
+            <h6 class="mb-2">Dados da nova NF-e</h6>
+            <div class="row small g-2">
+                <div class="col-md-4"><strong>Modelo:</strong> ${escapeHtml(String(previa.modelo || '55'))}</div>
+                <div class="col-md-4"><strong>Série:</strong> ${escapeHtml(String(previa.serie != null ? previa.serie : '—'))}</div>
+                <div class="col-md-4"><strong>Número:</strong> ${escapeHtml(String(previa.numero != null ? previa.numero : '—'))}</div>
+                <div class="col-12"><span class="badge bg-success">${escapeHtml(previa.statusPrevia || 'Pronta para emissão')}</span></div>
+            </div>
+        </div>
+
+        <div class="border rounded p-3 mb-3">
+            <h6 class="mb-2">Dados da Nota</h6>
+            <div class="row small g-2">
+                <div class="col-md-6"><strong>Natureza da operação:</strong> ${escapeHtml(previa.natureza || 'DEVOLUCAO DE COMPRA')}</div>
+                <div class="col-md-6"><strong>CFOP:</strong> ${escapeHtml(previa.cfopDescricao || previa.cfop || '—')}</div>
+                <div class="col-12"><strong>Chave da NF-e original:</strong> <span style="word-break:break-all">${escapeHtml(previa.chaveOriginal || '—')}</span></div>
+                <div class="col-md-6"><strong>Fornecedor/Destinatário:</strong> ${escapeHtml((previa.destinatario && previa.destinatario.nome) || previa.fornecedor || '—')}</div>
+                <div class="col-md-6"><strong>CNPJ:</strong> ${escapeHtml((previa.destinatario && previa.destinatario.cnpj) || previa.cnpj || '—')}</div>
+                <div class="col-md-6"><strong>IE:</strong> ${escapeHtml((previa.destinatario && previa.destinatario.ie) || '—')}</div>
+                <div class="col-md-6"><strong>Município / UF:</strong> ${escapeHtml((previa.destinatario && previa.destinatario.municipio) || '—')} / ${escapeHtml((previa.destinatario && previa.destinatario.uf) || '—')}</div>
+                <div class="col-md-6"><strong>Código IBGE:</strong> ${escapeHtml((previa.destinatario && previa.destinatario.cMun) || '—')}</div>
+                <div class="col-12"><strong>Endereço:</strong> ${escapeHtml([previa.destinatario && previa.destinatario.logradouro, previa.destinatario && previa.destinatario.numero, previa.destinatario && previa.destinatario.bairro].filter(Boolean).join(', ') || '—')}</div>
+                <div class="col-12"><strong>Observações:</strong> ${escapeHtml(previa.observacoes || '—')}</div>
+            </div>
+        </div>
+
+        <div class="border rounded p-3 mb-3">
+            <h6 class="mb-2">Itens da Devolução</h6>
+            <div class="table-responsive">
+                <table class="table table-sm table-bordered align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th>Código</th>
+                            <th>Produto</th>
+                            <th>Unidade</th>
+                            <th class="text-end">Quantidade</th>
+                            <th class="text-end">Valor Unitário</th>
+                            <th class="text-end">Desconto</th>
+                            <th class="text-end">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${linhasItens || '<tr><td colspan="7" class="text-center text-muted">Nenhum item com quantidade &gt; 0.</td></tr>'}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-md-6 mb-3">
+                <div class="border rounded p-3 h-100">
+                    <h6 class="mb-2">Totais</h6>
+                    ${linhaTotalPreviaNfeDev('Valor dos Produtos', tot.vProd)}
+                    ${linhaTotalPreviaNfeDev('Desconto', tot.vDesc)}
+                    ${linhaTotalPreviaNfeDev('Frete', tot.vFrete)}
+                    ${linhaTotalPreviaNfeDev('Seguro', tot.vSeg)}
+                    ${linhaTotalPreviaNfeDev('Outras Despesas', tot.vOutro)}
+                    ${linhaTotalPreviaNfeDev('IPI', tot.vIPI)}
+                    ${linhaTotalPreviaNfeDev('IPI Devolvido', tot.vIPIDevol)}
+                    ${linhaTotalPreviaNfeDev('ICMS ST', tot.vST, { ocultarSeZero: true })}
+                    ${linhaTotalPreviaNfeDev('FCP ST', tot.vFCPST, { ocultarSeZero: true })}
+                    <div class="d-flex justify-content-between pt-3 mt-2 border-top align-items-end">
+                        <span class="fw-bold">VALOR TOTAL DA NF-e</span>
+                        <span class="fs-4 fw-bold text-danger">${formatarMoedaNfeDev(tot.vNF)}</span>
+                    </div>
+                    <div class="small text-muted mt-2">PIS e COFINS não entram no valor total (vNF).</div>
+                </div>
+            </div>
+            <div class="col-md-6 mb-3">
+                <div class="border rounded p-3 h-100">
+                    <h6 class="mb-2">Tributos</h6>
+                    ${tribLinhas || '<div class="text-muted small">Nenhum tributo destacado nesta devolução.</div>'}
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function aplicarModoNfeDevolucao(modo) {
+    const m = modo === 'PREVIA' ? 'PREVIA' : 'EDICAO';
+    const $modal = $('#modalNFeDevolucaoCompra');
+    $modal.attr('data-modo', m);
+    $('#nfeDevPainelFormulario').toggleClass('d-none', m === 'PREVIA');
+    $('#nfeDevPainelPrevia').toggleClass('d-none', m !== 'PREVIA');
+    $modal.find('[data-etapa="EDICAO"]').toggleClass('d-none', m === 'PREVIA');
+    $modal.find('[data-etapa="PREVIA"]').toggleClass('d-none', m !== 'PREVIA');
+    const $titulo = $('#nfeDevModalTitulo');
+    if ($titulo.length) {
+        $titulo.html(
+            m === 'PREVIA'
+                ? '<i class="fas fa-eye"></i> Prévia da NF-e — Devolução de Compra'
+                : '<i class="fas fa-file-invoice"></i> Central NF-e — Modo DEVOLUÇÃO'
+        );
+    }
+}
+
+function mostrarPainelPreviaNfeDevolucao(visivel) {
+    aplicarModoNfeDevolucao(visivel ? 'PREVIA' : 'EDICAO');
+}
+
+function voltarEditarPreviaNfeDevolucaoCompra() {
+    mostrarPainelPreviaNfeDevolucao(false);
+}
+
+function abrirPreviaNfeDevolucaoCompra(id) {
+    const chave = String($('#chaveNFeFornecedorDevolucao').val() || '').replace(/\D/g, '');
     if (chave.length !== 44) {
         showNotification('Compra sem chave da NF-e (44 dígitos).', 'warning');
         return;
     }
 
-    const itens = [];
-    let excedeu = false;
-    $('#modalNFeDevolucaoCompra .nfe-dev-qtd').each(function() {
-        const qtd = Number($(this).val() || 0);
-        if (!(qtd > 0)) return;
-        const max = Number($(this).data('max') || 0);
-        if (qtd > max + 1e-9) {
-            showNotification(`Quantidade ${qtd} excede o saldo disponível (${max}).`, 'warning');
-            excedeu = true;
-            return false;
-        }
-        const $tr = $(this).closest('tr');
-        itens.push({
-            compra_item_id: Number($(this).data('compra-item-id')),
-            produto_id: Number($(this).data('produto-id')) || null,
-            quantidade: qtd,
-            valor_unitario: Number($(this).data('valor-unitario') || 0),
-            cfop: String($tr.find('.nfe-dev-cfop').val() || $('#nfeDevCfopPadrao').val() || '').replace(/\D/g, '').slice(0, 4)
-        });
-    });
-
+    const { itens, excedeu } = coletarItensFormularioNfeDevolucaoCompra();
     if (excedeu) return;
-
     if (!itens.length) {
-        showNotification('Informe a quantidade devolvida de pelo menos um item.', 'warning');
-        return;
-    }
-
-    if (!confirm('Confirma a emissão da NF-e de Devolução para a SEFAZ?\n\nSerá gerada nota com finNFe=4 referenciando a NF-e original.')) {
+        showNotification('Informe a quantidade a devolver de pelo menos um produto.', 'warning');
         return;
     }
 
@@ -6751,6 +7133,61 @@ function confirmarEmissaoNFeDevolucaoCompra(id) {
     };
 
     const $btn = $('#btnEmitirNfeDevolucao');
+    $btn.prop('disabled', true).text('Gerando prévia…');
+
+    $.ajax({
+        url: `${API_URL}/compras/${id}/nfe-devolucao/previa`,
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify(payload)
+    }).done(function(previa) {
+        if (!previa || previa.success === false) {
+            showNotification(previa?.error || 'Não foi possível gerar a prévia.', 'warning');
+            return;
+        }
+        if (previa.emitido || previa.transmitido) {
+            showNotification('A prévia não deve emitir NF-e. Operação bloqueada.', 'danger');
+            return;
+        }
+        $('#nfeDevPainelPrevia').html(renderizarHtmlPreviaNfeDevolucao(previa));
+        mostrarPainelPreviaNfeDevolucao(true);
+        const $body = $('#modalNFeDevolucaoCompra .modal-body');
+        if ($body.length) $body.scrollTop(0);
+    }).fail(function(xhr) {
+        showNotification(xhr.responseJSON?.error || 'Erro ao gerar a prévia da NF-e.', 'danger');
+    }).always(function() {
+        $btn.prop('disabled', false).text('Emitir NF-e de Devolução');
+    });
+}
+
+function confirmarEmissaoNFeDevolucaoCompra(id) {
+    const chave = String($('#chaveNFeFornecedorDevolucao').val() || '').replace(/\D/g, '');
+
+    if (chave.length !== 44) {
+        showNotification('Compra sem chave da NF-e (44 dígitos).', 'warning');
+        return;
+    }
+
+    const { itens, excedeu } = coletarItensFormularioNfeDevolucaoCompra();
+    if (excedeu) return;
+
+    if (!itens.length) {
+        showNotification('Informe a quantidade a devolver de pelo menos um produto.', 'warning');
+        return;
+    }
+
+    const payload = {
+        tipoDocumento: 'DEVOLUCAO',
+        finNFe: 4,
+        origem: 'COMPRA',
+        compraId: id,
+        refNFe: chave,
+        observacoes: String($('#nfeDevObservacoes').val() || '').trim() || undefined,
+        cfop: String($('#nfeDevCfopPadrao').val() || '').replace(/\D/g, '').slice(0, 4) || undefined,
+        itens
+    };
+
+    const $btn = $('#btnConfirmarEmitirNfeDev');
     $btn.prop('disabled', true).text('Transmitindo…');
 
     $.ajax({
@@ -6760,21 +7197,36 @@ function confirmarEmissaoNFeDevolucaoCompra(id) {
         data: JSON.stringify(payload)
     }).done(function(resp) {
         const r = resp.resultado || resp;
+        if (r.success === false && (r.code === 'AUDITORIA_FISCAL_REPROVADA' || r.auditoria)) {
+            const aud = r.auditoria || {};
+            const erros = (aud.erros || []).map((e) => `[${e.codigo}] ${e.mensagem}`).join('\n\n');
+            alert(r.message || erros || 'Auditoria fiscal reprovada.');
+            $btn.prop('disabled', false).text('Confirmar e Emitir NF-e');
+            return;
+        }
+        if (String(r.cStat || r.cstat || '') === '539' || /EXIGE_NOVA_IDENTIDADE|539/.test(String(r.code || r.message || ''))) {
+            alert(
+                'Esta NF-e possui uma identidade fiscal que conflita com um documento já existente na SEFAZ.\n\n'
+                + 'Os dados da devolução foram preservados.\n\n'
+                + 'Para continuar, gere uma nova NF-e com nova numeração fiscal.'
+            );
+        }
         showNotification(resp.message || r.message || 'NF-e de devolução processada.', r.success === false ? 'warning' : 'success');
 
         if (r.success || r.status === 'autorizada') {
+            $btn.prop('disabled', false).text('Confirmar e Emitir NF-e');
             $('#modalNFeDevolucaoCompra').modal('hide');
             loadCompras();
-            if (typeof apresentarDocumentoNfePosEmissao === 'function' && (resp.notaId || r.notaId)) {
-                // Central documental de vendas não lista devolução de compra; histórico fica no modal.
+            if (typeof abrirDanfe === 'function' && (resp.notaId || r.notaId)) {
+                abrirDanfe({
+                    tipo: 'DEVOLUCAO_COMPRA',
+                    id: resp.notaId || r.notaId,
+                    chave: r.chaveAcesso || r.chave,
+                    numero: r.numero,
+                    serie: r.serie,
+                    auto: true
+                });
             }
-            alert(
-                `NF-e de devolução autorizada.\n\n` +
-                `Número: ${r.numero || '-'}  Série: ${r.serie || '-'}\n` +
-                `Chave: ${r.chaveAcesso || r.chave || '-'}\n` +
-                `Protocolo: ${r.protocolo || '-'}\n` +
-                `Referência: ${chave}`
-            );
             return;
         }
 
@@ -6797,8 +7249,17 @@ function confirmarEmissaoNFeDevolucaoCompra(id) {
         else if (status === 'erro_validacao') titulo = 'XML inválido';
         else if (status === 'rejeitada' || cStat) titulo = 'Rejeição da SEFAZ';
 
-        alert(`${titulo}.\n\ncStat: ${cStat || 'não informado'}\nMotivo: ${motivo}`);
-        $btn.prop('disabled', false).text('Emitir NF-e de Devolução');
+        if (String(cStat) === '539') {
+            alert(
+                'Esta NF-e possui uma identidade fiscal que conflita com um documento já existente na SEFAZ.\n\n'
+                + 'Os dados da devolução foram preservados.\n\n'
+                + 'Para continuar, gere uma nova NF-e com nova numeração fiscal.\n\n'
+                + `cStat: ${cStat}\nMotivo: ${motivo}`
+            );
+        } else {
+            alert(`${titulo}.\n\ncStat: ${cStat || 'não informado'}\nMotivo: ${motivo}`);
+        }
+        $btn.prop('disabled', false).text('Confirmar e Emitir NF-e');
     });
 }
 

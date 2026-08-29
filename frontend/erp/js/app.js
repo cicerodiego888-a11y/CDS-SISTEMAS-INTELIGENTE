@@ -11,9 +11,9 @@ const CDS_ERP_PAGE_SCRIPTS = Object.freeze({
         '/erp/js/dashboard.js'
     ],
     monitoring: ['/erp/js/cds-monitoring-engine.js'],
-    produtos: ['/shared/js/SearchSDK.js', '/shared/js/buscaProdutoTexto.js', '/shared/js/resolverBuscaCadastroProdutos.js', '/erp/js/categorias.js', '/erp/js/subcategorias.js', '/erp/js/motor-unidades-medida.js', '/erp/js/produto-apresentacao-resolver.js', '/erp/js/produto-embalagens.js', '/shared/js/motor-preco-atacado.js', '/erp/js/formacao-preco-margem.js', '/erp/js/produtos.js'],
+    produtos: ['/shared/js/SearchSDK.js', '/shared/js/buscaProdutoTexto.js', '/shared/js/resolverBuscaCadastroProdutos.js', '/erp/js/categorias.js', '/erp/js/subcategorias.js', '/erp/js/motor-unidades-medida.js', '/erp/js/produto-apresentacao-resolver.js', '/erp/js/produto-embalagens.js', '/shared/js/motor-preco-atacado.js', '/erp/js/formacao-preco-margem.js', '/shared/js/cds-stable-dropdown.js', '/erp/js/produtos.js'],
     clientes: ['/erp/js/clientes.js'],
-    compras: ['/erp/js/categorias.js', '/erp/js/subcategorias.js', '/erp/js/produto-apresentacao-resolver.js', '/erp/js/produto-embalagens.js', '/shared/js/motor-preco-atacado.js', '/erp/js/formacao-preco-margem.js', '/shared/js/buscaProdutoTexto.js', '/shared/js/resolverBuscaCadastroProdutos.js', '/erp/js/produtos.js', '/erp/js/motor-unidades-medida.js', '/shared/js/motor-quantidade-compra.js', '/erp/js/compra-muc-client.js', '/erp/js/tratamento-fiscal-item-compra.js', '/erp/js/miip-central-revisao.js', '/erp/js/compras-fornecedor-cnpj-rc831.js', '/erp/js/compras.js'],
+    compras: ['/erp/js/categorias.js', '/erp/js/subcategorias.js', '/erp/js/produto-apresentacao-resolver.js', '/erp/js/produto-embalagens.js', '/shared/js/motor-preco-atacado.js', '/erp/js/formacao-preco-margem.js', '/shared/js/buscaProdutoTexto.js', '/shared/js/resolverBuscaCadastroProdutos.js', '/shared/js/cds-stable-dropdown.js', '/erp/js/produtos.js', '/erp/js/motor-unidades-medida.js', '/shared/js/motor-quantidade-compra.js', '/erp/js/compra-muc-client.js', '/erp/js/tratamento-fiscal-item-compra.js', '/erp/js/miip-central-revisao.js', '/erp/js/compras-fornecedor-cnpj-rc831.js', '/shared/js/nfeDanfeViewer.js', '/erp/js/compras.js'],
     'central-entradas': [
         '/erp/js/central-entradas-ux.js',
         '/erp/js/categorias.js',
@@ -25,6 +25,7 @@ const CDS_ERP_PAGE_SCRIPTS = Object.freeze({
         '/erp/js/formacao-preco-margem.js',
         '/shared/js/buscaProdutoTexto.js',
         '/shared/js/resolverBuscaCadastroProdutos.js',
+        '/shared/js/cds-stable-dropdown.js',
         '/erp/js/produtos.js',
         '/erp/js/tratamento-fiscal-item-compra.js',
         '/erp/js/miip-central-revisao.js',
@@ -41,8 +42,8 @@ const CDS_ERP_PAGE_SCRIPTS = Object.freeze({
         '/erp/js/vendas.js'
     ],
     entregas: ['/pdv/js/entregas.js'],
-    faturamento: ['/erp/js/faturamento.js'],
-    'central-faturamento': ['/erp/js/central-faturamento.js'],
+    faturamento: ['/shared/js/nfeDanfeViewer.js', '/erp/js/faturamento.js'],
+    'central-faturamento': ['/shared/js/nfeDanfeViewer.js', '/erp/js/central-faturamento.js'],
     pedidos: ['/erp/js/pedidos.js'],
     financeiro: [
         '/erp/js/financeiro-dashboard.js',
@@ -78,8 +79,8 @@ const CDS_ERP_PAGE_SCRIPTS = Object.freeze({
         '/erp/js/cds-centro-configuracoes.js'
     ],
     fiscal: ['/shared/js/fiscalImpressao.js', '/erp/js/fiscal.js'],
-    'nfe-central': ['/shared/js/fiscalImpressao.js', '/erp/js/nfe-central.js'],
-    'nfe-avulsa': ['/erp/js/nfe-avulsa.js'],
+    'nfe-central': ['/shared/js/fiscalImpressao.js', '/shared/js/nfeDanfeViewer.js', '/erp/js/nfe-central.js'],
+    'nfe-avulsa': ['/shared/js/nfeDanfeViewer.js', '/erp/js/nfe-avulsa.js'],
     'nfe-monitor': ['/erp/js/nfe-operacional.js'],
     'nfe-fila': ['/erp/js/nfe-operacional.js'],
     'nfe-diagnostico': ['/erp/js/nfe-operacional.js'],

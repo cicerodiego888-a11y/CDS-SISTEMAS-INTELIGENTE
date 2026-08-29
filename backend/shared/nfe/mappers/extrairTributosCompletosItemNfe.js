@@ -173,6 +173,10 @@ function extrairDetCompleto(det, indice = 0) {
     uTrib: strOrEmpty(prod.uTrib) || strOrEmpty(prod.uCom) || 'UN',
     qTrib: numOrNull(prod.qTrib) != null ? numOrNull(prod.qTrib) : (numOrNull(prod.qCom) || 0),
     vUnTrib: numOrNull(prod.vUnTrib) != null ? numOrNull(prod.vUnTrib) : (numOrNull(prod.vUnCom) || 0),
+    vFrete: numOrNull(prod.vFrete) || 0,
+    vSeg: numOrNull(prod.vSeg) || 0,
+    vDesc: numOrNull(prod.vDesc) || 0,
+    vOutro: numOrNull(prod.vOutro) || 0,
     tributos: trib
   };
 }

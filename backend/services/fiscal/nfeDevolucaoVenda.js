@@ -15,6 +15,11 @@ const { montarLote, enviarLote } = require('./soapClient');
 const { onlyDigits, compactarXml } = require('./utils');
 const { getFiscalSubDir } = require('./paths');
 const { validarXmlFiscal } = require('./validarXmlFiscal');
+const { auditarNfe, formatarMensagemAuditoria } = require('./auditoriaFiscalNfe');
+const { adaptarImpostoEspelhadoAoCrt } = require('./resolverIcmsCrtEmitente');
+const { adquirirLock, liberarLock } = require('./nfeEmissionLockService');
+const { preflightNfeDevolucao, assertPreflightAprovado } = require('./nfeDevolucaoPreflight');
+const { buscarDocumentoPorChave, buscarDocumentoPorNumeroSerie } = require('./nfeIdentityService');
 const { parseRetornoAutorizacaoNfe } = require('./nfeRetornoAutorizacao');
 const { gerarDanfeNfeHtml } = require('./danfeNfe');
 const { buildXmlNFeDevolucaoVenda } = require('./xmlBuilderNfeDevolucaoVenda');
@@ -50,6 +55,8 @@ const {
   uiDoEstado,
   podeReenviarDevolucao,
   podeCancelarDevolucao,
+  podeGerarNovaIdentidadeDevolucao,
+  mensagemNovaIdentidadeDevolucao,
   mensagemRejeicaoDetalhada
 } = require('./nfeDevolucaoEstados');
 const { retornarEstoqueNfeDevolucaoVenda } = require('./estoqueNfeDevolucaoVenda');
@@ -261,6 +268,7 @@ async function prepararNfeDevolucaoVenda(vendaId) {
   const id = Number(vendaId);
   const venda = await carregarVendaCabecalho(id);
   const config = await getFiscalConfig();
+  config.serie = Number(config.serieNfe || config.serie || 1);
   const chave = onlyDigits(venda.chave_acesso);
   const cfopSugerido = sugerirCfop(venda, config);
 
@@ -419,7 +427,16 @@ async function prepararNfeDevolucaoVenda(vendaId) {
           downloadXml: Boolean(n.tem_xml),
           imprimirDanfe: Boolean(n.tem_danfe),
           consultar: Boolean(n.chave_acesso),
-          reenviar: podeReenviarDevolucao({ status: st }),
+          reenviar: podeReenviarDevolucao({
+            status: st,
+            rejeicao_codigo: n.rejeicao_codigo,
+            cstat_retorno: n.cstat_retorno
+          }),
+          gerarNovaIdentidade: podeGerarNovaIdentidadeDevolucao({
+            status: st,
+            rejeicao_codigo: n.rejeicao_codigo,
+            cstat_retorno: n.cstat_retorno
+          }),
           cancelar: podeCancelarDevolucao({ status: st })
         }
       };
@@ -515,7 +532,21 @@ async function emitirNFeDevolucaoVenda(vendaId, opcoes = {}) {
   await garantirTabelas();
   await garantirTabelasSaldoDevolucaoVenda();
   const id = Number(vendaId);
-
+  let lockToken;
+  try {
+    lockToken = adquirirLock(`devolucao-venda:${id}`);
+  } catch (lockErr) {
+    if (lockErr.code === 'EMISSAO_EM_ANDAMENTO') {
+      return {
+        success: false,
+        status: 'erro_validacao',
+        code: lockErr.code,
+        message: lockErr.message
+      };
+    }
+    throw lockErr;
+  }
+  try {
   const emAndamento = await obterNotaEmAndamento(id);
   if (emAndamento) {
     return {
@@ -546,6 +577,7 @@ async function emitirNFeDevolucaoVenda(vendaId, opcoes = {}) {
   }
 
   const config = await getFiscalConfig();
+  config.serie = Number(config.serieNfe || config.serie || 1);
   const cfopPadrao = onlyDigits(opcoes.cfop || sugerirCfop(venda, config)).slice(0, 4)
     || sugerirCfop(venda, config);
 
@@ -620,6 +652,35 @@ async function emitirNFeDevolucaoVenda(vendaId, opcoes = {}) {
     );
   }
 
+  espelhamento.itens = (espelhamento.itens || []).map((item) =>
+    adaptarImpostoEspelhadoAoCrt(item, config.crt)
+  );
+
+  const builtPre = buildXmlNFeDevolucaoVenda({
+    config,
+    venda,
+    itens: espelhamento.itens,
+    numero: 1,
+    observacoes: opcoes.observacoes,
+    cfopOverride: cfopPadrao
+  });
+  const auditoriaPre = auditarNfe({
+    tipoDocumento: 'DEVOLUCAO_VENDA',
+    emitente: { cnpj: config.cnpj },
+    itens: espelhamento.itens,
+    xml: builtPre.xmlSemAssinatura,
+    contexto: { vendaId: id, nfeNumero: 1, debugPrefix: `venda-${id}`, fase: 'pre_numeracao' }
+  });
+  if (!auditoriaPre.aprovado) {
+    return {
+      success: false,
+      status: 'erro_validacao',
+      code: 'AUDITORIA_FISCAL_REPROVADA',
+      message: formatarMensagemAuditoria(auditoriaPre),
+      auditoria: auditoriaPre
+    };
+  }
+
   const numero = await proximoNumeroNFeVenda();
   const built = buildXmlNFeDevolucaoVenda({
     config,
@@ -629,6 +690,50 @@ async function emitirNFeDevolucaoVenda(vendaId, opcoes = {}) {
     observacoes: opcoes.observacoes,
     cfopOverride: cfopPadrao
   });
+
+  const auditoria = auditarNfe({
+    tipoDocumento: 'DEVOLUCAO_VENDA',
+    emitente: { cnpj: config.cnpj },
+    itens: espelhamento.itens,
+    xml: built.xmlSemAssinatura,
+    contexto: { vendaId: id, nfeNumero: numero, debugPrefix: `venda-${id}` }
+  });
+  if (!auditoria.aprovado) {
+    return {
+      success: false,
+      status: 'erro_validacao',
+      code: 'AUDITORIA_FISCAL_REPROVADA',
+      message: formatarMensagemAuditoria(auditoria),
+      auditoria
+    };
+  }
+  const documentosPorChave = await buscarDocumentoPorChave(built.chave);
+  const documentosPorNumero = await buscarDocumentoPorNumeroSerie({
+    numero,
+    serie: built.serie,
+    ambiente: config.ambiente
+  });
+  const preflight = preflightNfeDevolucao({
+    tipoDocumento: 'DEVOLUCAO_VENDA',
+    xml: built.xmlSemAssinatura,
+    built,
+    config,
+    itens: espelhamento.itens,
+    vendaId: id,
+    documentosPorChave,
+    documentosPorNumero
+  });
+  try {
+    assertPreflightAprovado(preflight);
+  } catch (pfErr) {
+    return {
+      success: false,
+      status: 'erro_validacao',
+      code: 'PREFLIGHT_REPROVADO',
+      message: pfErr.message,
+      preflight
+    };
+  }
 
   traceNfe('emitirNFeDevolucaoVenda→buildXml', {
     vendaId: id,
@@ -655,23 +760,6 @@ async function emitirNFeDevolucaoVenda(vendaId, opcoes = {}) {
       quantidade: i.quantidade
     }))
   }, null, 2));
-
-  try {
-    validarXmlFiscal({
-      xml: built.xmlSemAssinatura,
-      fase: 'pre_assinatura',
-      modeloDoc: '55',
-      validarXsd: false
-    });
-  } catch (validErr) {
-    return {
-      success: false,
-      status: 'erro_validacao',
-      message: validErr.message || 'XML da NF-e de devolução inválido.',
-      code: validErr.code || 'XML_INVALIDO',
-      detalhes: validErr.detalhes || null
-    };
-  }
 
   let xmlAssinado;
   try {
@@ -818,7 +906,8 @@ async function emitirNFeDevolucaoVenda(vendaId, opcoes = {}) {
         serie: built.serie,
         protocolo,
         status,
-        natureza: built.natOp
+        natureza: built.natOp,
+        chaveReferenciada: built.refNFe
       });
     } catch (_) {
       /* DANFE opcional */
@@ -913,6 +1002,9 @@ async function emitirNFeDevolucaoVenda(vendaId, opcoes = {}) {
       : (msgDetalhada || parsed.xMotivo || `NF-e de devolução não autorizada (status: ${status}).`),
     retorno: raw
   };
+  } finally {
+    liberarLock(lockToken);
+  }
 }
 
 async function obterNfeDevolucaoVendaPorId(notaId) {
@@ -979,7 +1071,16 @@ async function listarHistoricoDevolucaoVenda(vendaId) {
           imprimirDanfe: Boolean(n.tem_danfe),
           imprimirDanfeCancelado: Boolean(n.tem_danfe_cancelado),
           consultar: Boolean(n.chave_acesso),
-          reenviar: podeReenviarDevolucao({ status: st }),
+          reenviar: podeReenviarDevolucao({
+            status: st,
+            rejeicao_codigo: n.rejeicao_codigo,
+            cstat_retorno: n.cstat_retorno
+          }),
+          gerarNovaIdentidade: podeGerarNovaIdentidadeDevolucao({
+            status: st,
+            rejeicao_codigo: n.rejeicao_codigo,
+            cstat_retorno: n.cstat_retorno
+          }),
           cancelar: podeCancelarDevolucao({ status: st })
         }
       };

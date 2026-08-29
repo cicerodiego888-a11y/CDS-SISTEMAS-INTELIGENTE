@@ -12,6 +12,7 @@ const { contextoAuditoriaRequisicao } = require('../services/auditoria');
 const nfeCentral = require('../services/fiscal/nfeCentralService');
 const nfeOperacional = require('../services/fiscal/nfeOperacionalService');
 const nfeAvulsa = require('../services/fiscal/nfeAvulsaService');
+const danfeCentral = require('../services/fiscal/danfeService');
 const { respostaAmigavel, classificarErro } = require('../services/fiscal/nfeErros');
 
 router.use(exigirRecurso('nfe'));
@@ -42,7 +43,7 @@ function enviarErroAmigavel(res, err, statusFallback = 500) {
   return res.status(status).json({
     success: false,
     mensagem: amigavel.mensagem || err.message,
-    codigo: amigavel.codigo || null,
+    codigo: err.code || amigavel.codigo || null,
     sugestao: amigavel.sugestao || null,
     error: amigavel.mensagem || err.message
   });
@@ -124,6 +125,7 @@ router.get('/notas', async (req, res) => {
       situacao: req.query.situacao || req.query.status,
       cliente: req.query.cliente,
       chave: req.query.chave,
+      tipo: req.query.tipo,
       dataInicio: req.query.dataInicio || req.query.inicio,
       dataFim: req.query.dataFim || req.query.fim,
       limite: req.query.limite
@@ -210,6 +212,83 @@ router.get('/notas/:id/danfe', async (req, res) => {
     res.send(nota.danfe_html);
   } catch (err) {
     enviarErroAmigavel(res, err);
+  }
+});
+
+router.get('/documentos/:tipo/:id', async (req, res) => {
+  try {
+    const doc = await danfeCentral.obterDocumentoFiscal({
+      tipo: req.params.tipo,
+      id: req.params.id,
+      chave: req.query.chave,
+      numero: req.query.numero,
+      serie: req.query.serie
+    });
+    res.json({ success: true, documento: {
+      modelo: doc.modelo,
+      tipo: doc.tipo,
+      id: doc.id,
+      numero: doc.numero,
+      serie: doc.serie,
+      chave: doc.chave,
+      status: doc.status,
+      protocolo: doc.protocolo,
+      dhAutorizacao: doc.dhAutorizacao,
+      chaveReferenciada: doc.chaveReferenciada,
+      autorizado: danfeCentral.statusEhAutorizado(doc.status)
+    } });
+  } catch (err) {
+    enviarErroAmigavel(res, err, err.statusCode || 500);
+  }
+});
+
+router.get('/documentos/:tipo/:id/danfe', async (req, res) => {
+  try {
+    const out = await danfeCentral.obterDanfe({
+      tipo: req.params.tipo,
+      id: req.params.id,
+      chave: req.query.chave,
+      numero: req.query.numero,
+      serie: req.query.serie
+    });
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(out.html);
+  } catch (err) {
+    enviarErroAmigavel(res, err, err.statusCode || 500);
+  }
+});
+
+router.get('/documentos/:tipo/:id/xml', async (req, res) => {
+  try {
+    const out = await danfeCentral.obterXmlAutorizado({
+      tipo: req.params.tipo,
+      id: req.params.id,
+      chave: req.query.chave,
+      numero: req.query.numero,
+      serie: req.query.serie
+    });
+    res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${out.nome}"`);
+    res.send(out.xml);
+  } catch (err) {
+    enviarErroAmigavel(res, err, err.statusCode || 500);
+  }
+});
+
+router.get('/documentos/:tipo/:id/pdf', async (req, res) => {
+  try {
+    const out = await danfeCentral.obterPdfDanfe({
+      tipo: req.params.tipo,
+      id: req.params.id,
+      chave: req.query.chave,
+      numero: req.query.numero,
+      serie: req.query.serie
+    });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${out.nome}"`);
+    res.send(out.buffer);
+  } catch (err) {
+    enviarErroAmigavel(res, err, err.statusCode || 500);
   }
 });
 

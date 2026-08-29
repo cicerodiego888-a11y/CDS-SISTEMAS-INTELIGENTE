@@ -85,7 +85,7 @@ describe('Sprint 3.2 — DANFE NF-e', () => {
       natureza: 'VENDA'
     });
     assert.match(html, /DANFE/);
-    assert.match(html, /Modelo 55/);
+    assert.match(html, /Documento Auxiliar da/);
     assert.match(html, /window\.print/);
   });
 });

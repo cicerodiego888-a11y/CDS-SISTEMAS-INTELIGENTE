@@ -12,7 +12,7 @@ endobj
 endobj
 
 4 0 obj
-<< /Length 1880 >>
+<< /Length 1921 >>
 stream
 BT
 /F1 10 Tf
@@ -27,15 +27,15 @@ BT
 0 -14 Td
 (- Vers?o: 1.0.3) Tj
 0 -14 Td
-(- Commit: b7a1da8) Tj
+(- Commit: 30478b4) Tj
 0 -14 Td
-(- Build: 2026-08-21T22:29:35.360Z) Tj
+(- Build: 2026-08-27T22:26:29.805Z) Tj
 0 -14 Td
-(- Hash app.asar: `aa90ca45394594faa6e4837b92f054fb1cedf0d4ad620fe07c05e8edfbafe8a1`) Tj
+(- Hash app.asar: `9736b21b17c39fd2217ad65c50c7432d12e48215bcb7a7600b974c38e7126615`) Tj
 0 -14 Td
-(- Origem: fonte) Tj
+(- Origem: instalador-desatualizado) Tj
 0 -14 Td
-(- Data: 2026-08-22T18:55:34.632Z) Tj
+(- Data: 2026-08-28T03:24:29.581Z) Tj
 0 -14 Td
 () Tj
 0 -14 Td
@@ -45,23 +45,23 @@ BT
 0 -14 Td
 (? Inicializa??o do ERP) Tj
 0 -14 Td
-(  - DB ok | pacote: fonte | asar: N/A?) Tj
+(  - DB ok | pacote: instalador-desatualizado | asar: 9736b21b17c3?) Tj
 0 -14 Td
 (? Login) Tj
 0 -14 Td
-(  - user=rc4320_1787424933794 perfil=SUPER_ADMIN) Tj
+(  - user=rc4320_1787887468820 perfil=SUPER_ADMIN) Tj
 0 -14 Td
 (? Cadastro de Produtos) Tj
 0 -14 Td
-(  - CRUD ok | embalagem CX?12 | codigo=RC4320-1787424932914-P) Tj
+(  - CRUD ok | embalagem CX?12 | codigo=RC4320-1787887467172-P) Tj
 0 -14 Td
 (? Compras) Tj
 0 -14 Td
-(  - NF-e ?00000064 | status=PRONTA_IMPORTACAO) Tj
+(  - NF-e ?00000064 | status=EM_REVISAO) Tj
 0 -14 Td
 (? Financeiro) Tj
 0 -14 Td
-(  - parser financeiro OK | parcela R$500 | registros financeiro=0) Tj
+(  - parser financeiro OK | parcela R$500 | registros financeiro=5) Tj
 0 -14 Td
 (? Estoque) Tj
 0 -14 Td
@@ -85,11 +85,11 @@ BT
 0 -14 Td
 (? Relat?rios) Tj
 0 -14 Td
-(  - compras=0 fin=0 prod=8) Tj
+(  - compras=2 fin=5 prod=83) Tj
 0 -14 Td
 (? Performance) Tj
 0 -14 Td
-(  - 1.7s | mem 23.6MB | sql=16) Tj
+(  - 2.4s | mem 37.2MB | sql=16) Tj
 0 -14 Td
 () Tj
 0 -14 Td
@@ -97,11 +97,11 @@ BT
 0 -14 Td
 () Tj
 0 -14 Td
-(- Tempo total: 1.7s) Tj
+(- Tempo total: 2.4s) Tj
 0 -14 Td
-(- Mem?ria m?xima: 23.6 MB) Tj
+(- Mem?ria m?xima: 37.2 MB) Tj
 0 -14 Td
-(- CPU user: 1063 ms) Tj
+(- CPU user: 1141 ms) Tj
 0 -14 Td
 (- Testes/etapas: 12) Tj
 0 -14 Td
@@ -133,9 +133,9 @@ xref
 0000000058 00000 n 
 0000000115 00000 n 
 0000000241 00000 n 
-0000002173 00000 n 
+0000002214 00000 n 
 trailer
 << /Size 6 /Root 1 0 R >>
 startxref
-2243
+2284
 %%EOF

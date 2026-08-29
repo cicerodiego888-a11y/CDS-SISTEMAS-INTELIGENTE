@@ -16,6 +16,7 @@ const {
   MODELO_BRUTO,
   MODELO_LIQUIDO,
   determinarModeloDeTotais,
+  calcularVNFSefaz,
   validarIdentidadeICMSTot
 } = require('./modeloTotais');
 
@@ -828,6 +829,7 @@ module.exports = {
   buildNfceXml,
   ratearDescontoNosItens,
   determinarModeloDeTotais,
+  calcularVNFSefaz,
   validarIdentidadeICMSTot,
   MODELO_BRUTO,
   MODELO_LIQUIDO,

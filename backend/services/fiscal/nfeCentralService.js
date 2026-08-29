@@ -62,44 +62,66 @@ function registrarHistoricoNfe({
   });
 }
 
-function listarNfeNotas(filtros = {}) {
+function dbAll(sql, params = []) {
   return new Promise((resolve, reject) => {
-    const where = ['1=1'];
-    const params = [];
+    db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows || [])));
+  });
+}
 
-    if (filtros.numero != null && String(filtros.numero).trim() !== '') {
-      where.push('n.numero = ?');
-      params.push(Number(filtros.numero));
-    }
-    if (filtros.serie != null && String(filtros.serie).trim() !== '') {
-      where.push('n.serie = ?');
-      params.push(Number(filtros.serie));
-    }
-    if (filtros.situacao) {
-      where.push('LOWER(n.status) = LOWER(?)');
-      params.push(String(filtros.situacao).trim());
-    }
-    if (filtros.cliente) {
-      where.push('(c.nome LIKE ? OR IFNULL(c.cpf_cnpj, "") LIKE ?)');
-      const q = `%${String(filtros.cliente).trim()}%`;
-      params.push(q, q);
-    }
-    if (filtros.chave) {
-      where.push('n.chave_acesso LIKE ?');
-      params.push(`%${String(filtros.chave).replace(/\D/g, '')}%`);
-    }
-    if (filtros.dataInicio) {
-      where.push("date(n.created_at) >= date(?)");
-      params.push(filtros.dataInicio);
-    }
-    if (filtros.dataFim) {
-      where.push("date(n.created_at) <= date(?)");
-      params.push(filtros.dataFim);
-    }
+function montarFiltrosListaNfe(alias, filtros, { nomeParteSql, docParteSql }) {
+  const where = ['1=1'];
+  const params = [];
+  if (filtros.numero != null && String(filtros.numero).trim() !== '') {
+    where.push(`${alias}.numero = ?`);
+    params.push(Number(filtros.numero));
+  }
+  if (filtros.serie != null && String(filtros.serie).trim() !== '') {
+    where.push(`${alias}.serie = ?`);
+    params.push(Number(filtros.serie));
+  }
+  if (filtros.situacao) {
+    where.push(`LOWER(${alias}.status) = LOWER(?)`);
+    params.push(String(filtros.situacao).trim());
+  }
+  if (filtros.cliente) {
+    const q = `%${String(filtros.cliente).trim()}%`;
+    where.push(`(${nomeParteSql} LIKE ? OR IFNULL(${docParteSql}, "") LIKE ?)`);
+    params.push(q, q);
+  }
+  if (filtros.chave) {
+    where.push(`${alias}.chave_acesso LIKE ?`);
+    params.push(`%${String(filtros.chave).replace(/\D/g, '')}%`);
+  }
+  if (filtros.dataInicio) {
+    where.push(`date(${alias}.created_at) >= date(?)`);
+    params.push(filtros.dataInicio);
+  }
+  if (filtros.dataFim) {
+    where.push(`date(${alias}.created_at) <= date(?)`);
+    params.push(filtros.dataFim);
+  }
+  return { where, params };
+}
 
-    const limite = Math.min(Math.max(Number(filtros.limite) || 200, 1), 500);
+async function listarNfeNotas(filtros = {}) {
+  const limite = Math.min(Math.max(Number(filtros.limite) || 200, 1), 500);
+  const tipoFiltro = String(filtros.tipo || '').trim().toUpperCase();
 
-    db.all(`
+  const vendaF = montarFiltrosListaNfe('n', filtros, {
+    nomeParteSql: 'c.nome',
+    docParteSql: 'c.cpf_cnpj'
+  });
+  const compraF = montarFiltrosListaNfe('d', filtros, {
+    nomeParteSql: 'co.fornecedor',
+    docParteSql: 'co.fornecedor_cnpj'
+  });
+  const devVendaF = montarFiltrosListaNfe('d', filtros, {
+    nomeParteSql: 'c.nome',
+    docParteSql: 'c.cpf_cnpj'
+  });
+
+  const vendas = (!tipoFiltro || tipoFiltro === 'VENDA')
+    ? await dbAll(`
       SELECT
         n.id,
         n.venda_id,
@@ -134,23 +156,122 @@ function listarNfeNotas(filtros = {}) {
         c.nome AS cliente_nome,
         c.cpf_cnpj AS cliente_documento,
         CASE WHEN n.danfe_html IS NOT NULL AND n.danfe_html <> '' THEN 1 ELSE 0 END AS tem_danfe,
-        CASE WHEN n.xml_retorno IS NOT NULL AND n.xml_retorno <> '' THEN 1 ELSE 0 END AS tem_xml
+        CASE WHEN n.xml_retorno IS NOT NULL AND n.xml_retorno <> '' THEN 1 ELSE 0 END AS tem_xml,
+        'VENDA' AS tipo
       FROM nfe_notas n
       LEFT JOIN vendas v ON v.id = n.venda_id
       LEFT JOIN clientes c ON c.id = v.cliente_id
       LEFT JOIN usuarios u ON u.id = COALESCE(n.usuario_id, v.operador_id)
-      WHERE ${where.join(' AND ')}
-      ORDER BY n.id DESC
-      LIMIT ?
-    `, [...params, limite], (err, rows) => {
-      if (err) return reject(err);
-      const mapped = (rows || []).map((r) => ({
-        ...r,
-        pode_reenviar: podeReenviar({ status: r.status, erroCodigo: r.erro_codigo })
-      }));
-      resolve(mapped);
-    });
-  });
+      WHERE ${vendaF.where.join(' AND ')}
+    `, vendaF.params).catch(() => [])
+    : [];
+
+  const devCompra = (!tipoFiltro || tipoFiltro === 'DEVOLUCAO_COMPRA')
+    ? await dbAll(`
+      SELECT
+        d.id,
+        NULL AS venda_id,
+        NULL AS pedido_id,
+        d.numero,
+        d.serie,
+        d.chave_acesso,
+        d.ambiente,
+        d.status,
+        d.protocolo,
+        d.recibo,
+        NULL AS protocolo_cancelamento,
+        NULL AS consultado_em,
+        NULL AS cstat_consulta,
+        NULL AS xmotivo_consulta,
+        d.natureza_operacao,
+        d.cfop,
+        d.created_at,
+        d.updated_at,
+        d.usuario_nome AS usuario_emissao,
+        NULL AS fila_estado,
+        NULL AS tentativas,
+        NULL AS ultima_tentativa_em,
+        NULL AS erro_codigo,
+        NULL AS erro_mensagem,
+        NULL AS erro_sugestao,
+        NULL AS tempo_resposta_ms,
+        NULL AS valor,
+        NULL AS venda_codigo,
+        NULL AS operador_id,
+        d.usuario_nome AS usuario_responsavel,
+        co.fornecedor AS cliente_nome,
+        co.fornecedor_cnpj AS cliente_documento,
+        CASE WHEN d.danfe_html IS NOT NULL AND d.danfe_html <> '' THEN 1 ELSE 0 END AS tem_danfe,
+        CASE WHEN IFNULL(d.xml_autorizado, d.xml_retorno) IS NOT NULL
+          AND IFNULL(d.xml_autorizado, d.xml_retorno) <> '' THEN 1 ELSE 0 END AS tem_xml,
+        'DEVOLUCAO_COMPRA' AS tipo
+      FROM nfe_devolucoes_compra d
+      LEFT JOIN compras co ON co.id = d.compra_id
+      WHERE ${compraF.where.join(' AND ')}
+    `, compraF.params).catch(() => [])
+    : [];
+
+  const devVenda = (!tipoFiltro || tipoFiltro === 'DEVOLUCAO_VENDA')
+    ? await dbAll(`
+      SELECT
+        d.id,
+        d.venda_id,
+        NULL AS pedido_id,
+        d.numero,
+        d.serie,
+        d.chave_acesso,
+        d.ambiente,
+        d.status,
+        d.protocolo,
+        d.recibo,
+        NULL AS protocolo_cancelamento,
+        NULL AS consultado_em,
+        NULL AS cstat_consulta,
+        NULL AS xmotivo_consulta,
+        d.natureza_operacao,
+        d.cfop,
+        d.created_at,
+        d.updated_at,
+        d.usuario_nome AS usuario_emissao,
+        NULL AS fila_estado,
+        NULL AS tentativas,
+        NULL AS ultima_tentativa_em,
+        NULL AS erro_codigo,
+        NULL AS erro_mensagem,
+        NULL AS erro_sugestao,
+        NULL AS tempo_resposta_ms,
+        NULL AS valor,
+        NULL AS venda_codigo,
+        NULL AS operador_id,
+        d.usuario_nome AS usuario_responsavel,
+        c.nome AS cliente_nome,
+        c.cpf_cnpj AS cliente_documento,
+        CASE WHEN d.danfe_html IS NOT NULL AND d.danfe_html <> '' THEN 1 ELSE 0 END AS tem_danfe,
+        CASE WHEN IFNULL(d.xml_autorizado, d.xml_retorno) IS NOT NULL
+          AND IFNULL(d.xml_autorizado, d.xml_retorno) <> '' THEN 1 ELSE 0 END AS tem_xml,
+        'DEVOLUCAO_VENDA' AS tipo
+      FROM nfe_devolucoes_venda d
+      LEFT JOIN vendas v ON v.id = d.venda_id
+      LEFT JOIN clientes c ON c.id = v.cliente_id
+      WHERE ${devVendaF.where.join(' AND ')}
+    `, devVendaF.params).catch(() => [])
+    : [];
+
+  return [...vendas, ...devCompra, ...devVenda]
+    .sort((a, b) => {
+      const ta = String(a.created_at || '');
+      const tb = String(b.created_at || '');
+      if (ta !== tb) return tb.localeCompare(ta);
+      return Number(b.id || 0) - Number(a.id || 0);
+    })
+    .slice(0, limite)
+    .map((r) => ({
+      ...r,
+      tipo: r.tipo || 'VENDA',
+      pode_reenviar: r.tipo === 'VENDA'
+        ? podeReenviar({ status: r.status, erroCodigo: r.erro_codigo })
+        : false
+    }));
 }
 
 function obterNfeNotaPorId(id) {

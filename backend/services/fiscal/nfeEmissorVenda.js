@@ -126,9 +126,11 @@ function getConfiguracao(chave, padrao = '') {
 }
 
 async function proximoNumeroNFeVenda() {
-  const atual = Number(await getConfiguracao('fiscal_numero_atual_nfe', '1')) || 1;
-  await setConfiguracao('fiscal_numero_atual_nfe', String(atual + 1), 'number', 'Próximo número NF-e venda (modelo 55)');
-  return atual;
+  const { reservarProximoNumeroNfe } = require('./nfeNumeracaoNfeService');
+  const serie = Number(await getConfiguracao('fiscal_serie_nfe', await getConfiguracao('fiscal_serie', '1'))) || 1;
+  const ambiente = Number(await getConfiguracao('fiscal_ambiente', '2')) || 2;
+  const cnpj = await getConfiguracao('cnpj', '');
+  return reservarProximoNumeroNfe({ serie, ambiente, cnpj });
 }
 
 function garantirTabelaNfeNotas() {

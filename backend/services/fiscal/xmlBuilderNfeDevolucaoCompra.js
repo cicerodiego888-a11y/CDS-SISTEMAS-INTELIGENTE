@@ -15,6 +15,23 @@ const {
   compactarXml
 } = require('./utils');
 const { extrairNomeEmpresaDoCertificado } = require('./certificateService');
+const {
+  calcularVNFSefaz,
+  calcularIpiDevolucaoItem,
+  somarMoeda,
+  arredondarMoeda
+} = require('./modeloTotais');
+const {
+  resolverMunicipioDestinatario,
+  validarMunicipioDestinatario
+} = require('./municipioIbge');
+const {
+  resolverIcmsPorCrtEmitente,
+  montarIcmsXmlResolvido,
+  substituirIcmsNoImpostoXml,
+  validarIcmsXmlContraCrt,
+  resumoResolucaoIcms
+} = require('./resolverIcmsCrtEmitente');
 
 function limparCNPJ(cnpj) {
   return String(cnpj || '').replace(/\D/g, '');
@@ -32,51 +49,121 @@ function num(v, casas = 2) {
   return Math.round(n * f) / f;
 }
 
+function calcularIpiDevolucaoDoItem(item, ipiFallback) {
+  const qDev = Number(item.quantidade || 0);
+  const qOrigRaw = Number(
+    item.quantidade_original != null
+      ? item.quantidade_original
+      : (item.espelhamento && item.espelhamento.quantidade_original)
+  );
+  const qOrig = qOrigRaw > 0 ? qOrigRaw : qDev;
+  const vOriginal = Number(
+    item.v_ipi_original
+    || (item.espelhamento
+      && item.espelhamento.original
+      && item.espelhamento.original.tributos
+      && item.espelhamento.original.tributos.ipi
+      && item.espelhamento.original.tributos.ipi.vIPI)
+    || 0
+  );
+  if (vOriginal > 0) {
+    return calcularIpiDevolucaoItem({
+      quantidadeOriginal: qOrig,
+      quantidadeDevolvida: qDev,
+      vIPIOriginal: vOriginal
+    });
+  }
+  const jaRateado = Number(item.v_ipi_devol != null ? item.v_ipi_devol : ipiFallback) || 0;
+  const percentualDevolucao = qOrig > 0 ? qDev / qOrig : 1;
+  return {
+    percentualDevolucao,
+    pDevol: arredondarMoeda(percentualDevolucao * 100),
+    vIPIDevol: arredondarMoeda(jaRateado),
+    vIPIOriginal: arredondarMoeda(jaRateado)
+  };
+}
+
+function montarXmlImpostoDevol(calc) {
+  if (!(calc && Number(calc.vIPIDevol) > 0)) return '';
+  return `<impostoDevol><pDevol>${formatNumber(calc.pDevol, 2)}</pDevol><IPI><vIPIDevol>${formatNumber(calc.vIPIDevol, 2)}</vIPIDevol></IPI></impostoDevol>`;
+}
+
+function zerarVipiNoIpiTrib(xml) {
+  return String(xml || '').replace(/(<IPITrib>[\s\S]*?)<vIPI>[^<]*<\/vIPI>/, '$1<vIPI>0.00</vIPI>');
+}
+
+function aplicarIpiDevolucaoNoImposto(imposto, item) {
+  const ipiFallback = imposto.totais && imposto.totais.vIpi;
+  const calc = calcularIpiDevolucaoDoItem(item, ipiFallback);
+  let xml = imposto.xml;
+  const totais = { ...(imposto.totais || {}) };
+  if (calc.vIPIDevol > 0) {
+    xml = zerarVipiNoIpiTrib(xml);
+    totais.vIpi = 0;
+    totais.vIpiDevol = calc.vIPIDevol;
+  } else {
+    totais.vIpiDevol = 0;
+  }
+  return {
+    ...imposto,
+    xml,
+    xmlImpostoDevol: montarXmlImpostoDevol(calc),
+    totais,
+    ipiDevolucao: calc
+  };
+}
+
 /**
  * Monta bloco <imposto>.
  * RC2: quando houver espelhamento da NF-e original, usa exclusivamente esses dados.
  * Sem espelhamento, não inventa alíquotas — exige CST/CSOSN informados no item.
  */
 function montarImpostoItem({ compra, item, config, valorItem }) {
+  const t = item.tributosEspelhados || {};
+  const icmsEsp = t.icms || {};
+  const csosnFonte = t.csosn || item.csosn || item.CSOSN || compra.csosn_cst_xml || compra.csosn_cst || '';
+  const cstFonte = t.cst || item.cst || item.CST || '';
+  const resolucao = resolverIcmsPorCrtEmitente({
+    crt: config && config.crt,
+    cst: cstFonte,
+    csosn: csosnFonte,
+    grupoIcms: t.grupoIcms || item.grupoIcms,
+    icms: Object.keys(icmsEsp).length ? icmsEsp : {
+      orig: item.origem,
+      vBC: item.v_bc_icms != null ? item.v_bc_icms : item.base_icms,
+      pICMS: item.p_icms != null ? item.p_icms : item.aliquota_icms,
+      vICMS: item.v_icms
+    },
+    origem: t.origem != null ? t.origem : item.origem
+  });
+
   if (item.impostoEspelhadoXml && String(item.impostoEspelhadoXml).trim()) {
-    const t = item.tributosEspelhados || {};
-    const icms = t.icms || {};
     const pis = t.pis || {};
     const cofins = t.cofins || {};
     const ipi = t.ipi || {};
-    return {
-      xml: item.impostoEspelhadoXml,
+    const icmsXml = montarIcmsXmlResolvido(resolucao);
+    return aplicarIpiDevolucaoNoImposto({
+      xml: substituirIcmsNoImpostoXml(item.impostoEspelhadoXml, icmsXml),
       totais: {
-        vBC: num(icms.vBC),
-        vICMS: num(icms.vICMS != null ? icms.vICMS : icms.vCredICMSSN),
-        vBCST: num(icms.vBCST),
-        vST: num(icms.vICMSST),
-        vFCP: num(icms.vFCP),
-        vFCPST: num(icms.vFCPST),
+        vBC: num(icmsEsp.vBC),
+        vICMS: num(icmsEsp.vICMS != null ? icmsEsp.vICMS : icmsEsp.vCredICMSSN),
+        vBCST: num(icmsEsp.vBCST),
+        vST: num(icmsEsp.vICMSST),
+        vFCP: num(icmsEsp.vFCP),
+        vFCPST: num(icmsEsp.vFCPST),
+        vFCPSTRet: num(icmsEsp.vFCPSTRet),
+        vICMSDeson: num(icmsEsp.vICMSDeson),
         vPis: num(pis.vPIS),
         vCofins: num(cofins.vCOFINS),
         vIpi: num(ipi.vIPI),
         vIpiDevol: num(item.v_ipi_devol != null ? item.v_ipi_devol : ipi.vIPI)
       },
-      espelhado: true
-    };
+      espelhado: true,
+      resolucao
+    }, item);
   }
 
-  const crt = Number(config.crt || 1);
-  const orig = String(
-    item.origem != null && item.origem !== ''
-      ? item.origem
-      : (compra.origem_mercadoria != null ? compra.origem_mercadoria : '0')
-  );
-
-  const csosnRaw = String(
-    item.csosn || item.CSOSN || compra.csosn_cst_xml || compra.csosn_cst || ''
-  ).replace(/\D/g, '');
-  const cstRaw = String(
-    item.cst || item.CST || (csosnRaw.length === 2 ? '' : compra.csosn_cst || '')
-  ).replace(/\D/g, '');
-
-  if (!csosnRaw && !cstRaw) {
+  if (!String(csosnFonte).replace(/\D/g, '') && !String(cstFonte).replace(/\D/g, '')) {
     throw Object.assign(
       new Error('Tributação ICMS (CST/CSOSN) não carregada da NF-e original.'),
       { code: 'TRIBUTACAO_AUSENTE', statusCode: 400 }
@@ -110,57 +197,33 @@ function montarImpostoItem({ compra, item, config, valorItem }) {
   const pIpi = num(item.p_ipi);
   const vIpi = num(item.v_ipi != null ? item.v_ipi : (vBCIpi != null && pIpi != null ? (vBCIpi * pIpi) / 100 : null));
 
-  let icmsXml;
-  if (crt === 1 || csosnRaw.length === 3) {
-    const csosn = csosnRaw.padStart(3, '0').slice(-3);
-    if (['101', '102', '103', '300', '400'].includes(csosn)) {
-      icmsXml = `
-            <ICMSSN${csosn === '101' ? '101' : '102'}>
-              <orig>${orig}</orig>
-              <CSOSN>${csosn}</CSOSN>
-              ${csosn === '101' ? `<pCredSN>${formatNumber(pICMS || 0, 4)}</pCredSN><vCredICMSSN>${formatNumber(vICMS || 0, 2)}</vCredICMSSN>` : ''}
-            </ICMSSN${csosn === '101' ? '101' : '102'}>`;
-    } else if (csosn === '500') {
-      icmsXml = `
-            <ICMSSN500>
-              <orig>${orig}</orig>
-              <CSOSN>500</CSOSN>
-            </ICMSSN500>`;
-    } else {
-      icmsXml = `
-            <ICMSSN900>
-              <orig>${orig}</orig>
-              <CSOSN>${csosn}</CSOSN>
-              ${vBC != null ? `<modBC>3</modBC><vBC>${formatNumber(vBC, 2)}</vBC><pICMS>${formatNumber(pICMS || 0, 4)}</pICMS><vICMS>${formatNumber(vICMS || 0, 2)}</vICMS>` : ''}
-            </ICMSSN900>`;
-    }
-  } else {
-    const cst = cstRaw.padStart(2, '0').slice(-2);
-    if (['00', '20'].includes(cst)) {
-      icmsXml = `
-            <ICMS${cst}>
-              <orig>${orig}</orig>
-              <CST>${cst}</CST>
-              <modBC>3</modBC>
-              <vBC>${formatNumber(vBC || 0, 2)}</vBC>
-              <pICMS>${formatNumber(pICMS || 0, 4)}</pICMS>
-              <vICMS>${formatNumber(vICMS || 0, 2)}</vICMS>
-            </ICMS${cst}>`;
-    } else if (['40', '41', '50'].includes(cst)) {
-      icmsXml = `
-            <ICMS40>
-              <orig>${orig}</orig>
-              <CST>${cst}</CST>
-            </ICMS40>`;
-    } else {
-      icmsXml = `
-            <ICMS90>
-              <orig>${orig}</orig>
-              <CST>${cst}</CST>
-              ${vBC != null ? `<modBC>3</modBC><vBC>${formatNumber(vBC, 2)}</vBC><pICMS>${formatNumber(pICMS || 0, 4)}</pICMS><vICMS>${formatNumber(vICMS || 0, 2)}</vICMS>` : ''}
-            </ICMS90>`;
-    }
+  if (resolucao.regime === 'normal' && ['00', '20'].includes(resolucao.cst) && vBC != null) {
+    resolucao.icms = {
+      ...resolucao.icms,
+      modBC: resolucao.icms.modBC != null ? resolucao.icms.modBC : 3,
+      vBC: resolucao.icms.vBC != null ? resolucao.icms.vBC : vBC,
+      pICMS: resolucao.icms.pICMS != null ? resolucao.icms.pICMS : (pICMS || 0),
+      vICMS: resolucao.icms.vICMS != null ? resolucao.icms.vICMS : (vICMS || 0)
+    };
   }
+  if (resolucao.regime === 'simples' && resolucao.csosn === '101') {
+    resolucao.icms = {
+      ...resolucao.icms,
+      pCredSN: resolucao.icms.pCredSN != null ? resolucao.icms.pCredSN : (pICMS || 0),
+      vCredICMSSN: resolucao.icms.vCredICMSSN != null ? resolucao.icms.vCredICMSSN : (vICMS || 0)
+    };
+  }
+  if (resolucao.regime === 'simples' && resolucao.csosn === '900' && vBC != null) {
+    resolucao.icms = {
+      ...resolucao.icms,
+      modBC: resolucao.icms.modBC != null ? resolucao.icms.modBC : 3,
+      vBC: resolucao.icms.vBC != null ? resolucao.icms.vBC : vBC,
+      pICMS: resolucao.icms.pICMS != null ? resolucao.icms.pICMS : (pICMS || 0),
+      vICMS: resolucao.icms.vICMS != null ? resolucao.icms.vICMS : (vICMS || 0)
+    };
+  }
+
+  const icmsXml = montarIcmsXmlResolvido(resolucao);
 
   const pisNt = ['04', '05', '06', '07', '08', '09'].includes(cstPis.padStart(2, '0'));
   const cofinsNt = ['04', '05', '06', '07', '08', '09'].includes(cstCofins.padStart(2, '0'));
@@ -184,10 +247,9 @@ function montarImpostoItem({ compra, item, config, valorItem }) {
       : `<IPI><cEnq>999</cEnq><IPITrib><CST>${cstIpi2}</CST><vBC>${formatNumber(vBCIpi || 0, 2)}</vBC><pIPI>${formatNumber(pIpi || 0, 4)}</pIPI><vIPI>${formatNumber(vIpi || 0, 2)}</vIPI></IPITrib></IPI>`;
   }
 
-  return {
+  return aplicarIpiDevolucaoNoImposto({
     xml: `
-          <ICMS>${icmsXml}
-          </ICMS>
+          ${icmsXml}
           ${ipiXml}
           ${pisXml}
           ${cofinsXml}`,
@@ -203,8 +265,9 @@ function montarImpostoItem({ compra, item, config, valorItem }) {
       vIpi: num(vIpi),
       vIpiDevol: num(item.v_ipi_devol != null ? item.v_ipi_devol : vIpi)
     },
-    espelhado: false
-  };
+    espelhado: false,
+    resolucao
+  }, item);
 }
 
 /**
@@ -298,7 +361,15 @@ function buildXmlNFeDevolucaoCompra({ config, compra, itens, numero, observacoes
   let totVPIS = 0;
   let totVCOFINS = 0;
   let totVIPI = 0;
-  let totVIPIDevol = 0;
+  let totVFrete = 0;
+  let totVSeg = 0;
+  let totVDesc = 0;
+  let totVOutro = 0;
+  let totVICMSDeson = 0;
+  let totVFCPSTRet = 0;
+  const resolucaoIcms = [];
+  const vipiDevolItens = [];
+  const diagnosticoIpiItens = [];
 
   const detXml = itens.map((item, idx) => {
     const nome = item.produto_nome || item.descricao_produto || 'PRODUTO DEVOLVIDO';
@@ -325,6 +396,12 @@ function buildXmlNFeDevolucaoCompra({ config, compra, itens, numero, observacoes
 
     const cfopItem = onlyDigits(item.cfop || cfopPadrao).slice(0, 4) || cfopPadrao;
     const imposto = montarImpostoItem({ compra, item, config, valorItem: valorTotal });
+    if (imposto.resolucao) {
+      resolucaoIcms.push(resumoResolucaoIcms(imposto.resolucao, {
+        item: idx + 1,
+        produto: nome
+      }));
+    }
     totVBC += imposto.totais.vBC || 0;
     totVICMS += imposto.totais.vICMS || 0;
     totVBCST += imposto.totais.vBCST || 0;
@@ -334,7 +411,32 @@ function buildXmlNFeDevolucaoCompra({ config, compra, itens, numero, observacoes
     totVPIS += imposto.totais.vPis || 0;
     totVCOFINS += imposto.totais.vCofins || 0;
     totVIPI += imposto.totais.vIpi || 0;
-    totVIPIDevol += imposto.totais.vIpiDevol || 0;
+    const vIpiDevolItem = arredondarMoeda(imposto.totais.vIpiDevol || 0);
+    vipiDevolItens.push(vIpiDevolItem);
+    diagnosticoIpiItens.push({
+      nItem: idx + 1,
+      codigo: String(codigo),
+      qtdOriginal: Number(
+        item.quantidade_original != null
+          ? item.quantidade_original
+          : (item.espelhamento && item.espelhamento.quantidade_original) || qtd
+      ),
+      qtdDevolvida: qtd,
+      percentualDevolucao: imposto.ipiDevolucao ? imposto.ipiDevolucao.percentualDevolucao : 0,
+      vIPIOriginal: imposto.ipiDevolucao ? imposto.ipiDevolucao.vIPIOriginal : 0,
+      vIPIDevolCalculado: vIpiDevolItem
+    });
+    totVICMSDeson += num(imposto.totais.vICMSDeson || item.v_icms_deson || 0);
+    totVFCPSTRet += num(imposto.totais.vFCPSTRet || item.v_fcpst_ret || 0);
+
+    const vFreteItem = num(item.vFrete != null ? item.vFrete : item.v_frete);
+    const vSegItem = num(item.vSeg != null ? item.vSeg : item.v_seg);
+    const vDescItem = num(item.vDesc != null ? item.vDesc : item.v_desc);
+    const vOutroItem = num(item.vOutro != null ? item.vOutro : item.v_outro);
+    totVFrete += vFreteItem;
+    totVSeg += vSegItem;
+    totVDesc += vDescItem;
+    totVOutro += vOutroItem;
 
     const gtin = onlyDigits(item.codigo_barras || item.produto_codigo_barras || item.cEAN || '');
     const cEAN = gtin.length >= 8 ? gtin : 'SEM GTIN';
@@ -356,21 +458,61 @@ function buildXmlNFeDevolucaoCompra({ config, compra, itens, numero, observacoes
           <uTrib>${xmlEscape(unidade)}</uTrib>
           <qTrib>${formatNumber(qtd, 4)}</qTrib>
           <vUnTrib>${formatNumber(valorUnit, 10)}</vUnTrib>
+          ${vFreteItem > 0 ? `<vFrete>${formatNumber(vFreteItem, 2)}</vFrete>` : ''}
+          ${vSegItem > 0 ? `<vSeg>${formatNumber(vSegItem, 2)}</vSeg>` : ''}
+          ${vDescItem > 0 ? `<vDesc>${formatNumber(vDescItem, 2)}</vDesc>` : ''}
+          ${vOutroItem > 0 ? `<vOutro>${formatNumber(vOutroItem, 2)}</vOutro>` : ''}
           <indTot>1</indTot>
         </prod>
         <imposto>
           ${imposto.xml}
         </imposto>
+        ${imposto.xmlImpostoDevol || ''}
       </det>`;
   }).join('');
 
   totalProdutos = num(totalProdutos);
   totVIPI = num(totVIPI);
-  totVIPIDevol = num(totVIPIDevol);
+  const totVIPIDevol = somarMoeda(vipiDevolItens);
+  totVFrete = num(totVFrete);
+  totVSeg = num(totVSeg);
+  totVDesc = num(totVDesc);
+  totVOutro = num(totVOutro);
+  totVST = num(totVST);
+  totVFCPST = num(totVFCPST);
+  totVFCPSTRet = num(totVFCPSTRet);
+  totVICMSDeson = num(totVICMSDeson);
   // Em devolução, IPI espelhado entra tipicamente como vIPIDevol (não soma em vIPI + vNF duplicado)
   const vIPIXml = totVIPIDevol > 0 ? 0 : totVIPI;
   const vIPIDevolXml = totVIPIDevol > 0 ? totVIPIDevol : 0;
-  const vNF = num(totalProdutos + vIPIXml + vIPIDevolXml);
+  const totaisIcms = {
+    vProd: totalProdutos,
+    vDesc: totVDesc,
+    vICMSDeson: totVICMSDeson,
+    vST: totVST,
+    vFCPST: totVFCPST,
+    vFCPSTRet: totVFCPSTRet,
+    vFrete: totVFrete,
+    vSeg: totVSeg,
+    vOutro: totVOutro,
+    vII: 0,
+    vIPI: vIPIXml,
+    vIPIDevol: vIPIDevolXml
+  };
+  const vNF = calcularVNFSefaz(totaisIcms);
+
+  const destUf = String(compra.uf || '').trim().toUpperCase();
+  const destXMun = String(compra.cidade || '').trim();
+  const destCMun = resolverMunicipioDestinatario({
+    cidade: destXMun,
+    uf: destUf,
+    codigoMunicipio: compra.codigo_municipio
+  });
+  validarMunicipioDestinatario({
+    uf: destUf,
+    xMun: destXMun,
+    cMun: destCMun
+  });
 
   const cplBase =
     observacoes ||
@@ -430,9 +572,9 @@ function buildXmlNFeDevolucaoCompra({ config, compra, itens, numero, observacoes
             <xLgr>${xmlEscape(compra.rua || 'NAO INFORMADO')}</xLgr>
             <nro>${xmlEscape(compra.numero || 'S/N')}</nro>
             <xBairro>${xmlEscape(compra.bairro || 'CENTRO')}</xBairro>
-            <cMun>${onlyDigits(compra.codigo_municipio || config.municipioCodigo)}</cMun>
-            <xMun>${xmlEscape(compra.cidade || config.municipioNome || 'MUNICIPIO')}</xMun>
-            <UF>${xmlEscape(compra.uf || config.uf)}</UF>
+            <cMun>${destCMun}</cMun>
+            <xMun>${xmlEscape(destXMun)}</xMun>
+            <UF>${xmlEscape(destUf)}</UF>
             <CEP>${onlyDigits(compra.cep || '00000000')}</CEP>
             <cPais>1058</cPais>
             <xPais>BRASIL</xPais>
@@ -445,22 +587,22 @@ function buildXmlNFeDevolucaoCompra({ config, compra, itens, numero, observacoes
           <ICMSTot>
             <vBC>${formatNumber(num(totVBC), 2)}</vBC>
             <vICMS>${formatNumber(num(totVICMS), 2)}</vICMS>
-            <vICMSDeson>0.00</vICMSDeson>
+            <vICMSDeson>${formatNumber(totVICMSDeson, 2)}</vICMSDeson>
             <vFCP>${formatNumber(num(totVFCP), 2)}</vFCP>
             <vBCST>${formatNumber(num(totVBCST), 2)}</vBCST>
-            <vST>${formatNumber(num(totVST), 2)}</vST>
-            <vFCPST>${formatNumber(num(totVFCPST), 2)}</vFCPST>
-            <vFCPSTRet>0.00</vFCPSTRet>
+            <vST>${formatNumber(totVST, 2)}</vST>
+            <vFCPST>${formatNumber(totVFCPST, 2)}</vFCPST>
+            <vFCPSTRet>${formatNumber(totVFCPSTRet, 2)}</vFCPSTRet>
             <vProd>${formatNumber(totalProdutos, 2)}</vProd>
-            <vFrete>0.00</vFrete>
-            <vSeg>0.00</vSeg>
-            <vDesc>0.00</vDesc>
+            <vFrete>${formatNumber(totVFrete, 2)}</vFrete>
+            <vSeg>${formatNumber(totVSeg, 2)}</vSeg>
+            <vDesc>${formatNumber(totVDesc, 2)}</vDesc>
             <vII>0.00</vII>
             <vIPI>${formatNumber(vIPIXml, 2)}</vIPI>
             <vIPIDevol>${formatNumber(vIPIDevolXml, 2)}</vIPIDevol>
             <vPIS>${formatNumber(num(totVPIS), 2)}</vPIS>
             <vCOFINS>${formatNumber(num(totVCOFINS), 2)}</vCOFINS>
-            <vOutro>0.00</vOutro>
+            <vOutro>${formatNumber(totVOutro, 2)}</vOutro>
             <vNF>${formatNumber(vNF, 2)}</vNF>
           </ICMSTot>
         </total>
@@ -473,16 +615,30 @@ function buildXmlNFeDevolucaoCompra({ config, compra, itens, numero, observacoes
     </NFe>
   `;
 
+  const xmlCompacto = compactarXml(xml);
+  validarIcmsXmlContraCrt(xmlCompacto, config.crt);
+
   return {
     chave,
     serie,
+    numero,
     refNFe,
     finNFe: 4,
     tpNF: 1,
     natOp: 'DEVOLUCAO DE COMPRA',
     totalProdutos: vNF,
     cfop: cfopPadrao,
-    xmlSemAssinatura: compactarXml(xml)
+    xmlSemAssinatura: xmlCompacto,
+    resolucaoIcms,
+    diagnosticoIpiDevol: {
+      compraId: compra.id,
+      nfeNumero: numero,
+      itens: diagnosticoIpiItens,
+      somaVipiDevolItens: totVIPIDevol,
+      vIPIDevolTotalXml: vIPIDevolXml,
+      diferenca: arredondarMoeda(vIPIDevolXml - totVIPIDevol),
+      validacao: arredondarMoeda(vIPIDevolXml - totVIPIDevol) === 0 ? 'OK' : 'DIVERGENTE'
+    }
   };
 }
 

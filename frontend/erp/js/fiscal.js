@@ -173,15 +173,29 @@ function carregarFiscalConfig(targetSelector = '#fiscal-config-form-area') {
                     </div>
                     ${getFiscalField('UF', 'fiscal_uf_sigla', cfg.uf || 'CE')}
                     ${getFiscalField('Código UF', 'fiscal_codigo_uf', cfg.codigoUf || '23')}
-                    ${getFiscalField('Série', 'fiscal_serie', cfg.serie || 1, '', 'number')}
+                    ${getFiscalField('Série NFC-e', 'fiscal_serie', cfg.serie || 1, 'Modelo 65', 'number')}
                     <div class="col-md-4 mb-3" data-cfg-search="número nfc-e numeração">
                         <label class="form-label cds-cfg-label">Próximo Número NFC-e</label>
-                        <input type="number" id="proximoNumeroNfce" class="form-control fiscal-field" min="1" placeholder="Ex: 5001">
-                        <div class="form-text cds-cfg-hint">Informe o próximo número da NFC-e.</div>
+                        <input type="number" id="proximoNumeroNfce" class="form-control fiscal-field" min="1" placeholder="Ex: 1250">
+                        <div class="form-text cds-cfg-hint">Modelo 65 — próximo número a emitir.</div>
                         <small style="color:red;" id="msgNumeroNfceSuperUser">Apenas SUPER ADMIN pode alterar a numeração NFC-e.</small>
                     </div>
                     <input type="hidden" class="fiscal-field" id="fiscal_numero_atual" value="${cfg.numeroAtual || 1}">
                     ${getFiscalField('Regime tributário CRT', 'fiscal_regime_tributario', cfg.crt || '1', '1 = Simples Nacional')}
+            `;
+
+            const blocoNumeracaoNfe = `
+                    <div class="col-12 mb-2"><h6 class="text-uppercase small text-muted mb-0">NFC-e — modelo 65</h6>
+                    <div class="form-text mb-2">Série e próximo número estão no bloco Ambiente (não compartilham sequência com a NF-e 55).</div></div>
+                    <div class="col-12 mb-2"><h6 class="text-uppercase small text-muted mb-0">NF-e — modelo 55</h6></div>
+                    ${getFiscalField('Série NF-e', 'fiscal_serie_nfe', (cfg.numeracaoDocumentos && cfg.numeracaoDocumentos.nfe && cfg.numeracaoDocumentos.nfe.serie) || cfg.serieNfe || 1, 'Independente da NFC-e', 'number')}
+                    <div class="col-md-4 mb-3" data-cfg-search="número nf-e nfe 55 numeração">
+                        <label class="form-label cds-cfg-label">Próximo Número NF-e</label>
+                        <input type="number" id="proximoNumeroNfe" class="form-control fiscal-field" min="1" max="999999999" placeholder="Ex: 9">
+                        <div class="form-text cds-cfg-hint">Número da próxima NF-e modelo 55. Não altera notas já emitidas.</div>
+                        <small style="color:red;" id="msgNumeroNfeSuperUser">Apenas SUPER ADMIN pode alterar a numeração NF-e.</small>
+                    </div>
+                    <input type="hidden" class="fiscal-field" id="fiscal_numero_atual_nfe" value="${cfg.numeroAtualNfe || 1}">
             `;
 
             const blocoEmpresa = `
@@ -246,7 +260,8 @@ function carregarFiscalConfig(targetSelector = '#fiscal-config-form-area') {
 
             const html = layoutCentro
                 ? `
-                ${_fiscalCard('<i class="fas fa-globe"></i> Ambiente e numeração', blocoAmbiente, 'ambiente uf série nfc-e produção homologação')}
+                ${_fiscalCard('<i class="fas fa-globe"></i> Ambiente e numeração NFC-e', blocoAmbiente, 'ambiente uf série nfc-e produção homologação')}
+                ${_fiscalCard('<i class="fas fa-hashtag"></i> Numeração dos documentos fiscais', blocoNumeracaoNfe, 'nf-e nfe 55 série próximo número')}
                 ${_fiscalCard('<i class="fas fa-building"></i> Emitente', blocoEmpresa, 'empresa cnpj ie município endereço')}
                 ${_fiscalCard('<i class="fas fa-certificate"></i> Certificado e CSC', blocoCert, 'certificado csc senha')}
                 ${_fiscalCard('<i class="fas fa-link"></i> URLs Homologação', blocoUrlsHom, 'urls homologação qrcode')}
@@ -256,6 +271,8 @@ function carregarFiscalConfig(targetSelector = '#fiscal-config-form-area') {
                 : `
                 <div class="row">
                     ${blocoAmbiente}
+                    <div class="col-12"><hr><h6>Numeração dos documentos fiscais</h6></div>
+                    ${blocoNumeracaoNfe}
                     ${blocoEmpresa}
                     ${blocoCert}
                     <div class="col-12"><hr><h6 class="text-warning">URLs de Homologação</h6></div>
@@ -282,16 +299,34 @@ function carregarFiscalConfig(targetSelector = '#fiscal-config-form-area') {
             if (proximoNumeroEl) {
                 proximoNumeroEl.value = (parseInt(cfg.numeroAtual || 0) + 1);
             }
+            const proximoNfeEl = $target.find('#proximoNumeroNfe')[0];
+            if (proximoNfeEl) {
+                const nfeProx = (cfg.numeracaoDocumentos && cfg.numeracaoDocumentos.nfe && cfg.numeracaoDocumentos.nfe.proximoNumero)
+                    || cfg.numeroAtualNfe
+                    || 1;
+                proximoNfeEl.value = nfeProx;
+            }
 
             const usuario = typeof obterUsuarioLogado === 'function' ? obterUsuarioLogado() : {};
             const campoNumero = $target.find('#proximoNumeroNfce')[0];
             const msgNumero = $target.find('#msgNumeroNfceSuperUser')[0];
+            const campoNumeroNfe = $target.find('#proximoNumeroNfe')[0];
+            const msgNumeroNfe = $target.find('#msgNumeroNfeSuperUser')[0];
+            const campoSerieNfe = $target.find('#fiscal_serie_nfe')[0];
 
             if (campoNumero) {
                 if (!isSuperAdminUser()) {
                     campoNumero.disabled = true;
                 } else if (msgNumero) {
                     msgNumero.style.display = 'none';
+                }
+            }
+            if (campoNumeroNfe) {
+                if (!isSuperAdminUser()) {
+                    campoNumeroNfe.disabled = true;
+                    if (campoSerieNfe) campoSerieNfe.disabled = true;
+                } else if (msgNumeroNfe) {
+                    msgNumeroNfe.style.display = 'none';
                 }
             }
 
@@ -350,6 +385,26 @@ function salvarConfigFiscal() {
 
     // Calcular fiscal_numero_atual como (próximo número - 1)
     payload.fiscal_numero_atual = proximoNumero - 1;
+
+    const proximoNfe = parseInt(document.getElementById('proximoNumeroNfe') && document.getElementById('proximoNumeroNfe').value, 10);
+    const serieNfe = parseInt(document.getElementById('fiscal_serie_nfe') && document.getElementById('fiscal_serie_nfe').value, 10);
+    if (document.getElementById('proximoNumeroNfe')) {
+        if (!proximoNfe || proximoNfe <= 0 || proximoNfe > 999999999) {
+            if (typeof showNotification === 'function') {
+                showNotification('Informe um próximo número NF-e válido (1 a 999999999).', 'warning');
+            }
+            return;
+        }
+        if (!serieNfe || serieNfe <= 0 || serieNfe > 999) {
+            if (typeof showNotification === 'function') {
+                showNotification('Informe uma série NF-e válida (1 a 999).', 'warning');
+            }
+            return;
+        }
+        payload.proximoNumeroNfe = proximoNfe;
+        payload.fiscal_numero_atual_nfe = proximoNfe;
+        payload.fiscal_serie_nfe = serieNfe;
+    }
 
     $.ajax({
         url: `${API_URL}/fiscal/config`,

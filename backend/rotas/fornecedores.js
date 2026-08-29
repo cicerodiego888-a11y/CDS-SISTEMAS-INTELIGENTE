@@ -8,6 +8,7 @@ const {
   filtrarFornecedoresPorTermo,
   findOrCreateFornecedor
 } = require('../services/FornecedorCadastroSimplesService');
+const { resolverMunicipioDestinatario } = require('../services/fiscal/municipioIbge');
 
 // LISTAR TODOS (com busca via SearchService quando há termo)
 router.get('/', async (req, res) => {
@@ -96,6 +97,7 @@ router.post('/', (req, res) => {
     nome,
     razao_social,
     cpf_cnpj,
+    inscricao_estadual,
     telefone,
     email,
     contato,
@@ -115,6 +117,7 @@ router.post('/', (req, res) => {
   const nomeLimpo = String(nome).trim();
   const razaoSocialLimpa = razao_social ? String(razao_social).trim() : null;
   const cpfCnpjLimpo = cpf_cnpj ? String(cpf_cnpj).trim() : null;
+  const inscricaoEstadualLimpa = inscricao_estadual ? String(inscricao_estadual).trim() : null;
   const telefoneLimpo = telefone ? String(telefone).trim() : null;
   const emailLimpo = email ? String(email).trim() : null;
   const contatoLimpo = contato ? String(contato).trim() : null;
@@ -131,6 +134,7 @@ router.post('/', (req, res) => {
       nome,
       razao_social,
       cpf_cnpj,
+      inscricao_estadual,
       telefone,
       email,
       contato,
@@ -140,13 +144,15 @@ router.post('/', (req, res) => {
       bairro,
       cidade,
       uf,
+      codigo_municipio,
       observacoes
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     nomeLimpo,
     razaoSocialLimpa,
     cpfCnpjLimpo,
+    inscricaoEstadualLimpa,
     telefoneLimpo,
     emailLimpo,
     contatoLimpo,
@@ -156,6 +162,7 @@ router.post('/', (req, res) => {
     bairroLimpo,
     cidadeLimpa,
     ufLimpa,
+    resolverMunicipioDestinatario({ cidade: cidadeLimpa, uf: ufLimpa }),
     observacoesLimpas
   ], function (err) {
     if (err) {
@@ -199,6 +206,7 @@ router.put('/:id', (req, res) => {
     nome,
     razao_social,
     cpf_cnpj,
+    inscricao_estadual,
     telefone,
     email,
     contato,
@@ -218,6 +226,7 @@ router.put('/:id', (req, res) => {
   const nomeLimpo = String(nome).trim();
   const razaoSocialLimpa = razao_social ? String(razao_social).trim() : null;
   const cpfCnpjLimpo = cpf_cnpj ? String(cpf_cnpj).trim() : null;
+  const inscricaoEstadualLimpa = inscricao_estadual ? String(inscricao_estadual).trim() : null;
   const telefoneLimpo = telefone ? String(telefone).trim() : null;
   const emailLimpo = email ? String(email).trim() : null;
   const contatoLimpo = contato ? String(contato).trim() : null;
@@ -234,6 +243,7 @@ router.put('/:id', (req, res) => {
       nome = ?,
       razao_social = ?,
       cpf_cnpj = ?,
+      inscricao_estadual = ?,
       telefone = ?,
       email = ?,
       contato = ?,
@@ -243,12 +253,14 @@ router.put('/:id', (req, res) => {
       bairro = ?,
       cidade = ?,
       uf = ?,
+      codigo_municipio = ?,
       observacoes = ?
     WHERE id = ?
   `, [
     nomeLimpo,
     razaoSocialLimpa,
     cpfCnpjLimpo,
+    inscricaoEstadualLimpa,
     telefoneLimpo,
     emailLimpo,
     contatoLimpo,
@@ -258,6 +270,7 @@ router.put('/:id', (req, res) => {
     bairroLimpo,
     cidadeLimpa,
     ufLimpa,
+    resolverMunicipioDestinatario({ cidade: cidadeLimpa, uf: ufLimpa }),
     observacoesLimpas,
     id
   ], function (err) {

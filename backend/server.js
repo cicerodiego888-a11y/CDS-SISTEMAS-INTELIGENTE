@@ -25,8 +25,10 @@ app.use((req, res, next) => {
     credentials: true
   })(req, res, next);
 });
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+// NF-e / Compras enviam XML no JSON — limite padrão (100kb) causa 500 silencioso.
+const BODY_PARSER_LIMIT = process.env.BODY_PARSER_LIMIT || '10mb';
+app.use(bodyParser.json({ limit: BODY_PARSER_LIMIT }));
+app.use(bodyParser.urlencoded({ extended: true, limit: BODY_PARSER_LIMIT }));
 
 app.get('/ping', (req, res) => {
     res.json({ status: 'ok' });
@@ -262,10 +264,15 @@ app.get('*.jpg', (req, res, next) => {
     next();
 });
 
-// Error handler — JSON inválido
+// Error handler — JSON inválido / payload grande
 app.use((err, req, res, next) => {
     if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
         return res.status(400).json({ error: 'Requisição inválida.' });
+    }
+    if (err && err.type === 'entity.too.large') {
+        return res.status(413).json({
+            error: 'Corpo da requisição excede o limite permitido. Reduza o payload ou aumente BODY_PARSER_LIMIT.'
+        });
     }
     next(err);
 });

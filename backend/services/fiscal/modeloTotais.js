@@ -11,6 +11,47 @@ function round2(n) {
   return Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100;
 }
 
+/** Alias oficial: 2 casas decimais (moeda). */
+const arredondarMoeda = round2;
+
+function toCentavos(valor) {
+  return Math.round(arredondarMoeda(valor) * 100);
+}
+
+function somarMoeda(valores) {
+  const cents = (Array.isArray(valores) ? valores : []).reduce((s, v) => s + toCentavos(v), 0);
+  return cents / 100;
+}
+
+/**
+ * IPI devolvido do item: arredonda o item primeiro.
+ * percentualDevolucao = qDev / qOrig; vIPIDevol = arredondar(vIPIOriginal * perc).
+ */
+function calcularIpiDevolucaoItem({
+  quantidadeOriginal,
+  quantidadeDevolvida,
+  vIPIOriginal
+} = {}) {
+  const qOrig = Number(quantidadeOriginal);
+  const qDev = Number(quantidadeDevolvida);
+  const vOrig = Number(vIPIOriginal);
+  if (!(qDev > 0) || !(vOrig > 0)) {
+    return {
+      percentualDevolucao: 0,
+      pDevol: 0,
+      vIPIDevol: 0,
+      vIPIOriginal: arredondarMoeda(vOrig > 0 ? vOrig : 0)
+    };
+  }
+  const percentualDevolucao = qOrig > 0 ? qDev / qOrig : 1;
+  return {
+    percentualDevolucao,
+    pDevol: arredondarMoeda(percentualDevolucao * 100),
+    vIPIDevol: arredondarMoeda(vOrig * percentualDevolucao),
+    vIPIOriginal: arredondarMoeda(vOrig)
+  };
+}
+
 function formatNumber(value, decimals = 2) {
   return Number(value || 0).toFixed(decimals);
 }
@@ -112,6 +153,33 @@ function determinarModeloDeTotais({ itens = [], venda = {} } = {}) {
   };
 }
 
+/**
+ * Fórmula oficial do MOC (grupo W ICMSTot):
+ * vNF = vProd − vDesc − vICMSDeson + vST + vFCPST + vFCPSTRet
+ *       + vFrete + vSeg + vOutro + vII + vIPI + vIPIDevol
+ * PIS e COFINS NÃO entram no vNF (apenas informativos no ICMSTot).
+ */
+function calcularVNFSefaz(totais = {}) {
+  const vProd = round2(totais.vProd || 0);
+  const vDesc = round2(totais.vDesc || 0);
+  const vICMSDeson = round2(totais.vICMSDeson || 0);
+  const vST = round2(totais.vST || 0);
+  const vFCPST = round2(totais.vFCPST || 0);
+  const vFCPSTRet = round2(totais.vFCPSTRet || 0);
+  const vFrete = round2(totais.vFrete || 0);
+  const vSeg = round2(totais.vSeg || 0);
+  const vOutro = round2(totais.vOutro || 0);
+  const vII = round2(totais.vII || 0);
+  const vIPI = round2(totais.vIPI || 0);
+  const vIPIDevol = round2(totais.vIPIDevol || 0);
+  return round2(
+    vProd - vDesc - vICMSDeson
+    + vST + vFCPST + vFCPSTRet
+    + vFrete + vSeg + vOutro
+    + vII + vIPI + vIPIDevol
+  );
+}
+
 function validarIdentidadeICMSTot(totais = {}) {
   const vProd = round2(totais.vProd || 0);
   const vDesc = round2(totais.vDesc || 0);
@@ -121,14 +189,9 @@ function validarIdentidadeICMSTot(totais = {}) {
   const vIPI = round2(totais.vIPI || 0);
   const vST = round2(totais.vST || 0);
   const vII = round2(totais.vII || 0);
-  const vPIS = round2(totais.vPIS || 0);
-  const vCOFINS = round2(totais.vCOFINS || 0);
   const vIPIDevol = round2(totais.vIPIDevol || 0);
   const vNF = round2(totais.vNF || 0);
-
-  const esperado = round2(
-    vProd - vDesc + vFrete + vSeg + vOutro + vII + vIPI + vIPIDevol + vPIS + vCOFINS + vST
-  );
+  const esperado = calcularVNFSefaz(totais);
 
   if (Math.abs(esperado - vNF) > 0.01) {
     const erro = new Error(
@@ -159,8 +222,13 @@ module.exports = {
   MODELO_BRUTO,
   MODELO_LIQUIDO,
   round2,
+  arredondarMoeda,
+  toCentavos,
+  somarMoeda,
+  calcularIpiDevolucaoItem,
   formatNumber,
   obterValorFiscalItem,
   determinarModeloDeTotais,
+  calcularVNFSefaz,
   validarIdentidadeICMSTot
 };

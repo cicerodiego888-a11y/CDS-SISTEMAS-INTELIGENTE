@@ -18,6 +18,11 @@ const { extrairNomeEmpresaDoCertificado } = require('./certificateService');
 const { montarDocumentoDestinatarioNfe } = require('./xmlBuilderNfeVenda');
 const { resolverNomeDestinatarioNfe } = require('./nfeRetornoAutorizacao');
 const { montarImpostoItem } = require('./xmlBuilderNfeDevolucaoCompra');
+const { calcularVNFSefaz } = require('./modeloTotais');
+const {
+  resolverMunicipioDestinatario,
+  validarMunicipioDestinatario
+} = require('./municipioIbge');
 
 function num(v, casas = 2) {
   const n = Number(v);
@@ -99,6 +104,18 @@ function buildXmlNFeDevolucaoVenda({ config, venda, itens, numero, observacoes, 
     config.ambiente,
     venda.cliente_nome || venda.cliente || 'CLIENTE'
   );
+
+  const destXMun = String(venda.cliente_cidade || venda.cidade || '').trim();
+  const destCMun = resolverMunicipioDestinatario({
+    cidade: destXMun,
+    uf: ufCliente,
+    codigoMunicipio: venda.cliente_codigo_municipio || venda.codigo_municipio
+  });
+  validarMunicipioDestinatario({
+    uf: ufCliente,
+    xMun: destXMun,
+    cMun: destCMun
+  });
 
   let totalProdutos = 0;
   let totVBC = 0;
@@ -186,15 +203,25 @@ function buildXmlNFeDevolucaoVenda({ config, venda, itens, numero, observacoes, 
         <imposto>
           ${imposto.xml}
         </imposto>
+        ${imposto.xmlImpostoDevol || ''}
       </det>`;
   }).join('');
 
   totalProdutos = num(totalProdutos);
   totVIPI = num(totVIPI);
   totVIPIDevol = num(totVIPIDevol);
+  totVST = num(totVST);
+  totVFCPST = num(totVFCPST);
   const vIPIXml = totVIPIDevol > 0 ? 0 : totVIPI;
   const vIPIDevolXml = totVIPIDevol > 0 ? totVIPIDevol : 0;
-  const vNF = num(totalProdutos + vIPIXml + vIPIDevolXml);
+  const vNF = calcularVNFSefaz({
+    vProd: totalProdutos,
+    vDesc: 0,
+    vST: totVST,
+    vFCPST: totVFCPST,
+    vIPI: vIPIXml,
+    vIPIDevol: vIPIDevolXml
+  });
 
   const cplBase =
     observacoes ||
@@ -254,8 +281,8 @@ function buildXmlNFeDevolucaoVenda({ config, venda, itens, numero, observacoes, 
             <xLgr>${xmlEscape(venda.cliente_rua || venda.rua || 'NAO INFORMADO')}</xLgr>
             <nro>${xmlEscape(venda.cliente_numero || venda.numero || 'S/N')}</nro>
             <xBairro>${xmlEscape(venda.cliente_bairro || venda.bairro || 'CENTRO')}</xBairro>
-            <cMun>${onlyDigits(venda.cliente_codigo_municipio || config.municipioCodigo)}</cMun>
-            <xMun>${xmlEscape(venda.cliente_cidade || venda.cidade || config.municipioNome || 'MUNICIPIO')}</xMun>
+            <cMun>${destCMun}</cMun>
+            <xMun>${xmlEscape(destXMun)}</xMun>
             <UF>${xmlEscape(ufCliente || config.uf)}</UF>
             <CEP>${onlyDigits(venda.cliente_cep || venda.cep || '00000000')}</CEP>
             <cPais>1058</cPais>

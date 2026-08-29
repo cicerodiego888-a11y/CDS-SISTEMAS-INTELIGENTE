@@ -28,6 +28,7 @@ const {
 const { obterMuc, resultadoParaJson } = require('../motores/muc');
 const {
   emitirNFeDevolucaoCompra,
+  previaNfeDevolucaoCompra,
   prepararNfeDevolucaoCompra,
   obterNfeDevolucaoPorId,
   listarHistoricoDevolucaoCompra,
@@ -38,6 +39,11 @@ const {
   obterPainelStatus,
   obterXmlVersionado
 } = require('../services/fiscal/nfeDevolucaoCompra');
+const {
+  obterRascunhoDevolucaoCompra,
+  salvarRascunhoDevolucaoCompra,
+  excluirRascunhoDevolucaoCompra
+} = require('../services/fiscal/rascunhoDevolucaoCompra');
 const { getMiipService } = require('../motores/miip/getMiipService');
 const centralOrchestrator = require('../motores/central-entradas/CentralEntradasOrchestrator');
 const { logCentralErro } = require('../motores/central-entradas/utils/centralLog');
@@ -1832,6 +1838,68 @@ router.get('/:id/nfe-devolucao/preparar', async (req, res) => {
       success: false,
       error: error.message,
       code: error.code || null
+    });
+  }
+});
+
+/** Rascunho de devolução — não emite NF-e nem altera saldo */
+router.get('/:id/nfe-devolucao/rascunho', async (req, res) => {
+  try {
+    const rascunho = await obterRascunhoDevolucaoCompra(Number(req.params.id));
+    res.json({ success: true, rascunho });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/:id/nfe-devolucao/rascunho', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const rascunho = await salvarRascunhoDevolucaoCompra(Number(req.params.id), body, {
+      usuarioId: req.usuario?.id || req.user?.id || null,
+      usuarioNome: req.usuario?.nome || req.user?.nome || req.usuario?.username || null
+    });
+    res.json({
+      success: true,
+      message: 'Rascunho da devolução salvo. Você pode continuar depois.',
+      rascunho
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message,
+      code: error.code || null
+    });
+  }
+});
+
+router.delete('/:id/nfe-devolucao/rascunho', async (req, res) => {
+  try {
+    const out = await excluirRascunhoDevolucaoCompra(Number(req.params.id));
+    res.json({ success: true, ...out });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
+});
+
+/** Prévia da NF-e de devolução — não emite, não transmite, não altera saldo */
+router.post('/:id/nfe-devolucao/previa', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const previa = await previaNfeDevolucaoCompra(Number(req.params.id), {
+      itens: body.itens,
+      observacoes: body.observacoes,
+      cfop: body.cfop,
+      refNFe: body.refNFe || body.chave_referenciada || body.chaveReferenciada
+    });
+    res.json(previa);
+  } catch (error) {
+    res.status(error.statusCode || 500).json({
+      success: false,
+      emitido: false,
+      error: error.message,
+      code: error.code || null,
+      erros: error.erros || null
     });
   }
 });

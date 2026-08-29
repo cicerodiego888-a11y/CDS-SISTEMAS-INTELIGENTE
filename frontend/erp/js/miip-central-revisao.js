@@ -2455,6 +2455,7 @@
       } else if (typeof window.CdsErpLazyLoader?.loadFeatureScript === 'function') {
         await window.CdsErpLazyLoader.loadFeatureScript('/erp/js/categorias.js').catch(() => {});
         await window.CdsErpLazyLoader.loadFeatureScript('/erp/js/subcategorias.js').catch(() => {});
+        await window.CdsErpLazyLoader.loadFeatureScript('/shared/js/cds-stable-dropdown.js').catch(() => {});
         await window.CdsErpLazyLoader.loadFeatureScript('/erp/js/produtos.js');
       } else {
         const carregarScript = (src) => new Promise((resolve, reject) => {
@@ -2467,6 +2468,7 @@
         });
         await carregarScript('/erp/js/categorias.js').catch(() => {});
         await carregarScript('/erp/js/subcategorias.js').catch(() => {});
+        await carregarScript('/shared/js/cds-stable-dropdown.js').catch(() => {});
         await carregarScript('/erp/js/produtos.js');
       }
       return typeof showProdutoModal === 'function';

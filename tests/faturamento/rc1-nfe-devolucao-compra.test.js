@@ -38,6 +38,7 @@ describe('RC1 — XML NF-e Devolução de Compra', () => {
         chave_acesso: CHAVE44,
         fornecedor: 'FORNECEDOR TESTE LTDA',
         fornecedor_cnpj: '12345678000199',
+        cidade: 'Juazeiro do Norte',
         uf: 'CE',
         csosn_cst: '102',
         cst_pis: '07',

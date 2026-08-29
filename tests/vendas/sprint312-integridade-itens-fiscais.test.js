@@ -157,3 +157,11 @@ describe('Sprint 3.12 — isolamento', () => {
     assert.equal(r.ajusteIntegridadeAplicado, false);
   });
 });
+
+describe('schema vendas_itens — valor_nao_fiscal', () => {
+  it('database.js cria e migra valor_nao_fiscal em vendas_itens', () => {
+    const src = fs.readFileSync(path.join(__dirname, '../../backend/database.js'), 'utf8');
+    assert.match(src, /ALTER TABLE vendas_itens ADD COLUMN valor_nao_fiscal REAL DEFAULT 0/);
+    assert.match(src, /CREATE TABLE IF NOT EXISTS vendas_itens \([\s\S]*valor_nao_fiscal REAL DEFAULT 0/);
+  });
+});

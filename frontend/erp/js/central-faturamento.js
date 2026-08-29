@@ -740,6 +740,18 @@
         return;
       }
       if (acao === 'visualizar_danfe' || acao === 'reimprimir_danfe') {
+        const notaId = pacoteAtual?.nota?.id;
+        if (notaId && typeof abrirDanfe === 'function') {
+          abrirDanfe({
+            tipo: 'VENDA',
+            id: notaId,
+            chave: pacoteAtual?.nota?.chave_acesso,
+            numero: pacoteAtual?.nota?.numero,
+            serie: pacoteAtual?.nota?.serie,
+            imprimir: acao === 'reimprimir_danfe'
+          });
+          return;
+        }
         const resp = await fetch(`${API()}/central-faturamento/vendas/${vendaAtualId}/danfe`, { headers: headersJson() });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.error || 'DANFE indisponível');

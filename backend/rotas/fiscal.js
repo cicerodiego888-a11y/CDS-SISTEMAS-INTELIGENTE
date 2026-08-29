@@ -166,10 +166,51 @@ router.put('/config', carregarPerfilUsuario, async (req, res) => {
       }).catch((auditErr) => console.error('Erro ao gravar auditoria fiscal:', auditErr));
     }
 
+    const proximoNfeUi = payload.proximoNumeroNfe != null && payload.proximoNumeroNfe !== ''
+      ? parseInt(payload.proximoNumeroNfe, 10)
+      : (payload.fiscal_numero_atual_nfe != null && payload.fiscal_numero_atual_nfe !== ''
+        ? parseInt(payload.fiscal_numero_atual_nfe, 10)
+        : null);
+    if (payload.fiscal_serie_nfe !== undefined || proximoNfeUi != null) {
+      const usuario = req.user || {};
+      if (usuario.perfil !== 'SUPER_ADMIN') {
+        return res.status(403).json({
+          error: 'Apenas SUPER ADMIN pode alterar a numeração da NF-e modelo 55.'
+        });
+      }
+      const { validarNumeracaoFiscal } = require('../services/fiscal/numeracaoFiscalService');
+      try {
+        validarNumeracaoFiscal({
+          serie: payload.fiscal_serie_nfe != null ? payload.fiscal_serie_nfe : 1,
+          proximoNumero: proximoNfeUi != null ? proximoNfeUi : 1
+        });
+      } catch (numErr) {
+        return res.status(400).json({ error: numErr.message, code: numErr.code });
+      }
+      delete payload.proximoNumeroNfe;
+      if (proximoNfeUi != null) payload.fiscal_numero_atual_nfe = String(proximoNfeUi);
+    }
+
     const entries = Object.entries(payload);
 
     for (const [chave, valor] of entries) {
       await setConfiguracao(chave, String(valor ?? ''), 'string', `Configuração fiscal: ${chave}`);
+    }
+
+    if (payload.fiscal_serie_nfe !== undefined || payload.fiscal_numero_atual_nfe !== undefined) {
+      try {
+        const { salvarProximaNumeracaoFiscal } = require('../services/fiscal/numeracaoFiscalService');
+        const cfgAtual = await getFiscalConfig({ validarUrls: false });
+        await salvarProximaNumeracaoFiscal({
+          cnpj: payload.cnpj || cfgAtual.cnpj,
+          ambiente: payload.fiscal_ambiente || cfgAtual.ambiente,
+          modelo: '55',
+          serie: payload.fiscal_serie_nfe || cfgAtual.serieNfe,
+          proximoNumero: payload.fiscal_numero_atual_nfe || cfgAtual.numeroAtualNfe
+        });
+      } catch (numErr) {
+        return res.status(400).json({ error: numErr.message, code: numErr.code });
+      }
     }
 
     gravarAuditoria({

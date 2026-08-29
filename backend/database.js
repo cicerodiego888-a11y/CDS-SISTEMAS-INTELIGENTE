@@ -168,6 +168,7 @@ function aplicarAlteracoesPosCriacao() {
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN quantidade_fiscal REAL DEFAULT 0`);
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN quantidade_nao_fiscal REAL DEFAULT 0`);
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN valor_fiscal REAL DEFAULT 0`);
+  aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN valor_nao_fiscal REAL DEFAULT 0`);
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN preco_unitario_interno REAL`);
   // RCM-ATACADO-02 — SQLite REAL preserva precisão > 2 casas (DECIMAL(18,6) lógico)
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN modo_venda TEXT DEFAULT 'peso'`);
@@ -1456,6 +1457,7 @@ function criarTabelas() {
         bairro VARCHAR(100),
         cidade VARCHAR(100),
         uf VARCHAR(2),
+        codigo_municipio VARCHAR(7),
         observacoes TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
@@ -1472,6 +1474,15 @@ function criarTabelas() {
             console.error('Erro ao adicionar coluna inscricao_estadual:', alterErr);
           } else if (!alterErr) {
             console.log('Coluna inscricao_estadual adicionada/verificada na tabela fornecedores');
+          }
+        });
+        db.run(`
+          ALTER TABLE fornecedores ADD COLUMN codigo_municipio VARCHAR(7)
+        `, (alterMunErr) => {
+          if (alterMunErr && !alterMunErr.message.includes('duplicate column name')) {
+            console.error('Erro ao adicionar coluna codigo_municipio:', alterMunErr);
+          } else if (!alterMunErr) {
+            console.log('Coluna codigo_municipio adicionada/verificada na tabela fornecedores');
           }
         });
       }
@@ -1827,6 +1838,7 @@ function criarTabelas() {
         produto_id INTEGER,
         quantidade DECIMAL(10,2) NOT NULL,
         preco_unitario DECIMAL(10,2) NOT NULL,
+        preco_unitario_interno REAL,
         desconto_percentual DECIMAL(5,2) DEFAULT 0,
         desconto_valor DECIMAL(10,2) DEFAULT 0,
         desconto_manual INTEGER DEFAULT 0,
@@ -1834,6 +1846,13 @@ function criarTabelas() {
         desconto_atacado DECIMAL(10,2) DEFAULT 0,
         tipo_preco TEXT DEFAULT 'varejo',
         subtotal DECIMAL(10,2) NOT NULL,
+        item_fiscal INTEGER DEFAULT 0,
+        quantidade_fiscal REAL DEFAULT 0,
+        quantidade_nao_fiscal REAL DEFAULT 0,
+        valor_fiscal REAL DEFAULT 0,
+        valor_nao_fiscal REAL DEFAULT 0,
+        modo_venda TEXT DEFAULT 'peso',
+        tipo_venda TEXT DEFAULT 'PESO',
         FOREIGN KEY (venda_id) REFERENCES vendas(id) ON DELETE CASCADE,
         FOREIGN KEY (produto_id) REFERENCES produtos(id)
       )
@@ -2880,6 +2899,8 @@ function inserirConfiguracoesPadrao() {
     ['fiscal_codigo_uf', '23', 'string', 'Código IBGE da UF emitente'],
     ['fiscal_serie', '1', 'number', 'Série da NFC-e'],
     ['fiscal_numero_atual', '1', 'number', 'Próximo número da NFC-e'],
+    ['fiscal_serie_nfe', '1', 'number', 'Série da NF-e modelo 55'],
+    ['fiscal_numero_atual_nfe', '1', 'number', 'Próximo número da NF-e modelo 55'],
     ['fiscal_regime_tributario', '1', 'string', 'CRT do emitente'],
     ['fiscal_ie', '', 'string', 'Inscrição estadual'],
     ['fiscal_im', '', 'string', 'Inscrição municipal'],

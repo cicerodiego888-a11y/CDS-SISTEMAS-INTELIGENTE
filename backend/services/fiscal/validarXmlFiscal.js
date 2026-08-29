@@ -5,7 +5,9 @@
 'use strict';
 
 const path = require('path');
-const { validarIdentidadeICMSTot, round2 } = require('./modeloTotais');
+const { validarIdentidadeICMSTot, round2, toCentavos, arredondarMoeda } = require('./modeloTotais');
+const { validarMunicipioDestinatario } = require('./municipioIbge');
+const { validarIcmsXmlContraCrt } = require('./resolverIcmsCrtEmitente');
 
 function tag(xml, name) {
   const m = String(xml || '').match(new RegExp(`<${name}(?:\\s[^>]*)?>([^<]*)</${name}>`));
@@ -41,11 +43,16 @@ function extrairTotais(xml) {
   return {
     vProd: round2(Number(tag(fonte, 'vProd') || 0)),
     vDesc: round2(Number(tag(fonte, 'vDesc') || 0)),
+    vICMSDeson: round2(Number(tag(fonte, 'vICMSDeson') || 0)),
     vFrete: round2(Number(tag(fonte, 'vFrete') || 0)),
     vSeg: round2(Number(tag(fonte, 'vSeg') || 0)),
     vOutro: round2(Number(tag(fonte, 'vOutro') || 0)),
     vIPI: round2(Number(tag(fonte, 'vIPI') || 0)),
+    vICMS: round2(Number(tag(fonte, 'vICMS') || 0)),
     vST: round2(Number(tag(fonte, 'vST') || 0)),
+    vFCP: round2(Number(tag(fonte, 'vFCP') || 0)),
+    vFCPST: round2(Number(tag(fonte, 'vFCPST') || 0)),
+    vFCPSTRet: round2(Number(tag(fonte, 'vFCPSTRet') || 0)),
     vII: round2(Number(tag(fonte, 'vII') || 0)),
     vPIS: round2(Number(tag(fonte, 'vPIS') || 0)),
     vCOFINS: round2(Number(tag(fonte, 'vCOFINS') || 0)),
@@ -85,6 +92,15 @@ function validarGruposObrigatorios(xml, modeloDoc = '65') {
 function validarPagamentosETroco(xml, totais) {
   const somaPag = somaTags(xml, 'vPag');
   const vTroco = totais.vTroco;
+  const pagBloco = bloco(xml, 'pag');
+  const tPags = [];
+  const reTPag = /<tPag>([^<]+)<\/tPag>/g;
+  let mTPag;
+  while ((mTPag = reTPag.exec(pagBloco)) !== null) tPags.push(String(mTPag[1] || '').trim());
+  const soSemPagamento = tPags.length > 0 && tPags.every((t) => t === '90') && Math.abs(somaPag) < 0.01;
+  if (soSemPagamento) {
+    return true;
+  }
   const esperado = round2(totais.vNF + vTroco);
   if (Math.abs(somaPag - esperado) > 0.01) {
     const erro = new Error(
@@ -220,11 +236,23 @@ function validarXmlFiscal({
   validarGruposObrigatorios(xml, modeloDoc);
   resultado.checks.grupos = 'PASSOU';
 
+  if (modeloDoc === '55') {
+    validarDestinatarioMunicipioNoXml(xml);
+    resultado.checks.destCmunUf = 'PASSOU';
+    validarIcmsXmlContraCrt(xml);
+    resultado.checks.icmsCrt = 'PASSOU';
+  }
+
   const totais = extrairTotais(xml);
   validarIdentidadeICMSTot(totais);
   resultado.checks.icmsTot = 'PASSOU';
   resultado.checks.formulasSefaz = 'PASSOU';
   resultado.totais = totais;
+
+  if (modeloDoc === '55') {
+    validarIpiDevolvidoNoXml(xml);
+    resultado.checks.ipiDevolvido = 'PASSOU';
+  }
 
   const somaDet = (() => {
     const re = /<det[\s\S]*?<vProd>([^<]+)<\/vProd>/g;
@@ -261,11 +289,77 @@ function validarXmlFiscal({
   return resultado;
 }
 
+function formatarMoedaMsg(valor) {
+  return `R$ ${arredondarMoeda(valor).toFixed(2)}`;
+}
+
+/**
+ * Soma vIPIDevol dos itens (impostoDevol/IPI ou IPIDevol), nunca o ICMSTot.
+ */
+function somarVipiDevolItensDoXml(xml) {
+  let cents = 0;
+  const reDet = /<det\s+nItem="[^"]*"[\s\S]*?<\/det>/g;
+  let m;
+  while ((m = reDet.exec(String(xml || ''))) !== null) {
+    const det = m[0];
+    const grupo = det.match(/<impostoDevol>[\s\S]*?<\/impostoDevol>/)
+      || det.match(/<IPIDevol>[\s\S]*?<\/IPIDevol>/);
+    if (!grupo) continue;
+    const v = grupo[0].match(/<vIPIDevol>([^<]*)<\/vIPIDevol>/);
+    if (v) cents += toCentavos(v[1]);
+  }
+  return cents / 100;
+}
+
+function validarIpiDevolvidoNoXml(xml) {
+  const icmsTot = bloco(xml, 'ICMSTot');
+  const totalInformado = arredondarMoeda(Number(tag(icmsTot, 'vIPIDevol') || 0));
+  const somaItens = somarVipiDevolItensDoXml(xml);
+  const totalCents = toCentavos(totalInformado);
+  const somaCents = toCentavos(somaItens);
+  if (totalCents === somaCents) return true;
+  const diferenca = arredondarMoeda(Math.abs(totalInformado - somaItens));
+  const erro = new Error(
+    'Total do IPI devolvido inconsistente.\n\n'
+    + 'O valor informado no total da NF-e é diferente da soma do\n'
+    + 'IPI devolvido dos itens.\n\n'
+    + `Total informado: ${formatarMoedaMsg(totalInformado)}\n`
+    + `Soma dos itens: ${formatarMoedaMsg(somaItens)}\n`
+    + `Diferença: ${formatarMoedaMsg(diferenca)}\n\n`
+    + 'Corrija a composição do XML antes da transmissão.'
+  );
+  erro.code = 'XML_IPI_DEVOL_DIVERGENTE';
+  erro.detalhes = {
+    vIPIDevolTotalInformado: totalInformado,
+    somaItens,
+    diferenca
+  };
+  throw erro;
+}
+
+function validarDestinatarioMunicipioNoXml(xml) {
+  const dest = bloco(xml, 'dest');
+  if (!dest) {
+    const erro = new Error('Grupo dest ausente no XML.');
+    erro.code = 'DEST_AUSENTE';
+    throw erro;
+  }
+  validarMunicipioDestinatario({
+    uf: tag(dest, 'UF'),
+    xMun: tag(dest, 'xMun'),
+    cMun: tag(dest, 'cMun')
+  });
+  return true;
+}
+
 module.exports = {
   validarXmlFiscal,
   extrairTotais,
   validarGruposObrigatorios,
   validarPagamentosETroco,
   validarAssinaturaEstrutura,
-  validarSchemaXsd
+  validarSchemaXsd,
+  validarDestinatarioMunicipioNoXml,
+  somarVipiDevolItensDoXml,
+  validarIpiDevolvidoNoXml
 };
