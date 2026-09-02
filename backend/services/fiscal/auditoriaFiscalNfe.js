@@ -55,6 +55,28 @@ function erroItem({ codigo, categoria, mensagem, detalhe, item }) {
   };
 }
 
+function nomeProdutoItem(item, det) {
+  const candidatos = [
+    item && item.produto_nome,
+    item && item.descricao_produto,
+    item && item.produto,
+    item && item.xProd,
+    item && item.espelhamento && item.espelhamento.original && item.espelhamento.original.xProd,
+    det && det.xProd
+  ];
+  for (const c of candidatos) {
+    const s = String(c || '').trim();
+    if (s) return s;
+  }
+  return '';
+}
+
+function rotuloItemAuditoria(nItem, nome) {
+  const n = nItem == null ? '—' : String(nItem);
+  const desc = String(nome || '').trim();
+  return desc ? `item ${n} (${desc})` : `item ${n}`;
+}
+
 function parseDets(xml) {
   const dets = [];
   const re = /<det\s+nItem="(\d+)"[^>]*>([\s\S]*?)<\/det>/g;
@@ -313,12 +335,14 @@ function auditarItensProdutos(dets, erros, avisos, itensEstruturados) {
   (itensEstruturados || []).forEach((item, idx) => {
     const qDev = Number(item.quantidade || 0);
     const qOrig = Number(item.quantidade_original || item.espelhamento?.quantidade_original || 0);
+    const xmlItem = dets[idx];
+    const rotulo = rotuloItemAuditoria(idx + 1, nomeProdutoItem(item, xmlItem));
     if (qOrig > 0 && qDev > qOrig + 1e-9) {
       erros.push(erroItem({
         codigo: 'AUD-RATEIO-001',
         categoria: 'RATEIO',
         item: idx + 1,
-        mensagem: `Quantidade devolvida (${qDev}) maior que a original (${qOrig}) no item ${idx + 1}.`
+        mensagem: `Quantidade devolvida (${qDev}) maior que a original (${qOrig}) no ${rotulo}.`
       }));
     }
     if (qOrig > 0 && qDev > 0 && Number(item.v_ipi_original) > 0) {
@@ -327,14 +351,13 @@ function auditarItensProdutos(dets, erros, avisos, itensEstruturados) {
         quantidadeDevolvida: qDev,
         vIPIOriginal: item.v_ipi_original
       });
-      const xmlItem = dets[idx];
       if (xmlItem && toCentavos(xmlItem.vIPIDevol) !== toCentavos(calc.vIPIDevol)) {
         erros.push(erroItem({
           codigo: 'AUD-RATEIO-002',
           categoria: 'IPI',
           item: idx + 1,
           mensagem:
-            `IPI devolvido do item ${idx + 1} diverge do rateio oficial `
+            `IPI devolvido do ${rotulo} diverge do rateio oficial `
             + `(XML ${money(xmlItem.vIPIDevol)} × calculado ${money(calc.vIPIDevol)}).`
         }));
       }

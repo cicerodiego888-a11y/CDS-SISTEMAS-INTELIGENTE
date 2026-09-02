@@ -790,6 +790,9 @@ function resolverItensDoBody(compra, itensCompra, bodyItens, cfopPadrao) {
       ...trib,
       compra_item_id: base.id,
       quantidade: qtd,
+      quantidade_comprada: Number(
+        base.quantidade_comprada != null ? base.quantidade_comprada : (base.quantidade || 0)
+      ),
       valor_unitario: Number(
         b.valor_unitario != null
           ? b.valor_unitario

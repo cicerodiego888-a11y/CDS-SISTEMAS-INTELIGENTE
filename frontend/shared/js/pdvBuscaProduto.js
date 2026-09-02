@@ -396,11 +396,15 @@
     let cache = global.produtosDisponiveis || [];
     const existe = cache.find((p) => Number(p.id) === Number(produto.id));
     if (!existe) {
-      const normalizado = typeof global.normalizarProdutoPdvLista === 'function'
-        ? global.normalizarProdutoPdvLista([produto])[0]
-        : produto;
-      cache = cache.concat([normalizado]);
-      global.produtosDisponiveis = cache;
+      if (typeof global.upsertProdutoNoCatalogoPdv === 'function') {
+        global.upsertProdutoNoCatalogoPdv(produto);
+      } else {
+        const normalizado = typeof global.normalizarProdutoPdvLista === 'function'
+          ? global.normalizarProdutoPdvLista([produto])[0]
+          : produto;
+        cache = cache.concat([normalizado]);
+        global.produtosDisponiveis = cache;
+      }
     }
 
     if (typeof global.adicionarProdutoConsultaPDV === 'function') {

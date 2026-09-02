@@ -49,6 +49,35 @@ function obterPdvIdentificacaoService() {
 }
 
 /**
+ * Após gravar produto: limpa cache MIP e publica no MIB imediatamente
+ * (PDV com venda em aberto precisa achar o SKU sem esperar rebuild).
+ */
+function publicarProdutoNoCatalogoOperacional(produto) {
+  if (!produto || produto.id == null) return;
+  try {
+    obterPdvIdentificacaoService().limparCacheCatalogo();
+  } catch (err) {
+    console.warn('[MIP] limpar cache após gravar produto:', err.message);
+  }
+  try {
+    obterMibService().notificarProdutoCriado({
+      id: produto.id,
+      nome: produto.nome,
+      nome_busca: produto.nome_busca || normalizarNomeBusca(produto.nome),
+      codigo: produto.codigo,
+      codigo_barras: produto.codigo_barras,
+      plu: produto.plu,
+      preco_venda: produto.preco_venda,
+      preco: produto.preco_venda,
+      item_fiscal: produto.item_fiscal,
+      status: produto.ativo
+    });
+  } catch (err) {
+    console.warn('[MIB] notificar produto após gravar:', err.message);
+  }
+}
+
+/**
  * Próximo código interno numérico (maior código só-dígitos + 1).
  * Fallback: MAX(id)+1.
  */
@@ -2378,16 +2407,7 @@ router.post('/', (req, res) => {
 
       const produtoId = this.lastID;
       try {
-        obterMibService().sincronizarNomeBusca(produtoId, nome, () => {
-          obterMibService().notificarProdutoCriado({
-            id: produtoId,
-            nome,
-            nome_busca: normalizarNomeBusca(nome),
-            codigo: codigoFinal,
-            codigo_barras,
-            preco_venda
-          });
-        });
+        obterMibService().sincronizarNomeBusca(produtoId, nome);
       } catch (mibErr) {
         console.warn('[MIB] nome_busca no POST:', mibErr.message);
       }
@@ -2489,6 +2509,8 @@ router.post('/', (req, res) => {
                 if (err2 || !row) {
                   return res.status(500).json({ error: err2?.message || 'Erro ao buscar produto criado' });
                 }
+
+                publicarProdutoNoCatalogoOperacional(row);
 
                 res.json({
                   ...row,
@@ -2899,6 +2921,7 @@ router.put('/:id', (req, res) => {
           if (err2 || !row) {
             return res.status(500).json({ error: err2?.message || 'Erro ao buscar produto atualizado' });
           }
+          publicarProdutoNoCatalogoOperacional(row);
           res.json(row);
         });
       }

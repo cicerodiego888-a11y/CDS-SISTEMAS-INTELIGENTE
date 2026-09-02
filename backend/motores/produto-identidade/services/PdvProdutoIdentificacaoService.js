@@ -76,6 +76,16 @@ class PdvProdutoIdentificacaoService {
   }
 
   /**
+   * Invalida lookups negativos/stale para o produto recém-cadastrado aparecer no PDV.
+   */
+  limparCacheCatalogo() {
+    const cat = this._identidade && this._identidade.catalogo;
+    if (cat && typeof cat.limparCache === 'function') {
+      cat.limparCache();
+    }
+  }
+
+  /**
    * @private
    */
   _toPayload(resultado, extras = {}) {

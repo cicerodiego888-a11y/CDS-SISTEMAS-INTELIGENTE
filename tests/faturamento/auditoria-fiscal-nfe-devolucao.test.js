@@ -382,6 +382,31 @@ describe('Auditoria fiscal NF-e de devolução', () => {
     assert.equal(podeReenviarDevolucao({ status: 'rejeitada', cstat_retorno: '863' }), false);
   });
 
+  it('AUD-RATEIO-001 inclui o nome do produto na mensagem', () => {
+    const itens = [
+      itemDev({ csosn: '102', nome: 'PARAFUSO', quantidade: 1, quantidadeOriginal: 1 }),
+      itemDev({
+        csosn: '102',
+        nome: 'C/ PONTA MAGNETIZADA 3/16X4',
+        quantidade: 6,
+        quantidadeOriginal: 4,
+        valorUnitario: 1
+      })
+    ];
+    const built = buildXmlNFeDevolucaoCompra({
+      config: configEmitente(3),
+      compra: compraCE,
+      itens,
+      numero: 101
+    });
+    const r = auditarXml(built.xmlSemAssinatura, { itens });
+    assert.equal(r.aprovado, false);
+    const erro = (r.erros || []).find((e) => e.codigo === 'AUD-RATEIO-001');
+    assert.ok(erro, JSON.stringify(r.erros, null, 2));
+    assert.match(erro.mensagem, /item 2 \(C\/ PONTA MAGNETIZADA 3\/16X4\)/);
+    assert.match(erro.mensagem, /devolvida \(6\).*original \(4\)/);
+  });
+
   it('CENÁRIO 18 — 46 itens auditados, CRT/dest/IPI/vNF fechados', () => {
     const itens = Array.from({ length: 46 }, (_, i) => itemDev({
       codigo: `I${i + 1}`,

@@ -5060,6 +5060,15 @@ async function saveProduto() {
                 }
             }, 3500);
 
+            if (window.CdsCatalogoProdutoSync && typeof CdsCatalogoProdutoSync.publicarProdutoSalvo === 'function') {
+                CdsCatalogoProdutoSync.publicarProdutoSalvo(produtoNormalizado);
+            }
+            if (Array.isArray(window.produtosCache)) {
+                const idxCache = window.produtosCache.findIndex((p) => String(p.id) === String(produtoNormalizado.id));
+                if (idxCache >= 0) window.produtosCache[idxCache] = produtoNormalizado;
+                else window.produtosCache.unshift(produtoNormalizado);
+            }
+
             // Atualiza lista local se necessário
             if (window.produtosList && Array.isArray(window.produtosList)) {
                 const indexExistente = window.produtosList.findIndex(p => String(p.id) === String(produtoNormalizado.id));

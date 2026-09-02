@@ -204,47 +204,161 @@ async function parsearDetsDoXml(xml) {
 }
 
 function normalizarCodigo(c) {
-  return String(c || '').replace(/\D/g, '').replace(/^0+/, '') || String(c || '').trim().toUpperCase();
+  return String(c || '').trim().toUpperCase().replace(/\s+/g, '');
 }
 
-function casarItemOrigem(itemDev, detsOrigem, usados) {
-  const candidatos = detsOrigem.filter((_, idx) => !usados.has(idx));
+function codigoSoDigitos(c) {
+  return String(c || '').replace(/\D/g, '').replace(/^0+/, '');
+}
 
-  const porCodigo = candidatos.find((d) => {
-    const a = normalizarCodigo(d.cProd);
-    const b = normalizarCodigo(itemDev.produto_codigo || itemDev.codigo_fornecedor || itemDev.cProd);
-    return a && b && a === b;
-  });
-  if (porCodigo) {
-    const idx = detsOrigem.indexOf(porCodigo);
-    usados.add(idx);
-    return porCodigo;
+function codigoENumerico(c) {
+  return /^\d+$/.test(String(c || '').trim());
+}
+
+function normalizarTextoProduto(s) {
+  return String(s || '')
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/['"″]/g, '')
+    .replace(/[^A-Z0-9/]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extrairMedidas(s) {
+  const compacto = normalizarTextoProduto(s).replace(/ /g, '');
+  return [...new Set(compacto.match(/\d+\/\d+X\d+|\d+X\d+/g) || [])];
+}
+
+function expandirMedidas(medidas) {
+  const out = new Set(medidas || []);
+  for (const m of medidas || []) {
+    const frac = String(m).match(/^(\d+)\/(\d+)X(\d+)$/);
+    if (frac) out.add(`${frac[1]}${frac[2]}X${frac[3]}`);
+    const compact = String(m).match(/^(\d)(\d+)X(\d+)$/);
+    if (compact) out.add(`${compact[1]}/${compact[2]}X${compact[3]}`);
+  }
+  return out;
+}
+
+function medidasCompativeis(a, b) {
+  const A = expandirMedidas(a);
+  const B = expandirMedidas(b);
+  for (const x of A) {
+    if (B.has(x)) return true;
+  }
+  return false;
+}
+
+function scoreNomeProduto(nomeDev, xProd) {
+  const A = normalizarTextoProduto(nomeDev);
+  const B = normalizarTextoProduto(xProd);
+  if (!A || !B) return 0;
+  if (A === B) return 100;
+  if (A.includes(B) || B.includes(A)) return 70;
+  const tA = A.split(' ').filter((t) => t.length > 1);
+  const tB = new Set(B.split(' ').filter((t) => t.length > 1));
+  if (!tA.length || !tB.size) return 0;
+  let inter = 0;
+  for (const t of tA) {
+    if (tB.has(t)) inter += 1;
+  }
+  return (inter / Math.max(tA.length, tB.size)) * 50;
+}
+
+function marcarUsado(usados, idx) {
+  usados.add(idx);
+}
+
+/**
+ * Casa o item da devolução com a linha da NF-e original.
+ * Não usa prefixo de 20 caracteres: chaves semelhantes (ex.: ponta magnetizada
+ * 1/4x8 vs 3/16x4) precisam de código, medida e quantidade para não trocar de linha.
+ */
+function casarItemOrigem(itemDev, detsOrigem, usados) {
+  const candidatos = detsOrigem
+    .map((d, idx) => ({ d, idx }))
+    .filter((x) => !usados.has(x.idx));
+  if (!candidatos.length) return null;
+
+  const nItem = Number(itemDev.nItemOrigem || itemDev.n_item || itemDev.nItem || 0);
+  if (nItem > 0) {
+    const porNitem = candidatos.find((x) => Number(x.d.nItem) === nItem);
+    if (porNitem) {
+      marcarUsado(usados, porNitem.idx);
+      return porNitem.d;
+    }
+  }
+
+  const cProdDev = itemDev.produto_codigo || itemDev.codigo_fornecedor || itemDev.cProd;
+  const codDev = normalizarCodigo(cProdDev);
+  if (codDev) {
+    const porCodigo = candidatos.find((x) => normalizarCodigo(x.d.cProd) === codDev);
+    if (porCodigo) {
+      marcarUsado(usados, porCodigo.idx);
+      return porCodigo.d;
+    }
+  }
+
+  if (codDev && codigoENumerico(cProdDev)) {
+    const digits = codigoSoDigitos(codDev);
+    const porDig = candidatos.filter((x) =>
+      codigoENumerico(x.d.cProd) && codigoSoDigitos(x.d.cProd) === digits
+    );
+    if (porDig.length === 1) {
+      marcarUsado(usados, porDig[0].idx);
+      return porDig[0].d;
+    }
   }
 
   const gtinDev = String(itemDev.codigo_barras || itemDev.produto_codigo_barras || itemDev.cEAN || '').replace(/\D/g, '');
   if (gtinDev.length >= 8) {
-    const porGtin = candidatos.find((d) => String(d.cEAN || '').replace(/\D/g, '') === gtinDev);
-    if (porGtin) {
-      usados.add(detsOrigem.indexOf(porGtin));
-      return porGtin;
+    const porGtin = candidatos.filter((x) => String(x.d.cEAN || '').replace(/\D/g, '') === gtinDev);
+    if (porGtin.length === 1) {
+      marcarUsado(usados, porGtin[0].idx);
+      return porGtin[0].d;
     }
   }
 
+  const nomeDev = String(itemDev.produto_nome || itemDev.descricao_produto || '').trim();
   const ncmDev = String(itemDev.ncm || itemDev.produto_ncm || '').replace(/\D/g, '').slice(0, 8);
-  const nomeDev = String(itemDev.produto_nome || itemDev.descricao_produto || '').toUpperCase().trim();
-  const porNcmNome = candidatos.find((d) => {
-    const ncm = String(d.NCM || '').replace(/\D/g, '').slice(0, 8);
-    const nome = String(d.xProd || '').toUpperCase().trim();
-    return ncm && ncmDev && ncm === ncmDev && nome && nomeDev && (nome.includes(nomeDev.slice(0, 20)) || nomeDev.includes(nome.slice(0, 20)));
+  const qtdRef = Number(
+    itemDev.quantidade_comprada != null ? itemDev.quantidade_comprada
+      : (itemDev.quantidade_original != null ? itemDev.quantidade_original : 0)
+  );
+  const vUn = Number(itemDev.valor_unitario || 0);
+  const medidasDev = extrairMedidas(`${nomeDev} ${codDev}`);
+
+  const scored = candidatos.map((x) => {
+    let score = 0;
+    const xProd = String(x.d.xProd || '');
+    const ncm = String(x.d.NCM || '').replace(/\D/g, '').slice(0, 8);
+    score += scoreNomeProduto(nomeDev, xProd);
+    if (ncm && ncmDev && ncm === ncmDev) score += 15;
+    const medidasOrig = extrairMedidas(`${xProd} ${x.d.cProd || ''}`);
+    if (medidasDev.length && medidasOrig.length) {
+      if (medidasCompativeis(medidasDev, medidasOrig)) score += 45;
+      else score -= 50;
+    }
+    const qOrig = Number(x.d.qCom) || 0;
+    if (qtdRef > 0 && qOrig > 0 && Math.abs(qOrig - qtdRef) < 1e-6) score += 35;
+    if (vUn > 0 && Number(x.d.vUnCom) > 0 && Math.abs(Number(x.d.vUnCom) - vUn) < 0.009) score += 20;
+    return { ...x, score };
   });
-  if (porNcmNome) {
-    usados.add(detsOrigem.indexOf(porNcmNome));
-    return porNcmNome;
-  }
+
+  scored.sort((a, b) => b.score - a.score || Number(a.d.nItem || 0) - Number(b.d.nItem || 0));
+  const melhor = scored[0];
+  const segundo = scored[1];
 
   if (candidatos.length === 1) {
-    usados.add(detsOrigem.indexOf(candidatos[0]));
-    return candidatos[0];
+    marcarUsado(usados, candidatos[0].idx);
+    return candidatos[0].d;
+  }
+
+  if (melhor && melhor.score >= 40 && (!segundo || melhor.score > segundo.score)) {
+    marcarUsado(usados, melhor.idx);
+    return melhor.d;
   }
 
   return null;
@@ -808,5 +922,6 @@ module.exports = {
   espelharDet,
   flattenParaItem,
   montarPainelTributacaoOriginal,
-  parsearDetsDoXml
+  parsearDetsDoXml,
+  casarItemOrigem
 };

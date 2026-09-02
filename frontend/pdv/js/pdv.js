@@ -337,24 +337,141 @@ function urlProdutosPdv() {
     return `${API_URL}/produtos?modo_fiscal=${modoFiscal}`;
 }
 
+function sincronizarProdutosDisponiveisGlobal() {
+    window.produtosDisponiveis = produtosDisponiveis;
+}
+
+function definirCatalogoPdv(produtos) {
+    produtosDisponiveis = normalizarProdutoPdvLista(produtos);
+    sincronizarProdutosDisponiveisGlobal();
+}
+
+function produtoCatalogoPdvOperacional(produto) {
+    if (!produto || produto.id == null) return false;
+    return Object.prototype.hasOwnProperty.call(produto, 'estoque_atual')
+        || Object.prototype.hasOwnProperty.call(produto, 'saldo_fiscal')
+        || Object.prototype.hasOwnProperty.call(produto, 'controla_estoque');
+}
+
+function upsertProdutoNoCatalogoPdv(produto) {
+    if (!produto || produto.id == null) return null;
+    const [normalizado] = normalizarProdutoPdvLista([produto]);
+    const lista = Array.isArray(produtosDisponiveis) ? produtosDisponiveis.slice() : [];
+    const idx = lista.findIndex((p) => Number(p.id) === Number(normalizado.id));
+    if (idx >= 0) {
+        lista[idx] = { ...lista[idx], ...normalizado };
+    } else {
+        lista.unshift(normalizado);
+    }
+    produtosDisponiveis = lista;
+    sincronizarProdutosDisponiveisGlobal();
+    return lista[idx >= 0 ? idx : 0];
+}
+
+let recarregarCatalogoPdvInflight = null;
+let recarregarCatalogoPdvTimer = null;
+
+function recarregarCatalogoPdv() {
+    if (recarregarCatalogoPdvInflight) return recarregarCatalogoPdvInflight;
+    recarregarCatalogoPdvInflight = $.ajax({
+        url: urlProdutosPdv(),
+        method: 'GET',
+        cache: false
+    }).done(function (produtos) {
+        definirCatalogoPdv(produtos);
+    }).always(function () {
+        recarregarCatalogoPdvInflight = null;
+    });
+    return recarregarCatalogoPdvInflight;
+}
+
+function agendarRecarregarCatalogoPdv() {
+    clearTimeout(recarregarCatalogoPdvTimer);
+    recarregarCatalogoPdvTimer = setTimeout(function () {
+        recarregarCatalogoPdv();
+    }, 250);
+}
+
+async function garantirProdutoNoCatalogoPdv(produtoOuId) {
+    const id = produtoOuId && typeof produtoOuId === 'object'
+        ? produtoOuId.id
+        : produtoOuId;
+    if (id == null || id === '') {
+        return produtoOuId && typeof produtoOuId === 'object' ? produtoOuId : null;
+    }
+
+    const cached = encontrarProdutoPorIdPdv(id);
+    if (cached && produtoCatalogoPdvOperacional(cached)) {
+        return cached;
+    }
+
+    try {
+        const token = localStorage.getItem('token') || '';
+        const modoFiscal = typeof modoFiscalQueryParam === 'function' ? modoFiscalQueryParam() : '0';
+        const response = await fetch(`${API_URL}/produtos/${id}?modo_fiscal=${modoFiscal}`, {
+            method: 'GET',
+            cache: 'no-store',
+            headers: { Authorization: 'Bearer ' + token }
+        });
+        if (response.ok) {
+            const completo = await response.json();
+            if (completo && completo.id) {
+                upsertProdutoNoCatalogoPdv(completo);
+                return encontrarProdutoPorIdPdv(completo.id) || completo;
+            }
+        }
+    } catch (err) {
+        console.warn('[PDV] Falha ao hidratar produto recém-cadastrado:', err && err.message);
+    }
+
+    if (produtoOuId && typeof produtoOuId === 'object' && produtoOuId.id) {
+        upsertProdutoNoCatalogoPdv(produtoOuId);
+        return encontrarProdutoPorIdPdv(produtoOuId.id) || produtoOuId;
+    }
+    return cached || null;
+}
+
+function inicializarSincronizacaoCatalogoPdv() {
+    if (window.__cdsCatalogoPdvSyncInit) return;
+    window.__cdsCatalogoPdvSyncInit = true;
+
+    if (window.CdsCatalogoProdutoSync && typeof CdsCatalogoProdutoSync.ouvir === 'function') {
+        CdsCatalogoProdutoSync.ouvir(function (msg) {
+            if (!msg || msg.tipo !== 'produto-salvo') return;
+            if (msg.produto) upsertProdutoNoCatalogoPdv(msg.produto);
+            agendarRecarregarCatalogoPdv();
+        });
+    }
+
+    window.addEventListener('focus', agendarRecarregarCatalogoPdv);
+    document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') agendarRecarregarCatalogoPdv();
+    });
+}
+
+window.upsertProdutoNoCatalogoPdv = upsertProdutoNoCatalogoPdv;
+window.recarregarCatalogoPdv = recarregarCatalogoPdv;
+window.garantirProdutoNoCatalogoPdv = garantirProdutoNoCatalogoPdv;
+
 function loadPDV() {
     console.log('Carregando PDV...');
 
     // Auto-registrar terminal no backend
     autoRegistrarTerminal();
+    inicializarSincronizacaoCatalogoPdv();
 
     $.ajax({
         url: urlProdutosPdv(),
         method: 'GET',
         cache: false,
         success: function(produtos) {
-            produtosDisponiveis = normalizarProdutoPdvLista(produtos);
+            definirCatalogoPdv(produtos);
             console.log('[PDV] Identificação: MIP oficial → fallback legado');
             inicializarPDV();
         },
         error: function(xhr) {
             console.error('Erro ao carregar produtos:', xhr);
-            produtosDisponiveis = [];
+            definirCatalogoPdv([]);
             inicializarPDV();
             showNotification('Erro ao carregar produtos do PDV.', 'danger');
         }
@@ -3508,15 +3625,17 @@ async function adicionarProdutoPorCodigoViaMip(codigoDigitado) {
         return;
     }
 
+    const produtoCarrinho = (await garantirProdutoNoCatalogoPdv(produtoFinal)) || produtoFinal;
+
     const veioDoMotor = Boolean(parseMotor && parseMotor.resultado);
 
     if (veioDoMotor) {
-        if (!unidadeEhKg(produtoFinal)) {
-            showNotification(`O produto ${produtoFinal.nome} não está cadastrado como KG.`, 'warning');
+        if (!unidadeEhKg(produtoCarrinho)) {
+            showNotification(`O produto ${produtoCarrinho.nome} não está cadastrado como KG.`, 'warning');
             return;
         }
 
-        const calc = calcularItemEtiquetaBalancaPdv(produtoFinal, parseMotor.resultado || {});
+        const calc = calcularItemEtiquetaBalancaPdv(produtoCarrinho, parseMotor.resultado || {});
         if (!calc.ok) {
             showNotification(calc.mensagem, 'danger');
             return;
@@ -3525,8 +3644,8 @@ async function adicionarProdutoPorCodigoViaMip(codigoDigitado) {
         pdvAuditoriaEquipamentos('carrinho_etiqueta', {
             codigo: String(codigoDigitado || ''),
             resultado: 'OK',
-            produtoId: produtoFinal.id,
-            produtoNome: produtoFinal.nome,
+            produtoId: produtoCarrinho.id,
+            produtoNome: produtoCarrinho.nome,
             tipoPayload: calc.tipoPayload,
             quantidade: calc.quantidade,
             valorTotal: calc.subtotal,
@@ -3542,7 +3661,7 @@ async function adicionarProdutoPorCodigoViaMip(codigoDigitado) {
 
         // Sem promoção/atacado: total da etiqueta (VALOR) ou peso × preço (PESO)
         adicionarItemNoCarrinho(
-            produtoFinal,
+            produtoCarrinho,
             calc.quantidade,
             calc.precoUnitario,
             calc.mensagemExtra,
@@ -3557,7 +3676,7 @@ async function adicionarProdutoPorCodigoViaMip(codigoDigitado) {
         return;
     }
 
-    const validacaoMinima = pdvValidarEstoqueVenda(produtoFinal, 1);
+    const validacaoMinima = pdvValidarEstoqueVenda(produtoCarrinho, 1);
     if (!validacaoMinima.sucesso) {
         showNotification(validacaoMinima.mensagem, 'danger');
         return;
@@ -3566,7 +3685,7 @@ async function adicionarProdutoPorCodigoViaMip(codigoDigitado) {
     pdvAuditoriaEquipamentos('carrinho_normal', {
         codigo: String(codigoDigitado || ''),
         resultado: 'OK',
-        produtoId: produtoFinal.id,
+        produtoId: produtoCarrinho.id,
         tempoMipMs,
         tempoTotalMs: Number((nowMs() - t0Total).toFixed(3)),
         quantidadeConsultas: consultas,
@@ -3574,8 +3693,8 @@ async function adicionarProdutoPorCodigoViaMip(codigoDigitado) {
         pluExtraido: null
     });
 
-    buscarPromocaoAtivaProduto(produtoFinal.id).then(function(promocao) {
-        iniciarFluxoAdicionarProdutoPdv(produtoFinal, promocao);
+    buscarPromocaoAtivaProduto(produtoCarrinho.id).then(function(promocao) {
+        iniciarFluxoAdicionarProdutoPdv(produtoCarrinho, promocao);
     });
 }
 
@@ -5224,7 +5343,7 @@ function finalizarPosVenda() {
         method: 'GET',
         cache: false,
         success: function(produtos) {
-            produtosDisponiveis = normalizarProdutoPdvLista(produtos);
+            definirCatalogoPdv(produtos);
         }
     });
 
@@ -6448,6 +6567,7 @@ function abrirConsultaProdutosPdvDoCampoBusca() {
 }
 
 function abrirConsultaProdutosPDV(termoInicial) {
+    recarregarCatalogoPdv();
     $('#modalConsultaProdutosPDV').remove();
 
     const termo = String(termoInicial || '').trim();
@@ -6680,7 +6800,7 @@ function carregarNomesConsultaPDV() {
 }
 
 function adicionarProdutoConsultaPDV(produtoId) {
-    const produto = produtosDisponiveis.find(p => Number(p.id) === Number(produtoId));
+    Promise.resolve(garantirProdutoNoCatalogoPdv(produtoId)).then(function (produto) {
     if (!produto) {
         showNotification('Produto não encontrado na lista do PDV. Atualize o PDV e tente novamente.', 'danger');
         return;
@@ -6697,6 +6817,7 @@ function adicionarProdutoConsultaPDV(produtoId) {
 
     buscarPromocaoAtivaProduto(produto.id).then(promocao => {
         iniciarFluxoAdicionarProdutoPdv(produto, promocao);
+    });
     });
 }
 
@@ -6721,6 +6842,9 @@ function buscarProdutosConsultaPDV() {
         cache: false,
         success: function (produtos) {
             const lista = produtos || [];
+            lista.forEach(function (p) {
+                if (typeof upsertProdutoNoCatalogoPdv === 'function') upsertProdutoNoCatalogoPdv(p);
+            });
             if (obterModoVisualizacaoConsultaPDV() === 'categoria') {
                 renderizarProdutosConsultaPDVPorCategoria(lista);
                 return;

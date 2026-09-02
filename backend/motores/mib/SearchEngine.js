@@ -449,6 +449,7 @@ class SearchEngine {
   notificarProdutoAlterado(produto, evento = EVENTOS.ProdutoAlterado) {
     this.scheduleRefresh({
       motivo: evento,
+      force: true,
       patch: { upsert: produto }
     });
     this.events.emitSafe(evento, { produto });

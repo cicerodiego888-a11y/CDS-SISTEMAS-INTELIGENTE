@@ -16,7 +16,8 @@ const {
   flattenParaItem,
   montarPainelTributacaoOriginal,
   montarImpostoXmlEspelhado,
-  validarEspelhamentoAntesTransmissao
+  validarEspelhamentoAntesTransmissao,
+  casarItemOrigem
 } = require('../../backend/services/fiscal/espelharTributosNfeDevolucaoCompra');
 const { buildXmlNFeDevolucaoCompra } = require('../../backend/services/fiscal/xmlBuilderNfeDevolucaoCompra');
 
@@ -167,6 +168,41 @@ describe('RC2 — Builder XML final com espelhamento', () => {
     assert.match(built.xmlSemAssinatura, /<CEST>0300100<\/CEST>/);
     assert.doesNotMatch(built.xmlSemAssinatura, /<CSOSN>900<\/CSOSN>/);
     assert.doesNotMatch(built.xmlSemAssinatura, /<CST>90<\/CST>/);
+  });
+
+  it('não troca chaves semelhantes com medidas diferentes (1/4x8 vs 3/16x4)', () => {
+    const dets = [
+      {
+        nItem: 4,
+        cProd: 'CHPHIL_316X4',
+        xProd: 'CHAVE PHILLIPS C/ PONTA MAGNETIZADA 3/16X4',
+        NCM: '82054000',
+        qCom: 4,
+        vUnCom: 10
+      },
+      {
+        nItem: 5,
+        cProd: 'OUTRO',
+        xProd: 'CHAVE PHILLIPS C/ PONTA MAGNETIZADA 1/4"X8"',
+        NCM: '82054000',
+        qCom: 6,
+        vUnCom: 12
+      }
+    ];
+    const usados = new Set();
+    const item = {
+      produto_codigo: 'CHPHIL_14X8',
+      produto_nome: 'CHPHIL_14X8 - CHAVE PHILLIPS C/ PONTA MAGNETIZADA 1/4"X8"',
+      ncm: '82054000',
+      quantidade: 6,
+      quantidade_comprada: 6,
+      valor_unitario: 12
+    };
+    const origem = casarItemOrigem(item, dets, usados);
+    assert.ok(origem);
+    assert.equal(origem.nItem, 5);
+    assert.equal(origem.qCom, 6);
+    assert.equal(usados.has(1), true);
   });
 
   it('bloqueia transmissão sem espelhamento', () => {
