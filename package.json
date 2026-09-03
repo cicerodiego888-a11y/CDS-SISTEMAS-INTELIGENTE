@@ -196,6 +196,7 @@
     "test:mgv6-shell-execute-v1": "node --test --test-force-exit tests/equipamentos/rc141519-mgv6-shell-execute-v1.test.js",
     "test:pdv-busca-plu-exata-v1": "node --test --test-force-exit tests/pdv/rc141515-busca-plu-exata-v1.test.js",
     "test:pdv-catalogo-venda-aberta": "node --test --test-force-exit tests/pdv/catalogo-produto-venda-aberta.test.js",
+    "test:pdv-venda-aberta-persistencia": "node --test --test-force-exit tests/pdv/venda-aberta-persistencia.test.js",
     "test:tcp-connect-audit": "node --test --test-force-exit tests/equipamentos/rc1501-tcp-connect-audit.test.js",
     "test:diagnostics-execution": "node --test --test-force-exit tests/equipamentos/rc14145-diagnostics-execution.test.js",
     "test:session-source": "node --test --test-force-exit tests/equipamentos/rc14146-session-source-of-truth.test.js",

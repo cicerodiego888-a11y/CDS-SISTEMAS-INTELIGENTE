@@ -12,7 +12,7 @@ endobj
 endobj
 
 4 0 obj
-<< /Length 1921 >>
+<< /Length 1875 >>
 stream
 BT
 /F1 10 Tf
@@ -29,13 +29,13 @@ BT
 0 -14 Td
 (- Commit: 30478b4) Tj
 0 -14 Td
-(- Build: 2026-08-27T22:26:29.805Z) Tj
+(- Build: 2026-08-28T03:24:29.859Z) Tj
 0 -14 Td
-(- Hash app.asar: `9736b21b17c39fd2217ad65c50c7432d12e48215bcb7a7600b974c38e7126615`) Tj
+(- Hash app.asar: `e142e9d566a73e5ad7a896508c073a897aa6830dae7bfcfb8523d65e9efc9b5d`) Tj
 0 -14 Td
-(- Origem: instalador-desatualizado) Tj
+(- Origem: fonte) Tj
 0 -14 Td
-(- Data: 2026-08-28T03:24:29.581Z) Tj
+(- Data: 2026-09-02T19:50:56.157Z) Tj
 0 -14 Td
 () Tj
 0 -14 Td
@@ -45,15 +45,15 @@ BT
 0 -14 Td
 (? Inicializa??o do ERP) Tj
 0 -14 Td
-(  - DB ok | pacote: instalador-desatualizado | asar: 9736b21b17c3?) Tj
+(  - DB ok | pacote: fonte | asar: N/A?) Tj
 0 -14 Td
 (? Login) Tj
 0 -14 Td
-(  - user=rc4320_1787887468820 perfil=SUPER_ADMIN) Tj
+(  - user=rc4320_1788378655043 perfil=SUPER_ADMIN) Tj
 0 -14 Td
 (? Cadastro de Produtos) Tj
 0 -14 Td
-(  - CRUD ok | embalagem CX?12 | codigo=RC4320-1787887467172-P) Tj
+(  - CRUD ok | embalagem CX?12 | codigo=RC4320-1788378654329-P) Tj
 0 -14 Td
 (? Compras) Tj
 0 -14 Td
@@ -61,7 +61,7 @@ BT
 0 -14 Td
 (? Financeiro) Tj
 0 -14 Td
-(  - parser financeiro OK | parcela R$500 | registros financeiro=5) Tj
+(  - parser financeiro OK | parcela R$500 | registros financeiro=8) Tj
 0 -14 Td
 (? Estoque) Tj
 0 -14 Td
@@ -85,11 +85,11 @@ BT
 0 -14 Td
 (? Relat?rios) Tj
 0 -14 Td
-(  - compras=2 fin=5 prod=83) Tj
+(  - compras=0 fin=8 prod=227) Tj
 0 -14 Td
 (? Performance) Tj
 0 -14 Td
-(  - 2.4s | mem 37.2MB | sql=16) Tj
+(  - 1.8s | mem 22.8MB | sql=16) Tj
 0 -14 Td
 () Tj
 0 -14 Td
@@ -97,11 +97,11 @@ BT
 0 -14 Td
 () Tj
 0 -14 Td
-(- Tempo total: 2.4s) Tj
+(- Tempo total: 1.8s) Tj
 0 -14 Td
-(- Mem?ria m?xima: 37.2 MB) Tj
+(- Mem?ria m?xima: 22.8 MB) Tj
 0 -14 Td
-(- CPU user: 1141 ms) Tj
+(- CPU user: 1203 ms) Tj
 0 -14 Td
 (- Testes/etapas: 12) Tj
 0 -14 Td
@@ -133,9 +133,9 @@ xref
 0000000058 00000 n 
 0000000115 00000 n 
 0000000241 00000 n 
-0000002214 00000 n 
+0000002168 00000 n 
 trailer
 << /Size 6 /Root 1 0 R >>
 startxref
-2284
+2238
 %%EOF

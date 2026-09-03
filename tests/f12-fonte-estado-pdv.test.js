@@ -134,8 +134,14 @@ describe('Regressão — core.js e políticas', () => {
   });
 
   it('F12 oficial aplica estado com origemF12', () => {
-    assert.match(CORE_JS, /aplicarModoFiscalLocal\(novoValor, \{ recarregar: false, origemF12: true \}\)/);
     assert.match(CORE_JS, /origemF12: true/);
+    assert.match(CORE_JS, /recarregar: false, origemF12: true/);
+  });
+
+  it('polling F12 não notifica nem recarrega o PDV se o estado efetivo não mudou', () => {
+    assert.match(CORE_JS, /estadoF12Mudou/);
+    assert.match(CORE_JS, /recarregar: estadoF12Mudou/);
+    assert.match(CORE_JS, /estadoF12Mudou && opcoes\.notificar/);
   });
 
   it('PDV não grava modo_dashboard_fiscal quando o F12 não resolve o caixa', () => {

@@ -56,7 +56,9 @@ ipcMain.handle('listar-impressoras', async (event) => {
 
 // RC3.5.1 — Portal Nacional da NF-e (npm start usa electron.js como main)
 const { registrarPortalNfeHandlers } = require('./electron-registrar-portal-nfe');
+const { configurarAberturaJanelas, registrarIpcAbrirModulo, registrarJanelaPrincipalComoModulo } = require('./electron-janelas-modulo');
 registrarPortalNfeHandlers(ipcMain, () => mainWindow);
+registrarIpcAbrirModulo(ipcMain);
 
 ipcMain.removeHandler('selecionar-pasta-backup');
 ipcMain.handle('selecionar-pasta-backup', async (event) => {
@@ -387,6 +389,7 @@ function criarMainWindow(opcoes = {}) {
   });
 
   global.mainWindow = mainWindow;
+  registrarJanelaPrincipalComoModulo('erp', mainWindow);
 
   mainWindow.webContents.on('preload-error', (_event, preloadPath, error) => {
     console.error('[ELECTRON] Erro no preload:', preloadPath, error?.message || error);
@@ -398,30 +401,7 @@ function criarMainWindow(opcoes = {}) {
     injetarHostnameEstacao(mainWindow.webContents);
   });
 
-  mainWindow.webContents.setWindowOpenHandler(() => {
-    return {
-      action: 'allow',
-      overrideBrowserWindowOptions: {
-        width: 420,
-        height: 720,
-        title: 'Comprovante',
-        alwaysOnTop: true,
-        autoHideMenuBar: true,
-        parent: mainWindow,
-        modal: false,
-        webPreferences: {
-          nodeIntegration: false,
-          contextIsolation: true
-        }
-      }
-    };
-  });
-
-  mainWindow.webContents.on('did-create-window', (childWindow) => {
-    console.log('Janela filha criada via window.open');
-    childWindow.setAlwaysOnTop(true);
-    childWindow.focus();
-  });
+  configurarAberturaJanelas(mainWindow);
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();

@@ -644,6 +644,31 @@ router.get('/', (req, res) => {
   });
 });
 
+/**
+ * Versão barata do catálogo — PDV com venda em aberto detecta SKU novo
+ * sem recarregar a lista inteira a cada poll.
+ */
+router.get('/catalogo-versao', (req, res) => {
+  const modoFiscal = isModoFiscalQuery(req.query.modo_fiscal);
+  const filtroFiscal = filtroSqlModoFiscalProduto(modoFiscal, 'p');
+  db.get(
+    `SELECT COUNT(*) AS total, COALESCE(MAX(p.id), 0) AS max_id FROM produtos p WHERE 1=1 ${filtroFiscal}`,
+    [],
+    (err, row) => {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      const total = Number(row?.total || 0);
+      const maxId = Number(row?.max_id || 0);
+      res.json({
+        total,
+        max_id: maxId,
+        versao: `${total}:${maxId}`
+      });
+    }
+  );
+});
+
 // Próximo código interno sugerido (cadastro de produto)
 router.get('/proximo-codigo', (req, res) => {
   obterProximoCodigoInternoProduto((err, codigo) => {

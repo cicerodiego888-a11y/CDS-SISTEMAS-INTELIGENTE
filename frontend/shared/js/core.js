@@ -81,6 +81,56 @@ function ligarNavegacaoSidebar() {
         $('.nav-link').removeClass('active');
         $(this).addClass('active');
     });
+    ligarAberturaModuloExterno();
+}
+
+/**
+ * Abre ERP/PDV em outra janela para não perder venda em andamento.
+ * Popup bloqueado → navega na mesma janela (a venda já foi persistida no PDV).
+ */
+function abrirModuloCdsEmOutraJanela(url, nomeJanela) {
+    const destino = String(url || '').trim();
+    if (!destino) return false;
+    if (typeof persistirVendaAbertaPdv === 'function') {
+        persistirVendaAbertaPdv();
+    }
+    const modulo = (nomeJanela === 'cds-pdv' || /\/pdv(\/|\?|$)/i.test(destino)) ? 'pdv' : 'erp';
+    if (window.electronAPI && typeof window.electronAPI.abrirModuloApp === 'function') {
+        Promise.resolve(window.electronAPI.abrirModuloApp({ url: destino, modulo: modulo })).catch(() => {
+            window.location.href = destino;
+        });
+        return true;
+    }
+    let win = null;
+    try {
+        win = window.open(
+            destino,
+            nomeJanela || '_blank',
+            'noopener=no,width=1280,height=800,left=0,top=0'
+        );
+    } catch (_) {
+        win = null;
+    }
+    if (!win) {
+        window.location.href = destino;
+        return false;
+    }
+    try { win.focus(); } catch (_) { /* ignore */ }
+    return true;
+}
+
+function ligarAberturaModuloExterno() {
+    $(document).off('click.cdsModuloExterno', 'a[data-modulo-externo]').on(
+        'click.cdsModuloExterno',
+        'a[data-modulo-externo]',
+        function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const url = this.getAttribute('href');
+            const nome = this.getAttribute('data-modulo-externo') || '_blank';
+            abrirModuloCdsEmOutraJanela(url, nome);
+        }
+    );
 }
 
 /** RC8.0.0 — páginas exclusivas do módulo fiscal (não renderizar / não navegar sem licença). */
@@ -611,9 +661,15 @@ async function sincronizarEstadoF12Pdv(opcoes = {}) {
     }
 
     const novoValor = ativo ? '1' : '0';
-    const alterou = aplicarModoFiscalLocal(novoValor, { recarregar: true, origemF12: true });
+    const anteriorEfetivo = typeof window !== 'undefined' ? window.__cdsF12EstadoEfetivo : undefined;
+    const estadoF12Mudou = typeof anteriorEfetivo === 'boolean' && anteriorEfetivo !== !!ativo;
 
-    if (alterou && opcoes.notificar) {
+    aplicarModoFiscalLocal(novoValor, {
+        recarregar: estadoF12Mudou,
+        origemF12: true
+    });
+
+    if (estadoF12Mudou && opcoes.notificar) {
         showNotification(
             ativo
                 ? 'Modo fiscal ativado. Exibindo somente informações fiscais.'
@@ -1379,6 +1435,8 @@ window.limparFavoritosExpedicao = limparFavoritosExpedicao;
 window.mensagemModuloNaoContratado = mensagemModuloNaoContratado;
 window.PAGINAS_MODULO_FISCAL = PAGINAS_MODULO_FISCAL;
 window.ligarNavegacaoSidebar = ligarNavegacaoSidebar;
+window.abrirModuloCdsEmOutraJanela = abrirModuloCdsEmOutraJanela;
+window.ligarAberturaModuloExterno = ligarAberturaModuloExterno;
 window.inicializarShellModulo = inicializarShellModulo;
 
 /** @deprecated Alias legado — use produtoUsaConversaoUnidades */

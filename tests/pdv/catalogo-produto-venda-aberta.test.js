@@ -35,11 +35,20 @@ describe('Catálogo PDV — produto novo com venda em aberto', () => {
     assert.match(pdv, /catalogoProdutoSync\.js/);
   });
 
-  it('backend invalida MIP e notifica MIB após gravar', () => {
+  it('backend invalida MIP, notifica MIB e expõe versão do catálogo', () => {
     const src = fs.readFileSync(path.join(ROOT, 'backend/rotas/produtos.js'), 'utf8');
     assert.match(src, /function publicarProdutoNoCatalogoOperacional/);
     assert.match(src, /limparCacheCatalogo/);
     assert.match(src, /publicarProdutoNoCatalogoOperacional\(row\)/);
+    assert.match(src, /router\.get\('\/catalogo-versao'/);
+  });
+
+  it('PDV consulta versão do catálogo e hidrata último SKU salvo', () => {
+    const src = fs.readFileSync(path.join(ROOT, 'frontend/pdv/js/pdv.js'), 'utf8');
+    assert.match(src, /function verificarVersaoCatalogoPdv/);
+    assert.match(src, /produtos\/catalogo-versao/);
+    assert.match(src, /hidratarUltimoProdutoCatalogoPdv/);
+    assert.match(src, /consumirUltimoProdutoSalvo/);
   });
 
   it('helper publica e escuta produto-salvo', () => {
@@ -58,6 +67,12 @@ describe('Catálogo PDV — produto novo com venda em aberto', () => {
         this._h = this._h.filter((x) => x !== fn);
       }
     };
+    const store = {};
+    global.localStorage = {
+      setItem(k, v) { store[k] = String(v); },
+      getItem(k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
+      removeItem(k) { delete store[k]; }
+    };
     global.addEventListener = () => {};
     global.removeEventListener = () => {};
     global.dispatchEvent = () => {};
@@ -72,6 +87,8 @@ describe('Catálogo PDV — produto novo com venda em aberto', () => {
     assert.equal(mensagens.length, 1);
     assert.equal(mensagens[0].tipo, 'produto-salvo');
     assert.equal(mensagens[0].produto.id, 99);
+    const ultimo = Sync.consumirUltimoProdutoSalvo();
+    assert.equal(ultimo.produto.id, 99);
     off();
   });
 });

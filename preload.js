@@ -25,6 +25,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   abrirComprovante: (html, options) =>
     ipcRenderer.send('abrir-comprovante', html, options || {}),
 
+  abrirModuloApp: (payload) =>
+    ipcRenderer.invoke('abrir-modulo-app', payload || {}),
+
   selecionarPastaBackup: () =>
     ipcRenderer.invoke('selecionar-pasta-backup'),
 

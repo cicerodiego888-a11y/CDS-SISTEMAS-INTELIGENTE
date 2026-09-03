@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const { resolverIconeJanela } = require('./electron-icon');
+const { configurarAberturaJanelas, registrarIpcAbrirModulo, registrarJanelaPrincipalComoModulo } = require('./electron-janelas-modulo');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -326,6 +327,7 @@ function imprimirHtmlEmJanelaOculta(html, deviceName, callback) {
 }
 
 function registrarHandlersIpc() {
+  registrarIpcAbrirModulo(ipcMain);
   ipcMain.removeAllListeners('forcar-reflow');
   ipcMain.on('forcar-reflow', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -540,6 +542,7 @@ function criarMainWindow(tituloJanela, opcoes = {}) {
   });
 
   global.mainWindow = mainWindow;
+  registrarJanelaPrincipalComoModulo(appModuloAtual === 'pdv' ? 'pdv' : 'erp', mainWindow);
   registrarHandlersIpc();
   registrarHandlersDiagnostico();
 
@@ -551,19 +554,7 @@ function criarMainWindow(tituloJanela, opcoes = {}) {
     injetarHostnameEstacao(mainWindow.webContents);
   });
 
-  mainWindow.webContents.setWindowOpenHandler(() => ({
-    action: 'allow',
-    overrideBrowserWindowOptions: {
-      width: 420,
-      height: 720,
-      title: 'Comprovante',
-      alwaysOnTop: true,
-      autoHideMenuBar: true,
-      parent: mainWindow,
-      modal: false,
-      webPreferences: { nodeIntegration: false, contextIsolation: true }
-    }
-  }));
+  configurarAberturaJanelas(mainWindow);
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();

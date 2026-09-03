@@ -558,7 +558,11 @@
         }
         return;
       }
-      window.location.href = '/pdv';
+      if (typeof abrirModuloCdsEmOutraJanela === 'function') {
+        abrirModuloCdsEmOutraJanela('/pdv', 'cds-pdv');
+      } else {
+        window.open('/pdv', 'cds-pdv');
+      }
       return;
     }
     if (typeof paginaPermitidaPorImplantacao === 'function' && !paginaPermitidaPorImplantacao(page)) {
