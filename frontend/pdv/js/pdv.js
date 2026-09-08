@@ -307,7 +307,8 @@ function normalizarProdutoPdvLista(produtos) {
         ...p,
         saldo_fiscal: Number(p.saldo_fiscal ?? 0),
         saldo_nao_fiscal: Number(p.saldo_nao_fiscal ?? 0),
-        estoque_atual: Number(p.estoque_atual || 0),
+        estoque_atual: (Number(p.saldo_fiscal ?? 0) + Number(p.saldo_nao_fiscal ?? 0))
+            || Number(p.estoque_atual || 0),
         preco_venda: Number(p.preco_venda || 0),
         permite_venda_unidade: Number(p.permite_venda_unidade ?? 0) === 1 ? 1 : 0,
         peso_medio_unidade: Number(p.peso_medio_unidade ?? 0),
@@ -624,6 +625,7 @@ function verificarVersaoCatalogoPdv() {
 window.upsertProdutoNoCatalogoPdv = upsertProdutoNoCatalogoPdv;
 window.recarregarCatalogoPdv = recarregarCatalogoPdv;
 window.garantirProdutoNoCatalogoPdv = garantirProdutoNoCatalogoPdv;
+window.pdvPermitirTransferenciaNaoFiscalFiscal = pdvPermitirTransferenciaNaoFiscalFiscal;
 
 function loadPDV() {
     console.log('Carregando PDV...');
@@ -631,6 +633,7 @@ function loadPDV() {
     // Auto-registrar terminal no backend
     autoRegistrarTerminal();
     inicializarSincronizacaoCatalogoPdv();
+    carregarFlagTransferenciaNaoFiscalFiscalPdv();
 
     $.ajax({
         url: urlProdutosPdv(),
@@ -1207,7 +1210,7 @@ function abrirModalPagamentoNaoFiscal(valor, onConfirm, onCancel, formaPredefini
     const rotuloForma = rotuloFormaRecebimentoNaoFiscal(formaConhecida || 'pix');
     const corpoConfirmacao = modoConfirmacao
         ? `
-            <p class="text-muted mb-2">Confirme o recebimento da parcela não fiscal.</p>
+            <p class="text-muted mb-2">Confirme o Recebimento B.</p>
             <h4 class="text-center mb-3">Valor: ${formatCurrency(valorNum)}</h4>
             <div class="p-3 bg-light rounded text-center mb-2">
                 <small class="text-muted d-block mb-1">Forma de recebimento</small>
@@ -1224,12 +1227,12 @@ function abrirModalPagamentoNaoFiscal(valor, onConfirm, onCancel, formaPredefini
             </div>` : ''}
         `
         : `
-            <p class="text-muted mb-2">Itens não fiscais — conta pessoa física, sem TEF.</p>
+            <p class="text-muted mb-2">Confirme o Recebimento B.</p>
             <h4 class="text-center mb-3">Valor: ${formatCurrency(valorNum)}</h4>
             <div class="payment-methods mb-3 d-flex flex-wrap gap-2">
-                <button type="button" class="nao-fiscal-method-btn btn btn-outline-primary active" data-pagamento="pix">PIX PF</button>
+                <button type="button" class="nao-fiscal-method-btn btn btn-outline-primary active" data-pagamento="pix">PIX</button>
                 <button type="button" class="nao-fiscal-method-btn btn btn-outline-primary" data-pagamento="dinheiro">Dinheiro</button>
-                <button type="button" class="nao-fiscal-method-btn btn btn-outline-primary" data-pagamento="cartao">Cartão PF</button>
+                <button type="button" class="nao-fiscal-method-btn btn btn-outline-primary" data-pagamento="cartao">Cartão</button>
             </div>
             <div id="nao-fiscal-dinheiro-area" style="display:none;" class="mt-3 p-3 bg-light rounded">
                 <label for="nao-fiscal-valor-recebido" class="form-label fw-bold">Valor Recebido:</label>
@@ -1246,7 +1249,7 @@ function abrirModalPagamentoNaoFiscal(valor, onConfirm, onCancel, formaPredefini
             <div class="modal-dialog">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title">${modoConfirmacao ? 'Pagamento Não Fiscal' : 'Pagamento Não Fiscal (PF)'}</h5>
+                        <h5 class="modal-title">${modoConfirmacao ? 'Recebimento B' : 'Recebimento B'}</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
@@ -1309,7 +1312,7 @@ function abrirModalPagamentoNaoFiscal(valor, onConfirm, onCancel, formaPredefini
             if ($recebido.length) {
                 const recebido = parseFloat($recebido.val()) || 0;
                 if (recebido + 0.009 < valorNum) {
-                    showNotification('Valor recebido insuficiente para o pagamento não fiscal.', 'warning');
+                    showNotification('Valor recebido insuficiente.', 'warning');
                     return;
                 }
             }
@@ -1354,12 +1357,12 @@ function abrirModalConfirmacaoFiscalManual(valor, onConfirm, onCancel) {
             <div class="modal-dialog">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title">Confirmação de Recebimento Fiscal</h5>
+                        <h5 class="modal-title">Confirmação de Recebimento A</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
-                        <p class="mb-3">Confirme que o valor fiscal foi recebido.</p>
-                        <h4 class="text-center mb-0">Valor fiscal: ${formatCurrency(valorNum)}</h4>
+                        <p class="mb-2">Recebimento A</p>
+                        <h4 class="text-center mb-0">Valor: ${formatCurrency(valorNum)}</h4>
                     </div>
                     <div class="modal-footer">
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
@@ -1444,9 +1447,74 @@ async function confirmarRecebimentoFiscalManual(valorFiscal) {
         abrirModalConfirmacaoFiscalManual(
             valorFiscal,
             resolve,
-            () => reject(new Error('Confirmação de recebimento fiscal cancelada.'))
+            () => reject(new Error('Recebimento A cancelado.'))
         );
     });
+}
+
+function decidirFluxoRecebimentosAB(valorA, valorB, opcoes) {
+    opcoes = opcoes || {};
+    const totalComercial = Math.round(Number(
+        opcoes.totalComercial != null ? opcoes.totalComercial : (Number(valorA || 0) + Number(valorB || 0))
+    ) * 100) / 100;
+    const fluxoFiscal = opcoes.fluxoVendaFiscal === true;
+
+    if (!fluxoFiscal) {
+        const b = totalComercial > 0
+            ? totalComercial
+            : Math.round(Number(valorB || 0) * 100) / 100;
+        return {
+            fluxoVenda: 'nao_fiscal',
+            valorA: 0,
+            valorB: b,
+            abrirA: false,
+            abrirB: b > 0,
+            somenteA: false,
+            somenteB: b > 0,
+            mista: false,
+            ordem: b > 0 ? ['B'] : []
+        };
+    }
+
+    const a = Math.round(Number(valorA || 0) * 100) / 100;
+    const b = Math.round(Number(valorB || 0) * 100) / 100;
+    const abrirA = a > 0;
+    const abrirB = b > 0;
+    const ordem = [];
+    if (abrirA) ordem.push('A');
+    if (abrirB) ordem.push('B');
+    return {
+        fluxoVenda: 'fiscal',
+        valorA: a,
+        valorB: b,
+        abrirA,
+        abrirB,
+        somenteA: abrirA && !abrirB,
+        somenteB: !abrirA && abrirB,
+        mista: abrirA && abrirB,
+        ordem
+    };
+}
+
+async function confirmarRecebimentoB(valorB) {
+    const valor = Math.round(Number(valorB || 0) * 100) / 100;
+    if (!(valor > 0)) return;
+    const formaNaoFiscal = resolverFormaPagamentoNaoFiscalConhecida({
+        pagamentosMistos,
+        formaPagamento: formaPagamentoSelecionadaPDV
+    });
+    await new Promise((resolve, reject) => {
+        abrirModalPagamentoNaoFiscal(
+            valor,
+            resolve,
+            () => reject(new Error('Recebimento B cancelado.')),
+            formaNaoFiscal
+        );
+    });
+}
+
+if (typeof window !== 'undefined') {
+    window.decidirFluxoRecebimentosAB = decidirFluxoRecebimentosAB;
 }
 
 function distribuirQuantidadeVendaLocal(quantidadeVendida, saldoFiscal, saldoNaoFiscal, vendaFiscal = false) {
@@ -1497,8 +1565,20 @@ function calcularDistribuicaoFiscalLocal(itens, vendaFiscal = false) {
             ? Number(item.quantidade_estoque)
             : qtdVenda;
         const controlaEstoque = produtoControlaEstoquePdv(produto);
-        const saldoFiscalMotor = controlaEstoque ? saldos.saldo_fiscal : qtdEstoque;
-        const saldoNaoFiscalMotor = controlaEstoque ? saldos.saldo_nao_fiscal : qtdEstoque;
+        let saldoFiscalMotor = controlaEstoque ? saldos.saldo_fiscal : qtdEstoque;
+        let saldoNaoFiscalMotor = controlaEstoque ? saldos.saldo_nao_fiscal : qtdEstoque;
+        const intentTransf = Number(item.transferencia_nao_fiscal_para_fiscal || 0);
+        if (controlaEstoque && intentTransf > 0) {
+            const prep = calcularTransferenciaNaoFiscalParaFiscalPdv({
+                quantidade: qtdEstoque,
+                saldoFiscal: saldoFiscalMotor,
+                saldoNaoFiscal: saldoNaoFiscalMotor
+            });
+            if (prep.podeTransferir) {
+                saldoFiscalMotor = prep.saldoFiscal + prep.quantidadeTransferir;
+                saldoNaoFiscalMotor = prep.saldoNaoFiscal - prep.quantidadeTransferir;
+            }
+        }
         const resultado = distribuirQuantidadeVendaLocal(
             qtdEstoque,
             saldoFiscalMotor,
@@ -1650,7 +1730,7 @@ async function processarVendaFiscalNaoFiscal(dadosVenda, totalFiscal) {
         const retorno = await processarPagamentoTEF(formaFiscal, totalFiscal, 1);
 
         if (!retorno || !(retorno.aprovado || retorno.sucesso || retorno.status === 'aprovado')) {
-            throw new Error('Pagamento fiscal não aprovado.');
+            throw new Error('Recebimento A não aprovado.');
         }
 
         pagamentoFiscalAtual = retorno;
@@ -1664,7 +1744,7 @@ async function processarVendaFiscalNaoFiscal(dadosVenda, totalFiscal) {
 
         return { sucesso: true, tefFiscal: retorno };
     } catch (error) {
-        console.error('Erro ao processar pagamento fiscal:', error);
+        console.error('Erro ao processar Recebimento A:', error);
         pagamentoFiscalAtual = null;
         return { sucesso: false, erro: error.message };
     }
@@ -1684,6 +1764,27 @@ function formaPagamentoGravacaoFiscalPDV(forma) {
 
 function deveEnviarPagamentosProcessadosPdv(totalFiscal, totalNaoFiscal) {
     return Number(totalFiscal || 0) > 0 && Number(totalNaoFiscal || 0) <= 0;
+}
+
+function pdvVendaMistaFiscalNaoFiscal(totalFiscal, totalNaoFiscal) {
+    return Number(totalFiscal || 0) > 0 && Number(totalNaoFiscal || 0) > 0;
+}
+
+function anexarTefAoPrimeiroPagamento(pagamentos, tef) {
+    if (!tef || !Array.isArray(pagamentos) || pagamentos.length === 0) {
+        return pagamentos;
+    }
+    return pagamentos.map((pagamento, indice) => {
+        if (indice !== 0) return pagamento;
+        return {
+            ...pagamento,
+            tef_transacao_id: tef.transacao_id || pagamento.tef_transacao_id,
+            nsu: tef.nsu || pagamento.nsu,
+            autorizacao: tef.autorizacao || pagamento.autorizacao,
+            bandeira: tef.bandeira || pagamento.bandeira,
+            adquirente: tef.adquirente || pagamento.adquirente
+        };
+    });
 }
 
 function normalizarPagamentosSemTef(pagamentos) {
@@ -1805,7 +1906,7 @@ function iniciarFluxoPosVendaComNaoFiscal(vendaId, opcoes = {}) {
                 return;
             }
 
-            showNotification('Pagamento fiscal confirmado. Cobre o valor não fiscal.', 'info');
+            showNotification('Recebimento A confirmado. Confirme o Recebimento B.', 'info');
 
             const valorPendente = Number(
                 info.saldo_pendente ??
@@ -2106,6 +2207,32 @@ function pdvModoFiscalAtivo() {
     return localStorage.getItem('pdv_modo_fiscal_ativo') === '1';
 }
 
+let pdvFlagTransferenciaNaoFiscalFiscal = false;
+
+function pdvPermitirTransferenciaNaoFiscalFiscal() {
+    return pdvFlagTransferenciaNaoFiscalFiscal === true;
+}
+
+function carregarFlagTransferenciaNaoFiscalFiscalPdv() {
+    const token = localStorage.getItem('token') || '';
+    if (!token || typeof API_URL === 'undefined') {
+        pdvFlagTransferenciaNaoFiscalFiscal = false;
+        return;
+    }
+    fetch(`${API_URL}/configuracoes/pdv_permitir_transferencia_nao_fiscal_fiscal`, {
+        method: 'GET',
+        cache: 'no-store',
+        headers: { Authorization: 'Bearer ' + token }
+    }).then(function (response) {
+        if (!response.ok) return { permitido: false };
+        return response.json();
+    }).then(function (data) {
+        pdvFlagTransferenciaNaoFiscalFiscal = data && data.permitido === true;
+    }).catch(function () {
+        pdvFlagTransferenciaNaoFiscalFiscal = false;
+    });
+}
+
 function pdvResolverSaldosProduto(produto) {
     let item = produto || {};
     if (typeof enriquecerProdutoComCacheEstoque === 'function') {
@@ -2131,6 +2258,149 @@ function pdvResolverSaldosProduto(produto) {
     };
 }
 
+function round3TransferenciaPdv(n) {
+    return Math.round(Number(n || 0) * 1000) / 1000;
+}
+
+function calcularTransferenciaNaoFiscalParaFiscalPdv({ quantidade, saldoFiscal, saldoNaoFiscal } = {}) {
+    const q = round3TransferenciaPdv(quantidade);
+    const sf = round3TransferenciaPdv(saldoFiscal);
+    const snf = round3TransferenciaPdv(saldoNaoFiscal);
+    const estoqueAtual = round3TransferenciaPdv(sf + snf);
+    const deficitFiscal = round3TransferenciaPdv(Math.max(0, q - sf));
+    const estoqueInsuficiente = q > estoqueAtual + 1e-9;
+    const podeTransferir = !estoqueInsuficiente
+        && deficitFiscal > 1e-9
+        && snf + 1e-9 >= deficitFiscal;
+    return {
+        quantidade: q,
+        saldoFiscal: sf,
+        saldoNaoFiscal: snf,
+        estoqueAtual,
+        deficitFiscal,
+        estoqueInsuficiente,
+        devePerguntar: podeTransferir,
+        podeTransferir,
+        quantidadeTransferir: podeTransferir ? deficitFiscal : 0
+    };
+}
+
+function pdvSaldosComTransferenciasPendentes(produto, excluirIndex) {
+    const base = pdvResolverSaldosProduto(produto);
+    let sf = Number(base.saldo_fiscal || 0);
+    let snf = Number(base.saldo_nao_fiscal || 0);
+    const produtoId = Number(produto?.id ?? produto?.produto_id);
+    (typeof carrinho !== 'undefined' && Array.isArray(carrinho) ? carrinho : []).forEach((item, idx) => {
+        if (excluirIndex != null && idx === excluirIndex) return;
+        if (Number(item.id) !== produtoId) return;
+        const t = Number(item.transferencia_nao_fiscal_para_fiscal || 0);
+        if (t > 0) {
+            sf += t;
+            snf -= t;
+        }
+    });
+    return {
+        saldo_fiscal: round3TransferenciaPdv(sf),
+        saldo_nao_fiscal: round3TransferenciaPdv(snf),
+        estoque_atual: round3TransferenciaPdv(sf + snf)
+    };
+}
+
+function pdvAnalisarTransferenciaEstoque(produto, quantidadeEstoque, opcoes = {}) {
+    if (!pdvPermitirTransferenciaNaoFiscalFiscal()) {
+        return {
+            quantidade: Number(quantidadeEstoque || 0),
+            devePerguntar: false,
+            podeTransferir: false,
+            quantidadeTransferir: 0,
+            deficitFiscal: 0
+        };
+    }
+    if (!produtoControlaEstoquePdv(produto)) {
+        return {
+            quantidade: Number(quantidadeEstoque || 0),
+            devePerguntar: false,
+            podeTransferir: false,
+            quantidadeTransferir: 0,
+            deficitFiscal: 0
+        };
+    }
+    const saldos = pdvSaldosComTransferenciasPendentes(produto, opcoes.excluirIndex);
+    return calcularTransferenciaNaoFiscalParaFiscalPdv({
+        quantidade: quantidadeEstoque,
+        saldoFiscal: saldos.saldo_fiscal,
+        saldoNaoFiscal: saldos.saldo_nao_fiscal
+    });
+}
+
+function abrirModalTransferirEstoquePdv(callback) {
+    $('#modalTransferirEstoquePdv').remove();
+    const html = `
+        <div class="modal fade" id="modalTransferirEstoquePdv" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+            <div class="modal-dialog modal-sm modal-dialog-centered">
+                <div class="modal-content">
+                    <div class="modal-body text-center py-4">
+                        <p class="mb-0 fw-bold fs-5">Transferir estoque?</p>
+                    </div>
+                    <div class="modal-footer justify-content-center py-2">
+                        <button type="button" class="btn btn-secondary" id="btnTransferirEstoqueNao">NÃO</button>
+                        <button type="button" class="btn btn-primary" id="btnTransferirEstoqueSim">SIM</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    $('body').append(html);
+    const modalEl = document.getElementById('modalTransferirEstoquePdv');
+    const modal = new bootstrap.Modal(modalEl);
+    let decidido = false;
+    const onKeydownCaptura = (e) => {
+        if (!document.getElementById('modalTransferirEstoquePdv')) return;
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+        }
+        if (e.key === 'Escape' || e.key === 'Esc') {
+            e.preventDefault();
+            e.stopPropagation();
+            finalizar(false);
+        }
+    };
+    const finalizar = (sim) => {
+        if (decidido) return;
+        decidido = true;
+        document.removeEventListener('keydown', onKeydownCaptura, true);
+        modal.hide();
+        if (typeof callback === 'function') callback(sim === true);
+    };
+    $('#btnTransferirEstoqueSim').off('click').on('click', function (e) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        finalizar(true);
+    });
+    $('#btnTransferirEstoqueNao').off('click').on('click', function (e) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        finalizar(false);
+    });
+    document.addEventListener('keydown', onKeydownCaptura, true);
+    $(modalEl).off('shown.bs.modal.transferir').on('shown.bs.modal.transferir', function () {
+        const btnNao = document.getElementById('btnTransferirEstoqueNao');
+        if (btnNao) btnNao.focus({ preventScroll: true });
+    });
+    $(modalEl).off('hidden.bs.modal.transferir').on('hidden.bs.modal.transferir', function () {
+        document.removeEventListener('keydown', onKeydownCaptura, true);
+        $('#modalTransferirEstoquePdv').remove();
+        if (!decidido && typeof callback === 'function') {
+            decidido = true;
+            callback(false);
+        }
+        focarCampoCodigo({ limpar: true });
+    });
+    modal.show();
+}
+
 function produtoControlaEstoquePdv(produto) {
     if (produto == null) return true;
     if (
@@ -2151,37 +2421,22 @@ function validarEstoqueVenda(produto, quantidade, modoFiscal) {
     const saldos = pdvResolverSaldosProduto(produto);
     const saldoFiscal = saldos.saldo_fiscal;
     const saldoNaoFiscal = saldos.saldo_nao_fiscal;
-    const saldoTotal = saldos.estoque_atual;
+    const saldoTotal = Number(saldos.estoque_atual || 0);
 
-    if (modoFiscal) {
-        if (saldoFiscal <= 0) {
+    // Inclusão no carrinho usa o estoque total (F + NF). Modo fiscal não
+    // bloqueia produto só com saldo não fiscal; a pergunta de transferência
+    // é um passo separado depois da quantidade.
+    if (quantidade > saldoTotal + 1e-9) {
+        if (modoFiscal && saldoFiscal <= 0 && saldoNaoFiscal <= 0) {
             return {
                 sucesso: false,
                 mensagem:
 `Saldo insuficiente.
 
-Disponível: 0${saldoNaoFiscal > 0 ? '*' : ''}
-
-${saldoNaoFiscal > 0 ? '* Consulte o estoque disponível.' : ''}`
+Disponível: 0`
             };
         }
 
-        if (quantidade > saldoTotal) {
-            return {
-                sucesso: false,
-                mensagem:
-`Saldo insuficiente.
-
-Disponível: ${saldoFiscal}${saldoNaoFiscal > 0 ? '*' : ''}
-
-${saldoNaoFiscal > 0 ? '* Consulte o estoque disponível.' : ''}`
-            };
-        }
-
-        return { sucesso: true };
-    }
-
-    if (quantidade > saldoTotal) {
         return {
             sucesso: false,
             mensagem:
@@ -2196,6 +2451,29 @@ Disponível: ${saldoTotal}`
 
 function pdvValidarEstoqueVenda(produto, quantidade) {
     return validarEstoqueVenda(produto, quantidade, pdvModoFiscalAtivo());
+}
+
+function pdvPodeIniciarInclusaoProduto(produto) {
+    if (!produtoControlaEstoquePdv(produto)) {
+        return { sucesso: true };
+    }
+    const saldos = pdvResolverSaldosProduto(produto);
+    if (Number(saldos.estoque_atual || 0) > 1e-9) {
+        return { sucesso: true };
+    }
+    return pdvValidarEstoqueVenda(produto, 1);
+}
+
+function pdvNotificarBloqueioInclusaoProduto(produto) {
+    const resultado = pdvPodeIniciarInclusaoProduto(produto);
+    if (!resultado.sucesso) {
+        const mensagem = produto?.nome && resultado.mensagem
+            ? resultado.mensagem.replace('Saldo insuficiente.', `Saldo insuficiente para ${produto.nome}.`)
+            : (resultado.mensagem || 'Saldo insuficiente.');
+        showNotification(mensagem, 'danger');
+        return false;
+    }
+    return true;
 }
 
 function pdvNotificarEstoqueInsuficiente(produto, quantidade) {
@@ -2281,8 +2559,9 @@ function focarCampoCodigo(opcoes) {
     const limpar = opts.limpar !== false;
 
     setTimeout(() => {
-        // Não roubar o foco enquanto um modal estiver aberto (ex.: quantidade)
+        // Não roubar o foco enquanto um modal estiver aberto (ex.: quantidade / transferir estoque)
         if (document.querySelector('.modal.show')) return;
+        if (document.getElementById('modalTransferirEstoquePdv')) return;
 
         const input = $('#buscaProdutoPdv');
         if (!input.length) return;
@@ -3224,7 +3503,55 @@ function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExt
         return;
     }
 
-    if (!pdvNotificarEstoqueInsuficiente(produto, quantidadeEstoque)) {
+    const itemExistentePre = carrinho.find(item =>
+        Number(item.id) === Number(produto.id) && normalizarTipoVendaItem(item) === tipoVenda
+    );
+    let quantidadeEstoqueValidacao = quantidadeEstoque;
+    if (itemExistentePre) {
+        const novaQuantidadeBrutaPre = Number(itemExistentePre.quantidade) + quantidade;
+        const novaQuantidadePre = tipoVendaEhUnidade(tipoVenda)
+            ? novaQuantidadeBrutaPre
+            : (etiquetaBalanca
+                ? normalizarQuantidadeEtiquetaPdv(novaQuantidadeBrutaPre)
+                : Number(novaQuantidadeBrutaPre.toFixed(2)));
+        quantidadeEstoqueValidacao = obterQuantidadeEstoqueParaVenda(produto, novaQuantidadePre, tipoVenda);
+    }
+
+    const analiseTransferencia = pdvAnalisarTransferenciaEstoque(produto, quantidadeEstoqueValidacao);
+    if (analiseTransferencia.devePerguntar && opcoes.transferenciaResposta == null) {
+        abrirModalTransferirEstoquePdv(function (sim) {
+            adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExtra, promocao, {
+                ...opcoes,
+                transferenciaResposta: sim === true,
+                quantidadeTransferir: analiseTransferencia.quantidadeTransferir
+            });
+        });
+        return;
+    }
+
+    const recusouTransferencia = opcoes.transferenciaResposta === false;
+    const pendingAtual = Number(itemExistentePre?.transferencia_nao_fiscal_para_fiscal || 0);
+    const adicionalTransferencia = !recusouTransferencia
+        && opcoes.transferenciaResposta === true
+        && analiseTransferencia.podeTransferir
+        ? Number(analiseTransferencia.quantidadeTransferir || 0)
+        : 0;
+    const quantidadeTransferirLinha = round3TransferenciaPdv(pendingAtual + adicionalTransferencia);
+
+    const idxLinha = itemExistentePre ? carrinho.indexOf(itemExistentePre) : -1;
+    const saldosBase = pdvSaldosComTransferenciasPendentes(
+        produto,
+        idxLinha >= 0 ? idxLinha : undefined
+    );
+    const produtoParaValidar = quantidadeTransferirLinha > 0
+        ? {
+            ...produto,
+            saldo_fiscal: Number(saldosBase.saldo_fiscal || 0) + quantidadeTransferirLinha,
+            saldo_nao_fiscal: Number(saldosBase.saldo_nao_fiscal || 0) - quantidadeTransferirLinha
+        }
+        : produto;
+
+    if (!pdvNotificarEstoqueInsuficiente(produtoParaValidar, quantidadeEstoque)) {
         return;
     }
 
@@ -3302,7 +3629,7 @@ function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExt
                 : Number(novaQuantidadeBruta.toFixed(2)));
         const novaQuantidadeEstoque = obterQuantidadeEstoqueParaVenda(produto, novaQuantidade, tipoVenda);
 
-        if (!pdvNotificarEstoqueInsuficiente(produto, novaQuantidadeEstoque)) {
+        if (!pdvNotificarEstoqueInsuficiente(produtoParaValidar, novaQuantidadeEstoque)) {
             return;
         }
 
@@ -3333,6 +3660,7 @@ function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExt
         itemExistente.promocao_id = promocao?.id || null;
         itemExistente.desconto_atacado = descontoAtacadoItem;
         itemExistente.tipo_venda = tipoVenda;
+        itemExistente.transferencia_nao_fiscal_para_fiscal = quantidadeTransferirLinha;
         if (subtotalEtiquetaFixo != null && Number.isFinite(subtotalEtiquetaFixo)) {
             itemExistente.subtotal = Number((Number(itemExistente.subtotal || 0) + subtotalEtiquetaFixo).toFixed(2));
         }
@@ -3366,7 +3694,8 @@ function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExt
                 tipo_preco: (Number(produto.venda_atacado || 0) === 1 && descontoAtacadoItem > 0) ? 'atacado' : 'varejo',
                 subtotal: 0,
                 item_fiscal: Number(produto.item_fiscal || 0),
-                tipo_venda: tipoVenda
+                tipo_venda: tipoVenda,
+                transferencia_nao_fiscal_para_fiscal: quantidadeTransferirLinha
             };
 
             if (subtotalEtiquetaFixo != null && Number.isFinite(subtotalEtiquetaFixo)) {
@@ -3461,10 +3790,12 @@ function abrirModalModoVendaProduto(produto, callback) {
 function continuarAdicionarProdutoPdv(produto, promocao, tipoVenda = TIPO_VENDA_PESO) {
     if (tipoVendaEhUnidade(tipoVenda)) {
         const qtdTeste = obterQuantidadeEstoqueParaVenda(produto, 1, TIPO_VENDA_UNIDADE);
-        const validacaoMinima = pdvValidarEstoqueVenda(produto, qtdTeste > 0 ? qtdTeste : 0.001);
-        if (!validacaoMinima.sucesso) {
-            showNotification(validacaoMinima.mensagem, 'danger');
-            return;
+        const qtdMin = qtdTeste > 0 ? qtdTeste : 0.001;
+        const saldos = pdvResolverSaldosProduto(produto);
+        if (produtoControlaEstoquePdv(produto) && qtdMin > Number(saldos.estoque_atual || 0) + 1e-9) {
+            if (!pdvNotificarEstoqueInsuficiente(produto, qtdMin)) {
+                return;
+            }
         }
 
         abrirModalQuantidadeProduto(produto, function (quantidade) {
@@ -3558,7 +3889,7 @@ function adicionarProdutoPorCodigoLegado(codigoDigitado) {
         return;
     }
 
-    const validacaoMinima = pdvValidarEstoqueVenda(produto, 1);
+    const validacaoMinima = pdvPodeIniciarInclusaoProduto(produto);
     if (!validacaoMinima.sucesso) {
         showNotification(validacaoMinima.mensagem, 'danger');
         return;
@@ -3861,7 +4192,7 @@ async function adicionarProdutoPorCodigoViaMip(codigoDigitado) {
         return;
     }
 
-    const validacaoMinima = pdvValidarEstoqueVenda(produtoCarrinho, 1);
+    const validacaoMinima = pdvPodeIniciarInclusaoProduto(produtoCarrinho);
     if (!validacaoMinima.sucesso) {
         showNotification(validacaoMinima.mensagem, 'danger');
         return;
@@ -5084,6 +5415,8 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
         total,
         emitir_fiscal: false,
         cpf_cnpj_nota: null,
+        // Pagamento único (PIX/dinheiro/cartão) cobre F+NF — MIDP separa
+        // MIDP separa F/NF a partir do pagamento comercial integral
         pagamentos: pagamentosMistos.length > 0 ? pagamentosMistos : [
             {
                 forma_pagamento: formaPagamento,
@@ -5118,7 +5451,8 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
             tipo_preco: item.tipo_preco || 'varejo',
             subtotal: subtotalFiscal,
             item_fiscal: Number(item.item_fiscal || 0),
-            tipo_venda: tipoVenda
+            tipo_venda: tipoVenda,
+            transferencia_nao_fiscal_para_fiscal: Number(item.transferencia_nao_fiscal_para_fiscal || 0)
         };
             if (tipoVendaEhUnidade(tipoVenda) && produto) {
                 itemPayload.quantidade_estoque = obterQuantidadeEstoqueParaVenda(produto, quantidade, TIPO_VENDA_UNIDADE);
@@ -5173,6 +5507,7 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
 
     dados.valor_fiscal = totalFiscal;
     dados.valor_nao_fiscal = totalNaoFiscal;
+    dados.fluxo_venda = emitirFiscal === true ? 'fiscal' : 'nao_fiscal';
 
     const deveEmitirFiscal = emitirFiscal && totalFiscal > 0;
     dados.emitir_fiscal = deveEmitirFiscal;
@@ -5185,14 +5520,6 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
     const ehPagamentoMisto =
         Array.isArray(pagamentosMistos) &&
         pagamentosMistos.length > 0;
-
-    if (totalFiscal === 0 && totalNaoFiscal > 0 && !ehPagamentoMisto) {
-        dados.pagamentos = dados.pagamentos.map((pagamento) => ({
-            ...pagamento,
-            valor: totalNaoFiscal,
-            tipo_recebimento: 'nao_fiscal'
-        }));
-    }
 
     const formaPagamentoNormalizada = normalizarFormaPagamentoTEF(formaPagamento);
 
@@ -5214,13 +5541,18 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
         const modoConfirmacaoFiscal = await obterModoConfirmacaoFiscal();
         const tefHabilitado = await obterTefHabilitadoConfig();
 
+        const fluxoAB = decidirFluxoRecebimentosAB(totalFiscal, totalNaoFiscal, {
+            fluxoVendaFiscal: emitirFiscal === true,
+            totalComercial: total
+        });
+
         const fluxoResolvido = TefFluxoPagamento.resolverFluxoPagamentoFiscal({
             modoConfirmacaoFiscal,
             tefHabilitado,
             formaPagamento: formaPagamentoNormalizada,
             ehPagamentoMisto,
             pagamentosMistos,
-            totalFiscal
+            totalFiscal: fluxoAB.abrirA ? fluxoAB.valorA : 0
         });
 
         const {
@@ -5234,136 +5566,83 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
             tefHabilitado,
             pagamentoExigeTef,
             deveUsarTefAutomatico,
-            usarConfirmacaoManual
+            usarConfirmacaoManual,
+            fluxoAB
         });
 
-        if (deveUsarTefAutomatico && totalFiscal > 0) {
-            const resultadoProcessamento = await processarVendaFiscalNaoFiscal(dados, totalFiscal);
+        if (deveUsarTefAutomatico && ehPagamentoMisto) {
+            dados.pagamentos = await processarPagamentosMistosTEF(pagamentosMistos);
+            dados.forma_pagamento = 'misto';
+        }
 
-            if (!resultadoProcessamento.sucesso) {
-                vendaEmProcessamento = false;
-                showNotification(resultadoProcessamento.erro || 'Erro no pagamento fiscal.', 'danger');
-                return;
-            }
+        if (fluxoAB.abrirA) {
+            if (deveUsarTefAutomatico && !ehPagamentoMisto) {
+                const resultadoProcessamento = await processarVendaFiscalNaoFiscal(dados, fluxoAB.valorA);
 
-            const formaFiscal = obterFormaPagamentoFiscal();
-            const tefFiscal = resultadoProcessamento.tefFiscal;
-
-            dados.tef = montarObjetoTEF(tefFiscal);
-            dados.pagamentos = [
-                {
-                    forma_pagamento: formaPagamentoGravacaoFiscalPDV(formaFiscal),
-                    valor: totalFiscal,
-                    tipo_recebimento: 'fiscal',
-                    tef_transacao_id: tefFiscal.transacao_id,
-                    nsu: tefFiscal.nsu,
-                    autorizacao: tefFiscal.autorizacao
-                }
-            ];
-
-            if (deveEnviarPagamentosProcessadosPdv(totalFiscal, totalNaoFiscal)) {
-                dados.pagamentos_processados_pdv = true;
-            }
-        } else if (deveUsarTefAutomatico && ehPagamentoMisto) {
-            const pagamentosComTEF = await processarPagamentosMistosTEF(pagamentosMistos);
-            dados.pagamentos = pagamentosComTEF;
-        } else if (deveUsarTefAutomatico) {
-            if (totalNaoFiscal > 0) {
-                const formaNaoFiscal = resolverFormaPagamentoNaoFiscalConhecida({
-                    pagamentosMistos,
-                    formaPagamento: formaPagamentoNormalizada || formaPagamento,
-                    ehPagamentoMisto
-                });
-                const pagamentoNaoFiscal = await new Promise((resolve, reject) => {
-                    abrirModalPagamentoNaoFiscal(
-                        totalNaoFiscal,
-                        resolve,
-                        () => reject(new Error('Pagamento não fiscal cancelado.')),
-                        formaNaoFiscal
-                    );
-                });
-
-                dados.pagamentos = [
-                    {
-                        forma_pagamento: pagamentoNaoFiscal.forma_pagamento,
-                        valor: totalNaoFiscal,
-                        tipo_recebimento: 'nao_fiscal'
-                    }
-                ];
-            } else {
-                const parcelasTef = formaPagamentoNormalizada.includes('credito')
-                    ? (Number($('#parcelasCartao').val()) || 1)
-                    : 1;
-
-                const retornoTef = await processarPagamentoTEF(
-                    formaPagamentoNormalizada,
-                    total,
-                    parcelasTef
-                );
-
-                if (!retornoTef || !(retornoTef.aprovado || retornoTef.sucesso || retornoTef.status === 'aprovado')) {
+                if (!resultadoProcessamento.sucesso) {
                     vendaEmProcessamento = false;
-                    showNotification('Venda cancelada: pagamento TEF não aprovado.', 'warning');
+                    showNotification(resultadoProcessamento.erro || 'Erro no Recebimento A.', 'danger');
                     return;
                 }
 
-                const tef = montarObjetoTEF(retornoTef);
+                const formaFiscal = obterFormaPagamentoFiscal();
+                const tefFiscal = resultadoProcessamento.tefFiscal;
+                dados.tef = montarObjetoTEF(tefFiscal);
 
-                dados.tef = tef;
-
-                dados.pagamentos = [
-                    {
-                        forma_pagamento: formaPagamentoGravacaoFiscalPDV(formaPagamentoNormalizada),
-                        valor: total,
-                        tipo_recebimento: 'fiscal',
-                        tef_transacao_id: retornoTef.transacao_id,
-                        tef,
-                        nsu: retornoTef.nsu,
-                        autorizacao: retornoTef.autorizacao,
-                        bandeira: retornoTef.bandeira,
-                        adquirente: retornoTef.adquirente
+                if (fluxoAB.abrirB) {
+                    dados.pagamentos = anexarTefAoPrimeiroPagamento(dados.pagamentos, tefFiscal);
+                } else {
+                    dados.pagamentos = [
+                        {
+                            forma_pagamento: formaPagamentoGravacaoFiscalPDV(formaFiscal),
+                            valor: fluxoAB.valorA,
+                            tipo_recebimento: 'fiscal',
+                            tef_transacao_id: tefFiscal.transacao_id,
+                            nsu: tefFiscal.nsu,
+                            autorizacao: tefFiscal.autorizacao
+                        }
+                    ];
+                    if (deveEnviarPagamentosProcessadosPdv(totalFiscal, totalNaoFiscal)) {
+                        dados.pagamentos_processados_pdv = true;
                     }
-                ];
+                }
+            } else {
+                const resultadoManual = await processarVendaFiscalManual(dados, fluxoAB.valorA);
 
-                if (deveEnviarPagamentosProcessadosPdv(totalFiscal, totalNaoFiscal)) {
-                    dados.pagamentos_processados_pdv = true;
+                if (!resultadoManual.sucesso) {
+                    vendaEmProcessamento = false;
+                    showNotification(resultadoManual.erro || 'Recebimento A cancelado.', 'danger');
+                    return;
+                }
+
+                dados.confirmacao_fiscal_manual = true;
+                if (ehPagamentoMisto) {
+                    dados.pagamentos = normalizarPagamentosSemTef(pagamentosMistos);
+                    dados.forma_pagamento = 'misto';
+                } else if (fluxoAB.abrirB) {
+                    dados.pagamentos = normalizarPagamentosSemTef(dados.pagamentos);
+                } else {
+                    dados.pagamentos = [
+                        {
+                            forma_pagamento: formaPagamentoNormalizada,
+                            valor: fluxoAB.valorA,
+                            tipo_recebimento: 'fiscal'
+                        }
+                    ];
+                    if (deveEnviarPagamentosProcessadosPdv(totalFiscal, totalNaoFiscal)) {
+                        dados.pagamentos_processados_pdv = true;
+                    }
                 }
             }
-        } else if (usarConfirmacaoManual) {
-            const resultadoManual = await processarVendaFiscalManual(dados, totalFiscal);
+        }
 
-            if (!resultadoManual.sucesso) {
-                vendaEmProcessamento = false;
-                showNotification(resultadoManual.erro || 'Confirmação fiscal cancelada.', 'danger');
-                return;
+        if (fluxoAB.abrirB) {
+            await confirmarRecebimentoB(fluxoAB.valorB);
+            if (!fluxoAB.abrirA) {
+                dados.pagamentos = normalizarPagamentosSemTef(
+                    ehPagamentoMisto ? pagamentosMistos : dados.pagamentos
+                );
             }
-
-            if (ehPagamentoMisto) {
-                dados.pagamentos = normalizarPagamentosSemTef(pagamentosMistos);
-                dados.forma_pagamento = 'misto';
-            } else if (totalNaoFiscal > 0) {
-                const formaFiscal = obterFormaPagamentoFiscal();
-                dados.pagamentos = [
-                    {
-                        forma_pagamento: formaFiscal,
-                        valor: totalFiscal,
-                        tipo_recebimento: 'fiscal'
-                    }
-                ];
-            } else {
-                dados.pagamentos = [
-                    {
-                        forma_pagamento: formaPagamentoNormalizada,
-                        valor: totalFiscal,
-                        tipo_recebimento: 'fiscal'
-                    }
-                ];
-            }
-
-            if (deveEnviarPagamentosProcessadosPdv(totalFiscal, totalNaoFiscal)) {
-                dados.pagamentos_processados_pdv = true;
-            }
-            dados.confirmacao_fiscal_manual = true;
         }
     } catch (error) {
         vendaEmProcessamento = false;
@@ -5572,7 +5851,7 @@ async function cancelarVendaAtual() {
             });
             console.log('Pagamento fiscal cancelado pelo operador');
         } catch (cancelError) {
-            console.error('Erro ao cancelar pagamento fiscal:', cancelError);
+            console.error('Erro ao cancelar Recebimento A:', cancelError);
         }
         pagamentoFiscalAtual = null;
     }
@@ -5958,13 +6237,18 @@ function abrirModalQuantidadeProduto(produto, callback, opcoes = {}) {
 
     $('#inputQuantidadeProduto').off('keydown').on('keydown', function (e) {
         if (e.key === 'Enter') {
+            e.preventDefault();
+            e.stopPropagation();
             confirmarQuantidadeProduto(produto, callback, modal, opcoes);
         }
     });
 
     modalEl.addEventListener('hidden.bs.modal', function () {
+        const confirmou = modalEl.dataset.qtdConfirmada === '1';
         $('#modalQuantidadeProduto').remove();
-        focarCampoCodigo({ limpar: true });
+        if (!confirmou) {
+            focarCampoCodigo({ limpar: true });
+        }
     });
 }
 
@@ -5995,22 +6279,31 @@ function confirmarQuantidadeProduto(produto, callback, modal, opcoes = {}) {
         return;
     }
 
-    if (!pdvNotificarEstoqueInsuficiente(produto, quantidadeEstoque)) {
-        $('#inputQuantidadeProduto').focus();
-        return;
+    const saldosTotais = pdvResolverSaldosProduto(produto);
+    if (produtoControlaEstoquePdv(produto)
+        && quantidadeEstoque > Number(saldosTotais.estoque_atual || 0) + 1e-9) {
+        if (!pdvNotificarEstoqueInsuficiente(produto, quantidadeEstoque)) {
+            $('#inputQuantidadeProduto').focus();
+            return;
+        }
     }
 
     if (document.activeElement) {
         document.activeElement.blur();
     }
 
-    modal.hide();
-
-    if (typeof callback === 'function') {
-        callback(quantidade);
+    const modalEl = document.getElementById('modalQuantidadeProduto');
+    if (modalEl) {
+        modalEl.dataset.qtdConfirmada = '1';
     }
 
-    $('#buscaProdutoPdv').focus();
+    $(modalEl).one('hidden.bs.modal.qtdok', function () {
+        setTimeout(function () {
+            if (typeof callback === 'function') callback(quantidade);
+        }, 80);
+    });
+
+    modal.hide();
 }
 
 function abrirTelaPagamento() {
@@ -6993,10 +7286,7 @@ function adicionarProdutoConsultaPDV(produtoId) {
         return;
     }
 
-    const qtdTeste = produtoPermiteEscolhaVendaUnidade(produto)
-        ? obterQuantidadeEstoqueParaVenda(produto, 1, TIPO_VENDA_UNIDADE)
-        : 1;
-    const validacaoMinima = pdvValidarEstoqueVenda(produto, qtdTeste > 0 ? qtdTeste : 1);
+    const validacaoMinima = pdvPodeIniciarInclusaoProduto(produto);
     if (!validacaoMinima.sucesso) {
         showNotification(validacaoMinima.mensagem, 'warning');
         return;
@@ -7066,7 +7356,7 @@ function montarLinhaProdutoConsultaPDV(p) {
     const preco = Number(p.preco_venda || 0);
     const precoCompra = Number(p.preco_compra || 0);
     const estoqueBaixo = estoque <= Number(p.estoque_minimo || 0);
-    const semEstoque = !pdvValidarEstoqueVenda(p, 1).sucesso;
+    const semEstoque = !pdvPodeIniciarInclusaoProduto(p).sucesso;
     const temPromocao = p.tem_promocao === 1 || p.tem_promocao === true;
     const precoPromocional = Number(p.preco_promocional || 0);
     const descontoPercentual = Number(p.desconto_percentual || 0);

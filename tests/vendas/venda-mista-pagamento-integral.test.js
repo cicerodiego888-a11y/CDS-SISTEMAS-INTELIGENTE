@@ -13,8 +13,10 @@ const Orquestrador = require('../../backend/services/OrquestradorPagamento');
 const {
   aplicarRegraStatusPagamentoVenda,
   calcularSaldoNaoFiscal,
+  linhasPagamentoPersistencia,
   resolverStatusPagamentoVenda
 } = require('../../backend/services/vendas/VendaPagamentoService');
+const { somarPorGrupo, GRUPO_A, GRUPO_B } = require('../../backend/services/vendas/recebimentoPagamento');
 
 function round2(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -198,6 +200,17 @@ describe('Venda mista — pagamento integral (anti #25)', () => {
     assert.match(pdv, /vendaEmProcessamento = false/);
   });
 
+  it('TESTE 10b — PDV não recorta pagamento misto só para o fiscal', () => {
+    const pdv = fs.readFileSync(
+      path.join(__dirname, '../../frontend/pdv/js/pdv.js'),
+      'utf8'
+    );
+    assert.match(pdv, /function pdvVendaMistaFiscalNaoFiscal/);
+    assert.match(pdv, /function anexarTefAoPrimeiroPagamento/);
+    assert.match(pdv, /MIDP separa F\/NF a partir do pagamento comercial integral/);
+    assert.match(pdv, /Pagamento único \(PIX\/dinheiro\/cartão\) cobre F\+NF — MIDP separa/);
+  });
+
   it('TESTE 11 — entrega mista integral (padrão #25) via Orquestrador', async () => {
     const r = await orquestrar({
       fiscal: 4,
@@ -225,6 +238,27 @@ describe('Venda mista — pagamento integral (anti #25)', () => {
     assert.equal(r.statusPagamento, 'quitada');
     assert.notEqual(r.statusPagamento, 'aguardando_nao_fiscal');
     assert.equal(r.proximaAcao, 'emitir_nfce');
+  });
+
+  it('TESTE 13 — venda_pagamentos persiste split F/NF (não o PIX comercial único)', async () => {
+    const r = await orquestrar({
+      fiscal: 2.35,
+      naoFiscal: 2.35,
+      pagamentos: [{ forma_pagamento: 'pix', valor: 4.7 }]
+    });
+    assert.equal(r.sucesso, true, r.erro);
+    const linhas = linhasPagamentoPersistencia(
+      [{ forma_pagamento: 'pix', valor: 4.7 }],
+      r.recebimentos,
+      'pix',
+      4.7,
+      null
+    );
+    assert.equal(linhas.length, 2);
+    assert.equal(somarPorGrupo(linhas, GRUPO_A), 2.35);
+    assert.equal(somarPorGrupo(linhas, GRUPO_B), 2.35);
+    assert.equal(linhas[0].tipo_recebimento, 'A');
+    assert.equal(linhas[1].tipo_recebimento, 'B');
   });
 
   it('isPagamentoIntegralConfirmado — helper', () => {

@@ -282,6 +282,15 @@
   }
 
   function produtoPdvSemEstoque(produto) {
+    const fiscal = Number(produto?.saldo_fiscal ?? 0);
+    const naoFiscal = Number(produto?.saldo_nao_fiscal ?? 0);
+    const total = fiscal + naoFiscal || Number(produto?.estoque_atual ?? 0);
+    if (total > 1e-9) {
+      return false;
+    }
+    if (typeof global.pdvPodeIniciarInclusaoProduto === 'function') {
+      return !global.pdvPodeIniciarInclusaoProduto(produto).sucesso;
+    }
     if (typeof global.pdvValidarEstoqueVenda === 'function') {
       return !global.pdvValidarEstoqueVenda(produto, 1).sucesso;
     }

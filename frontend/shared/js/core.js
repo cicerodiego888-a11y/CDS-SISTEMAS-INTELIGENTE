@@ -14,20 +14,13 @@ let currentPage = window.CDS_DEFAULT_PAGE || 'dashboard';
 let chart = null;
 
 function limparModaisTravados() {
-    document.querySelectorAll('.modal-backdrop').forEach(el => el.remove());
+    const temModalAberto = !!document.querySelector('.modal.show');
+    if (temModalAberto) return;
+
+    document.querySelectorAll('.modal-backdrop').forEach((el) => el.remove());
     document.body.classList.remove('modal-open');
-    document.body.style.overflow = '';
-    document.body.style.paddingRight = '';
-    document.querySelectorAll('[aria-hidden="true"]').forEach(el => {
-        el.removeAttribute('aria-hidden');
-    });
-    document.querySelectorAll('.loading, .overlay, .toast-container, .spinner-overlay').forEach(el => {
-        el.style.display = 'none';
-        el.style.pointerEvents = 'none';
-    });
-    document.body.style.display = 'none';
-    document.body.offsetHeight;
-    document.body.style.display = '';
+    document.body.style.removeProperty('overflow');
+    document.body.style.removeProperty('padding-right');
 }
 
 $(document).on('hidden.bs.modal', function () {
@@ -40,26 +33,6 @@ setInterval(() => {
         limparModaisTravados();
     }
 }, 2000);
-
-let ultimoClique = Date.now();
-let cliquesDetectados = 0;
-
-$(document).on('click', function () {
-    ultimoClique = Date.now();
-    cliquesDetectados++;
-});
-
-setInterval(() => {
-    if (window.electronAPI && cliquesDetectados > 0) {
-        const tempoDesdeUltimoClique = Date.now() - ultimoClique;
-        if (tempoDesdeUltimoClique > 100 && tempoDesdeUltimoClique < 2000) {
-            if (window.electronAPI.forcarReflow) {
-                window.electronAPI.forcarReflow();
-            }
-        }
-        cliquesDetectados = 0;
-    }
-}, 3000);
 
 const MODO_FISCAL_PADRAO = '1'; // sistema sempre inicia com modo fiscal aberto
 

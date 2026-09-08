@@ -179,6 +179,11 @@ async function main() {
 
     const css = ler('frontend/css/pdv.css');
     assert.ok(css.includes('pdv-prestacao-drawer'));
+    assert.ok(css.includes('pdv-prestacao-conferencia'));
+    assert.ok(drawer.includes('pdvPrestacaoConferencia'));
+    assert.ok(drawer.includes('trazerParaFrente'));
+    assert.ok(!drawer.includes('modalConferenciaPrestacao'));
+    assert.ok(!drawer.includes('bootstrap.Modal'));
   });
 
   await test('balcão permanece intocado no divert ENTREGA', async () => {

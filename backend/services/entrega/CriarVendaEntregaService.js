@@ -11,6 +11,11 @@
 const db = require('../../database');
 const configService = require('../configuracaoService');
 const { parseVendaFiscalFlag, distribuirItensVendaComValorFiscalEfetivo } = require('../distribuidorEstoqueVenda');
+const {
+  prepararEntradasMotorComTransferenciaPdv,
+  aplicarTransferenciasPdv
+} = require('../estoque/transferenciaNaoFiscalParaFiscalPdv');
+const cfgTransferenciaPdv = require('../estoque/pdvTransferenciaNaoFiscalFiscalConfig');
 const mpfc = require('../mpfc');
 const { calcularEstoqueProduto } = require('../estoque/EstoqueDisponivelService');
 const { saldosParaDistribuicaoVenda } = require('../estoque/produtoControlaEstoque');
@@ -178,9 +183,21 @@ function criarVendaEntrega(req, res) {
         entradasMotor.push({
           item,
           saldoFiscal: saldos.saldoFiscal,
-          saldoNaoFiscal: saldos.saldoNaoFiscal
+          saldoNaoFiscal: saldos.saldoNaoFiscal,
+          controlaEstoque: Number(produto.controla_estoque) !== 0,
+          produto
         });
       }
+
+      const preparadoTransferenciaPdv = prepararEntradasMotorComTransferenciaPdv(entradasMotor, {
+        permitido: cfgTransferenciaPdv.estaAtivadaSync()
+      });
+      if (preparadoTransferenciaPdv.sucesso === false) {
+        return res.status(400).json({
+          error: preparadoTransferenciaPdv.erro || 'Falha ao validar transferência de estoque.'
+        });
+      }
+      const aplicacoesTransferenciaPdv = preparadoTransferenciaPdv.aplicacoes || [];
 
       const politicaMpfc = mpfc.obterPolitica();
       const midpAtivo = Boolean(politicaMpfc.preservarDinheiro);
@@ -188,7 +205,7 @@ function criarVendaEntrega(req, res) {
       mpfc.receberPoliticaMotorFiscalNaoFiscal(politicaMpfc);
       const pagamentosEntrega = Array.isArray(body.pagamentos) ? body.pagamentos : [];
       const resultadoMotor = distribuirItensVendaComValorFiscalEfetivo(
-        entradasMotor,
+        preparadoTransferenciaPdv.entradas,
         vendaFiscal,
         {
           pagamentos: pagamentosEntrega,
@@ -236,8 +253,11 @@ function criarVendaEntrega(req, res) {
         }
 
         db.serialize(() => {
-          db.run('BEGIN IMMEDIATE');
-
+          db.run('BEGIN IMMEDIATE', (beginErr) => {
+          if (beginErr) {
+            return res.status(500).json({ error: beginErr.message });
+          }
+          const seguirInsert = () => {
           db.run(
             `
               INSERT INTO vendas (
@@ -445,6 +465,22 @@ function criarVendaEntrega(req, res) {
               inserirProximoItem();
             }
           );
+          };
+          if (!aplicacoesTransferenciaPdv.length) {
+            return seguirInsert();
+          }
+          aplicarTransferenciasPdv(aplicacoesTransferenciaPdv, {
+            db,
+            usuarioId: operadorId,
+            jaEmTransacao: true
+          }).then(() => seguirInsert()).catch((trErr) => {
+            db.run('ROLLBACK', () => {
+              res.status(400).json({
+                error: trErr.message || 'Falha ao transferir estoque.'
+              });
+            });
+          });
+          });
         });
       });
     }

@@ -7,10 +7,10 @@
   'use strict';
 
   const CATEGORIAS = Object.freeze([
-    { id: 'empresa', icon: 'fa-building', label: 'Empresa', keywords: 'implantação tipo erp cfop csosn origem cest padrão fiscal empresa' },
+    { id: 'empresa', icon: 'fa-building', label: 'Empresa', keywords: 'implantação tipo erp cfop csosn origem cest padrão fiscal empresa validade controlar lote fefo' },
     { id: 'plataformaFiscal', icon: 'fa-university', label: 'Plataforma Fiscal', keywords: 'ambiente produção homologação certificado csc uf sefaz urls qrcode nfc-e nf-e contingência webservices diagnóstico fiscal', fiscal: true },
     { id: 'modulosLicenciados', icon: 'fa-puzzle-piece', label: 'Módulos Licenciados', keywords: 'pdv pedidos expedição faturamento entregas nfe nfce compra fácil marketplace crm invisibilidade' },
-    { id: 'motores', icon: 'fa-brain', label: 'Motores Inteligentes', keywords: 'midp miip mib motor busca distribuição pagamentos ativar' },
+    { id: 'motores', icon: 'fa-brain', label: 'Motores Inteligentes', keywords: 'midp miip mib motor busca distribuição pagamentos ativar transferência estoque não fiscal fiscal pdv' },
     { id: 'equipamentos', icon: 'fa-cash-register', label: 'Equipamentos', keywords: 'tef pinpad equipamento' },
     { id: 'integracoes', icon: 'fa-plug', label: 'Integrações', keywords: 'pix tef pinpad automação bancária' },
     { id: 'licenciamentoCds', icon: 'fa-id-card', label: 'Licenciamento CDS', keywords: 'assinatura pix whatsapp renovação aviso dias mensagem qr code' },
@@ -18,7 +18,7 @@
     { id: 'bancoDados', icon: 'fa-database', label: 'Banco de Dados', keywords: 'rede ip porta cliente servidor local modo operação' },
     { id: 'performance', icon: 'fa-tachometer-alt', label: 'Performance', keywords: 'timeout retry sync performance' },
     { id: 'backup', icon: 'fa-hdd', label: 'Backup', keywords: 'backup restauração' },
-    { id: 'implantacao', icon: 'fa-file-import', label: 'Implantação', keywords: 'importação inicial produtos xlsx migração implantação cliente base avançadas ferramentas' },
+    { id: 'implantacao', icon: 'fa-file-import', label: 'Implantação', keywords: 'importação inicial produtos xlsx migração implantação cliente base avançadas ferramentas validade controlar lote fefo' },
     { id: 'diagnostico', icon: 'fa-stethoscope', label: 'Diagnóstico', keywords: 'central sync nsu scheduler logs debug sefaz saúde mib busca', fiscal: true }
   ]);
 
@@ -187,6 +187,26 @@
             <label class="form-check-label" for="tipoMulticaixa">ERP Multi-Caixa</label>
           </div>
         `, 'implantação tipo erp')}
+        ${card('<i class="fas fa-calendar-times"></i> Validade de produtos', `
+          <p class="cds-cfg-hint mb-3">
+            Somente <strong>Super Usuário</strong>.
+            <strong>ATIVADO</strong> (padrão): cada produto marca “Controlar validade”.
+            <strong>DESATIVADO</strong>: a empresa não controla validade — produtos marcados são desmarcados na hora (continuam à venda).
+          </p>
+          <label class="form-label" for="cfgEmpresaControlaValidade">Empresa controla validade</label>
+          <select class="form-select mb-2" id="cfgEmpresaControlaValidade" data-cfg-search="validade controlar lote fefo">
+            <option value="ATIVADO">ATIVADO — controla validade (produto a produto)</option>
+            <option value="DESATIVADO">DESATIVADO — não controla validade</option>
+          </select>
+          <div class="cds-cfg-actions">
+            <button type="button" class="btn btn-warning btn-sm" id="btnNaoControlarValidadeEmpresa">
+              <i class="fas fa-ban"></i> Não controlar validade
+            </button>
+            <button type="button" class="btn btn-primary btn-sm" id="btnSalvarEmpresaControlaValidade">
+              <i class="fas fa-save"></i> Salvar
+            </button>
+          </div>
+        `, 'validade controlar lote fefo empresa')}
         ${fiscalUi ? `<div class="cds-cfg-note">Razão social, CNPJ, IE e certificado são editados em <strong>Plataforma Fiscal</strong> (Super Usuário).</div>
         <div id="secaoPadraoFiscalEmpresa">
           ${card('<i class="fas fa-file-invoice"></i> Padrão Fiscal da Empresa', `
@@ -516,6 +536,9 @@
             <i class="fas fa-file-excel"></i> Abrir Importação Inicial de Produtos
           </button>
         `, 'importação inicial produtos xlsx implantação')}
+        ${card('<i class="fas fa-calendar-times"></i> Validade de produtos', `
+          <p class="cds-cfg-hint mb-0">O botão <strong>Não controlar validade</strong> fica na aba <strong>Empresa</strong> (primeira tela deste Centro).</p>
+        `, 'validade controlar lote fefo empresa')}
         ${card('<i class="fas fa-database"></i> Próximas ferramentas', `
           <p class="cds-cfg-hint mb-2 text-muted">Em breve (não disponíveis nesta versão):</p>
           <ul class="cds-cfg-hint mb-0 text-muted">
@@ -666,8 +689,131 @@
             </button>
           </div>
         `, 'mib motor busca produtos cache ranking fuzzy aprendizado')}
+        ${card('<i class="fas fa-exchange-alt"></i> PDV — Transferência não fiscal → fiscal', `
+          <p class="cds-cfg-hint mb-3">
+            Somente <strong>Super Usuário</strong> controla esta opção.
+            Quando <strong>DESATIVADO</strong> (padrão), o PDV não pergunta “Transferir estoque?”
+            e não registra intenção de transferência.
+            Quando <strong>ATIVADO</strong>, o fluxo atual de transferência na venda permanece.
+          </p>
+          <label class="form-label" for="cfgPdvTransferenciaNfFiscal">Permitir transferência de estoque não fiscal para fiscal</label>
+          <select class="form-select" id="cfgPdvTransferenciaNfFiscal" data-cfg-search="transferência estoque não fiscal fiscal pdv">
+            <option value="DESATIVADO">DESATIVADO</option>
+            <option value="ATIVADO">ATIVADO</option>
+          </select>
+          <div class="cds-cfg-actions mt-2">
+            <button type="button" class="btn btn-primary btn-sm" id="btnSalvarPdvTransferenciaNfFiscal">
+              <i class="fas fa-save"></i> Salvar
+            </button>
+          </div>
+        `, 'transferência estoque não fiscal fiscal pdv super usuário')}
       </div>
     `;
+  }
+
+  function headersCfgApi() {
+    const token = (typeof localStorage !== 'undefined' && localStorage.getItem('token')) || '';
+    return {
+      Authorization: 'Bearer ' + token,
+      'Content-Type': 'application/json'
+    };
+  }
+
+  function hidratarTransferenciaPdvNfFiscal() {
+    const sel = document.getElementById('cfgPdvTransferenciaNfFiscal');
+    if (!sel) return;
+    const api = typeof API_URL !== 'undefined' ? API_URL : '/api';
+    fetch(`${api}/configuracoes/pdv_permitir_transferencia_nao_fiscal_fiscal`, {
+      headers: headersCfgApi()
+    }).then((r) => r.ok ? r.json() : { valor: 'DESATIVADO' }).then((data) => {
+      sel.value = data && data.valor === 'ATIVADO' ? 'ATIVADO' : 'DESATIVADO';
+    }).catch(() => {
+      sel.value = 'DESATIVADO';
+    });
+  }
+
+  async function salvarTransferenciaPdvNfFiscal() {
+    const sel = document.getElementById('cfgPdvTransferenciaNfFiscal');
+    if (!sel) return;
+    const api = typeof API_URL !== 'undefined' ? API_URL : '/api';
+    try {
+      const resp = await fetch(`${api}/configuracoes/pdv_permitir_transferencia_nao_fiscal_fiscal`, {
+        method: 'PUT',
+        headers: headersCfgApi(),
+        body: JSON.stringify({ valor: sel.value })
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        throw new Error(data.error || data.erro || 'Não foi possível salvar.');
+      }
+      sel.value = data.valor === 'ATIVADO' ? 'ATIVADO' : 'DESATIVADO';
+      if (typeof global.showNotification === 'function') {
+        global.showNotification(
+          data.valor === 'ATIVADO'
+            ? 'Transferência NF → Fiscal ATIVADA no PDV.'
+            : 'Transferência NF → Fiscal DESATIVADA no PDV.',
+          'success'
+        );
+      }
+    } catch (err) {
+      if (typeof global.showNotification === 'function') {
+        global.showNotification(err.message || 'Erro ao salvar configuração.', 'danger');
+      }
+    }
+  }
+
+  function hidratarEmpresaControlaValidade() {
+    const sel = document.getElementById('cfgEmpresaControlaValidade');
+    if (!sel) return;
+    const api = typeof API_URL !== 'undefined' ? API_URL : '/api';
+    fetch(`${api}/configuracoes/empresa_controla_validade`, {
+      headers: headersCfgApi()
+    }).then((r) => r.ok ? r.json() : { valor: 'ATIVADO' }).then((data) => {
+      sel.value = data && data.valor === 'DESATIVADO' ? 'DESATIVADO' : 'ATIVADO';
+    }).catch(() => {
+      sel.value = 'ATIVADO';
+    });
+  }
+
+  async function salvarEmpresaControlaValidade() {
+    const sel = document.getElementById('cfgEmpresaControlaValidade');
+    if (!sel) return;
+    const valor = sel.value === 'DESATIVADO' ? 'DESATIVADO' : 'ATIVADO';
+    if (valor === 'DESATIVADO') {
+      const ok = window.confirm(
+        'A empresa deixará de controlar validade.\n\n'
+        + 'Todos os produtos marcados com “Controlar validade” serão desmarcados agora.\n'
+        + 'Os cadastros continuam ativos para venda.\n\n'
+        + 'Confirma?'
+      );
+      if (!ok) return;
+    }
+    const api = typeof API_URL !== 'undefined' ? API_URL : '/api';
+    try {
+      const resp = await fetch(`${api}/configuracoes/empresa_controla_validade`, {
+        method: 'PUT',
+        headers: headersCfgApi(),
+        body: JSON.stringify({ valor })
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        throw new Error(data.error || data.erro || 'Não foi possível salvar.');
+      }
+      sel.value = data.valor === 'DESATIVADO' ? 'DESATIVADO' : 'ATIVADO';
+      if (typeof global.showNotification === 'function') {
+        const qtd = Number(data.produtos_desmarcados || 0);
+        global.showNotification(
+          data.valor === 'DESATIVADO'
+            ? `Validade DESATIVADA. ${qtd} produto(s) desmarcado(s).`
+            : 'Controle de validade da empresa ATIVADO.',
+          'success'
+        );
+      }
+    } catch (err) {
+      if (typeof global.showNotification === 'function') {
+        global.showNotification(err.message || 'Erro ao salvar configuração.', 'danger');
+      }
+    }
   }
 
   function hidratarPoliticaManifestacaoUi(politica) {
@@ -1095,6 +1241,19 @@
       } catch { /* ignore */ }
     });
     carregarDiagnosticoMib();
+    hidratarTransferenciaPdvNfFiscal();
+    document.getElementById('btnSalvarPdvTransferenciaNfFiscal')?.addEventListener('click', () => {
+      void salvarTransferenciaPdvNfFiscal();
+    });
+    hidratarEmpresaControlaValidade();
+    document.getElementById('btnSalvarEmpresaControlaValidade')?.addEventListener('click', () => {
+      void salvarEmpresaControlaValidade();
+    });
+    document.getElementById('btnNaoControlarValidadeEmpresa')?.addEventListener('click', () => {
+      const sel = document.getElementById('cfgEmpresaControlaValidade');
+      if (sel) sel.value = 'DESATIVADO';
+      void salvarEmpresaControlaValidade();
+    });
 
     document.getElementById('btnAbrirConfigFiscalOficial')?.addEventListener('click', () => {
       ativarCategoria('plataformaFiscal');

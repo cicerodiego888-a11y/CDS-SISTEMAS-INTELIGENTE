@@ -41,7 +41,8 @@ const { agoraLocalBrasil, validarSomaPagamentosVenda } = VendaFinanceiroService;
 const { emitirFiscalSeSolicitado } = VendaFiscalService;
 const {
   gravarRecebimentos,
-  aplicarRegraStatusPagamentoVenda
+  aplicarRegraStatusPagamentoVenda,
+  linhasPagamentoPersistencia
 } = VendaPagamentoService;
 
 /** Lock em memória — impede duas prestações simultâneas da mesma venda neste processo */
@@ -405,22 +406,30 @@ async function _finalizarPrestacaoInterno({ vendaId, body = {}, req = {}, contex
     await audit(EntregaAuditoriaEventos.RESERVA_CONVERTIDA, vendaId, consumo, contextoAuditoria);
     await audit(EntregaAuditoriaEventos.ESTOQUE_BAIXADO, vendaId, consumo, contextoAuditoria);
 
-    // Pagamentos
+    // Pagamentos — persiste o split F/NF do MIDP (não o payload comercial único)
     await run(`DELETE FROM venda_pagamentos WHERE venda_id = ?`, [vendaId]);
-    for (const p of pagamentosNormalizados) {
+    const linhasPag = linhasPagamentoPersistencia(
+      pagamentosNormalizados,
+      recebimentos,
+      formaPagamentoFinal,
+      totalNum,
+      null
+    );
+    for (const p of linhasPag) {
       await run(
         `
           INSERT INTO venda_pagamentos (
-            venda_id, forma_pagamento, valor,
+            venda_id, forma_pagamento, valor, tipo_recebimento,
             tef_transacao_id, tef_nsu, tef_autorizacao,
             tef_bandeira, tef_adquirente,
             tef_comprovante_cliente, tef_comprovante_estabelecimento
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           vendaId,
           p.forma_pagamento,
           Number(p.valor || 0),
+          p.tipo_recebimento || null,
           p.tef_transacao_id || p.tef?.transacao_id || null,
           p.nsu || p.tef?.nsu || null,
           p.autorizacao || p.tef?.autorizacao || null,

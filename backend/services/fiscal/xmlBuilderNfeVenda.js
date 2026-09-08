@@ -389,10 +389,17 @@ function buildNfeXml({ config, venda, itens, numero, dadosNfe = {} }) {
     vNF
   });
 
+  const { ehGrupoA } = require('../vendas/recebimentoPagamento');
   const pagamentosOrigem = Array.isArray(venda.pagamentos) ? venda.pagamentos : [];
+  const temTipoRecebimento = pagamentosOrigem.some((p) =>
+    String(p.tipo_recebimento || p.grupo_recebimento || '').trim() !== ''
+  );
   let pagamentosFiscais = pagamentosOrigem.filter((p) => {
-    const tipo = String(p.tipo_recebimento || '').toLowerCase();
-    return !tipo || tipo === 'fiscal';
+    const tipo = p.tipo_recebimento || p.grupo_recebimento;
+    if (temTipoRecebimento) {
+      return ehGrupoA(tipo);
+    }
+    return !String(tipo || '').trim() || ehGrupoA(tipo);
   });
   if (!pagamentosFiscais.length) {
     pagamentosFiscais = [{ forma_pagamento: venda.forma_pagamento || 'dinheiro', valor: vNF }];

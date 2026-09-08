@@ -35,6 +35,73 @@ function obterTotalExibicaoHistoricoVenda(venda) {
     return Number(venda?.total || 0);
 }
 
+function rotuloTipoRecebimentoHistorico(tipo) {
+    const t = String(tipo || '').toLowerCase().trim();
+    if (t === 'a' || t === 'fiscal' || t === 'recebimento_a') return 'Recebimento A';
+    if (t === 'b' || t === 'nao_fiscal' || t === 'recebimento_b') return 'Recebimento B';
+    return '';
+}
+
+function rotuloFormaPagamentoHistoricoFallback(value) {
+    const mapa = {
+        dinheiro: 'Dinheiro',
+        pix: 'PIX',
+        cartao_credito: 'Cartão crédito',
+        cartao_debito: 'Cartão débito',
+        boleto: 'Boleto',
+        transferencia: 'Transferência',
+        cheque: 'Cheque',
+        credito: 'Crédito',
+        prazo: 'A prazo',
+        misto: 'Misto'
+    };
+    const chave = String(value || '').toLowerCase().trim();
+    return mapa[chave] || (value ? String(value) : '-');
+}
+
+function formatarMoedaPagamentoHistorico(n) {
+    if (typeof formatCurrency === 'function') return formatCurrency(n);
+    const num = Number(n || 0);
+    return 'R$ ' + num.toFixed(2).replace('.', ',');
+}
+
+function textoLinhaPagamentoHistorico(p, rotuloForma, fmt) {
+    const forma = escapeHtmlHistoricoVenda(rotuloForma(p.forma_pagamento));
+    const tipo = p.rotulo_recebimento
+        || rotuloTipoRecebimentoHistorico(p.grupo_recebimento || p.tipo_recebimento);
+    const valor = fmt(p.valor);
+    if (tipo) return `${forma} (${escapeHtmlHistoricoVenda(tipo)}): ${valor}`;
+    return `${forma}: ${valor}`;
+}
+
+function montarHtmlPagamentosHistoricoVenda(venda) {
+    const pags = Array.isArray(venda?.pagamentos) ? venda.pagamentos : [];
+    const fmt = formatarMoedaPagamentoHistorico;
+    const rotuloForma = typeof rotuloFormaPagamento === 'function'
+        ? rotuloFormaPagamento
+        : rotuloFormaPagamentoHistoricoFallback;
+    if (!pags.length) {
+        const forma = escapeHtmlHistoricoVenda(rotuloForma(venda && venda.forma_pagamento));
+        if (venda && venda.total != null && venda.total !== '') {
+            return `<div class="venda-pagamentos-exibicao">${forma}: ${fmt(venda.total)}</div>`;
+        }
+        return `<div class="venda-pagamentos-exibicao">${forma}</div>`;
+    }
+    const ordemTipo = function (p) {
+        const t = String(p.grupo_recebimento || p.tipo_recebimento || p.rotulo_recebimento || '').toLowerCase().trim();
+        if (t === 'a' || t === 'fiscal' || t.indexOf('recebimento a') >= 0) return 0;
+        if (t === 'b' || t === 'nao_fiscal' || t.indexOf('recebimento b') >= 0) return 1;
+        return 2;
+    };
+    const ordenados = pags.slice().sort(function (a, b) {
+        return ordemTipo(a) - ordemTipo(b);
+    });
+    const linhas = ordenados.map((p) => (
+        `<div class="venda-pagamento-linha">${textoLinhaPagamentoHistorico(p, rotuloForma, fmt)}</div>`
+    )).join('');
+    return `<div class="venda-pagamentos-exibicao" id="${venda && venda.id != null ? `vendaPagamentosExibicao${venda.id}` : ''}">${linhas}</div>`;
+}
+
 function exibirCupomNaoFiscalHistorico(venda) {
     return typeof vendaPossuiCupomNaoFiscal === 'function' && vendaPossuiCupomNaoFiscal(venda);
 }
@@ -207,6 +274,7 @@ function montarHtmlAcoesHistoricoVenda(venda, opcoes = {}) {
     `;
 }
 
+window.montarHtmlPagamentosHistoricoVenda = montarHtmlPagamentosHistoricoVenda;
 window.montarHtmlAcoesHistoricoVenda = montarHtmlAcoesHistoricoVenda;
 window.historicoVendaModoFiscalAtivo = historicoVendaModoFiscalAtivo;
 window.filtrarItensHistoricoVenda = filtrarItensHistoricoVenda;

@@ -31,6 +31,44 @@ const {
 const { devolverParcial } = VendaDevolucaoService;
 const { cancelarVendaPut, cancelarVendaPost } = VendaCancelamentoService;
 const {
+  mapearPagamentoRespostaApi,
+  agruparPagamentosExibicaoPorVenda
+} = require('../services/vendas/recebimentoPagamento');
+
+function anexarPagamentosNasVendas(rows, done) {
+  if (!rows || !rows.length) {
+    return done(null, rows || []);
+  }
+  const ids = rows.map((r) => r.id);
+  const ph = ids.map(() => '?').join(',');
+  db.all(
+    `SELECT venda_id, tipo_recebimento, forma_pagamento, valor, status
+     FROM venda_recebimentos
+     WHERE venda_id IN (${ph})
+     ORDER BY id`,
+    ids,
+    (recErr, recebimentos) => {
+      if (recErr) return done(recErr);
+      db.all(
+        `SELECT venda_id, tipo_recebimento, forma_pagamento, valor
+         FROM venda_pagamentos
+         WHERE venda_id IN (${ph})
+         ORDER BY id`,
+        ids,
+        (pagErr, pagamentos) => {
+          if (pagErr) return done(pagErr);
+          const porVenda = agruparPagamentosExibicaoPorVenda(recebimentos, pagamentos);
+          const out = rows.map((v) => ({
+            ...v,
+            pagamentos: porVenda[Number(v.id)] || []
+          }));
+          done(null, out);
+        }
+      );
+    }
+  );
+}
+const {
   emitirNFeDevolucaoVenda,
   prepararNfeDevolucaoVenda,
   obterNfeDevolucaoVendaPorId,
@@ -136,7 +174,13 @@ router.get('/', (req, res) => {
     }
 
     res.setHeader('Cache-Control', 'no-store');
-    res.json(rows || []);
+    anexarPagamentosNasVendas(rows || [], (pagErr, comPagamentos) => {
+      if (pagErr) {
+        console.error('Erro ao anexar pagamentos na listagem de vendas:', pagErr);
+        return res.status(500).json({ error: pagErr.message });
+      }
+      res.json(comPagamentos);
+    });
   });
 });
 
@@ -194,7 +238,47 @@ router.get('/:id', (req, res) => {
         return;
       }
       // Visão comercial: todos os itens originais (não filtrar pela NF-e).
-      res.json({ ...venda, itens });
+      db.all(`
+        SELECT tipo_recebimento, forma_pagamento, valor, status
+        FROM venda_recebimentos
+        WHERE venda_id = ?
+        ORDER BY CASE
+          WHEN LOWER(COALESCE(tipo_recebimento, '')) IN ('fiscal', 'a') THEN 0
+          WHEN LOWER(COALESCE(tipo_recebimento, '')) IN ('nao_fiscal', 'b') THEN 1
+          ELSE 2
+        END, id
+      `, [id], (recErr, recebimentos) => {
+        if (recErr) {
+          res.status(500).json({ error: recErr.message });
+          return;
+        }
+        const concluir = (pagamentos) => {
+          res.json({
+            ...venda,
+            itens,
+            pagamentos: (pagamentos || []).map(mapearPagamentoRespostaApi)
+          });
+        };
+        if (Array.isArray(recebimentos) && recebimentos.length > 0) {
+          return concluir(recebimentos);
+        }
+        db.all(
+          `SELECT forma_pagamento, valor, tipo_recebimento FROM venda_pagamentos WHERE venda_id = ?
+           ORDER BY CASE
+             WHEN LOWER(COALESCE(tipo_recebimento, '')) IN ('fiscal', 'a') THEN 0
+             WHEN LOWER(COALESCE(tipo_recebimento, '')) IN ('nao_fiscal', 'b') THEN 1
+             ELSE 2
+           END, id`,
+          [id],
+          (pgErr, pags) => {
+            if (pgErr) {
+              res.status(500).json({ error: pgErr.message });
+              return;
+            }
+            concluir(pags || []);
+          }
+        );
+      });
     });
   });
 });

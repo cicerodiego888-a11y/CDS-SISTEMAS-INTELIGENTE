@@ -84,6 +84,19 @@
     drawer.querySelector('[data-action="close"]').addEventListener('click', fechar);
   }
 
+  /** Recoloca o drawer no final do body para não ficar atrás de modal/backdrop do PDV. */
+  function trazerParaFrente() {
+    const bd = document.getElementById(BACKDROP_ID);
+    const dr = document.getElementById(DRAWER_ID);
+    if (bd) document.body.appendChild(bd);
+    if (dr) document.body.appendChild(dr);
+    document.body.classList.add('pdv-prestacao-aberta');
+  }
+
+  function removerConferenciaOverlay() {
+    document.getElementById('pdvPrestacaoConferencia')?.remove();
+  }
+
   function abrir() {
     if (!moduloAtivo()) {
       if (typeof showNotification === 'function') {
@@ -92,6 +105,7 @@
       return;
     }
     ensureMounted();
+    trazerParaFrente();
     aberto = true;
     view = 'entregadores';
     grupoAtual = null;
@@ -104,6 +118,8 @@
 
   function fechar() {
     aberto = false;
+    removerConferenciaOverlay();
+    document.body.classList.remove('pdv-prestacao-aberta');
     const bd = document.getElementById(BACKDROP_ID);
     const dr = document.getElementById(DRAWER_ID);
     if (bd) {
@@ -483,55 +499,61 @@
 
   function abrirConferenciaFinal({ item, total, documento, pagamentoRecebido, forma, operador }) {
     return new Promise((resolve) => {
-      const html = `
-        <div class="modal fade" id="modalConferenciaPrestacao" tabindex="-1">
-          <div class="modal-dialog modal-dialog-centered">
-            <div class="modal-content border-0 shadow">
-              <div class="modal-header bg-dark text-white">
-                <h5 class="modal-title">Conferência Final</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-              </div>
-              <div class="modal-body">
-                <table class="table table-sm mb-0">
-                  <tr><td>Cliente</td><td class="text-end fw-semibold">${escapeHtml(item.cliente_nome || 'Consumidor')}</td></tr>
-                  <tr><td>Pedido</td><td class="text-end">#${item.id}</td></tr>
-                  <tr><td>Valor</td><td class="text-end">${fmtMoney(total)}</td></tr>
-                  <tr><td>Pagamento Previsto</td><td class="text-end">${escapeHtml(item.pagamento_previsto || '—')}</td></tr>
-                  <tr><td>Pagamento Recebido</td><td class="text-end">${escapeHtml(pagamentoRecebido)}</td></tr>
-                  <tr><td>Documento</td><td class="text-end">${documento === 'NFCE' ? 'NFC-e' : 'Não Fiscal'}</td></tr>
-                  <tr><td>Entregador</td><td class="text-end">${escapeHtml(item.entregador || '—')}</td></tr>
-                  <tr><td>Operador</td><td class="text-end">${escapeHtml(operador)}</td></tr>
-                  <tr><td>Reserva</td><td class="text-end text-success">Será convertida / removida</td></tr>
-                  <tr><td>Estoque</td><td class="text-end text-success">Baixa definitiva</td></tr>
-                  <tr><td>Financeiro</td><td class="text-end text-success">Recebimento gerado</td></tr>
-                  <tr><td>Caixa</td><td class="text-end text-success">Entra no fechamento</td></tr>
-                </table>
-              </div>
-              <div class="modal-footer">
-                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal" id="btnConfCancelar">Cancelar</button>
-                <button type="button" class="btn btn-success" id="btnConfFinalizar">Finalizar Venda</button>
-              </div>
-            </div>
+      const drawer = document.getElementById(DRAWER_ID);
+      if (!drawer) {
+        resolve(false);
+        return;
+      }
+      trazerParaFrente();
+      removerConferenciaOverlay();
+
+      const overlay = document.createElement('div');
+      overlay.id = 'pdvPrestacaoConferencia';
+      overlay.className = 'pdv-prestacao-conferencia';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('aria-label', 'Conferência Final');
+      overlay.innerHTML = `
+        <div class="pdv-prestacao-conferencia__card">
+          <div class="pdv-prestacao-conferencia__header">
+            <h5>Conferência Final</h5>
+            <button type="button" class="btn-close btn-close-white" data-conf="cancelar" aria-label="Fechar"></button>
+          </div>
+          <div class="pdv-prestacao-conferencia__body">
+            <table class="table table-sm mb-0">
+              <tr><td>Cliente</td><td class="text-end fw-semibold">${escapeHtml(item.cliente_nome || 'Consumidor')}</td></tr>
+              <tr><td>Pedido</td><td class="text-end">#${item.id}</td></tr>
+              <tr><td>Valor</td><td class="text-end">${fmtMoney(total)}</td></tr>
+              <tr><td>Pagamento Previsto</td><td class="text-end">${escapeHtml(item.pagamento_previsto || '—')}</td></tr>
+              <tr><td>Pagamento Recebido</td><td class="text-end">${escapeHtml(pagamentoRecebido)}</td></tr>
+              <tr><td>Documento</td><td class="text-end">${documento === 'NFCE' ? 'NFC-e' : 'Não Fiscal'}</td></tr>
+              <tr><td>Entregador</td><td class="text-end">${escapeHtml(item.entregador || '—')}</td></tr>
+              <tr><td>Operador</td><td class="text-end">${escapeHtml(operador)}</td></tr>
+              <tr><td>Reserva</td><td class="text-end text-success">Será convertida / removida</td></tr>
+              <tr><td>Estoque</td><td class="text-end text-success">Baixa definitiva</td></tr>
+              <tr><td>Financeiro</td><td class="text-end text-success">Recebimento gerado</td></tr>
+              <tr><td>Caixa</td><td class="text-end text-success">Entra no fechamento</td></tr>
+            </table>
+          </div>
+          <div class="pdv-prestacao-conferencia__footer">
+            <button type="button" class="btn btn-outline-secondary" data-conf="cancelar">Cancelar</button>
+            <button type="button" class="btn btn-success" data-conf="finalizar" id="btnConfFinalizar">Finalizar Venda</button>
           </div>
         </div>`;
-      $('#modal-container').html(html);
-      const el = document.getElementById('modalConferenciaPrestacao');
-      const modal = bootstrap.Modal.getOrCreateInstance(el);
+      drawer.appendChild(overlay);
+
       let decidido = false;
-      el.addEventListener('hidden.bs.modal', () => {
-        if (!decidido) resolve(false);
-      }, { once: true });
-      $('#btnConfCancelar').on('click', () => {
+      const concluir = (ok) => {
+        if (decidido) return;
         decidido = true;
-        modal.hide();
-        resolve(false);
+        removerConferenciaOverlay();
+        resolve(ok);
+      };
+      overlay.querySelectorAll('[data-conf="cancelar"]').forEach((btn) => {
+        btn.addEventListener('click', () => concluir(false));
       });
-      $('#btnConfFinalizar').on('click', () => {
-        decidido = true;
-        modal.hide();
-        resolve(true);
-      });
-      modal.show();
+      overlay.querySelector('[data-conf="finalizar"]')?.addEventListener('click', () => concluir(true));
+      overlay.querySelector('[data-conf="finalizar"]')?.focus();
     });
   }
 
@@ -616,7 +638,7 @@
   function imprimirHtml(html) {
     try {
       if (window.electronAPI && typeof window.electronAPI.abrirComprovante === 'function') {
-        window.electronAPI.abrirComprovante(html, { deviceName: 'cupom' });
+        window.electronAPI.abrirComprovante(html, { silent: false, autoFecharMs: 5000 });
         return;
       }
     } catch (_) { /* fallback */ }

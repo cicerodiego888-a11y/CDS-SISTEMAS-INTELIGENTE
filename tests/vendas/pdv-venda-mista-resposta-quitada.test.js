@@ -170,6 +170,18 @@ describe('PDV interpreta resposta quitada e finaliza', () => {
   });
 });
 
+describe('Falha na NFC-e não trava o PDV', () => {
+  it('não referencia transacoesTefAutorizadas (ReferenceError que engolia a resposta)', () => {
+    const src = fs.readFileSync(
+      path.join(ROOT, 'backend/services/vendas/VendaFiscalService.js'),
+      'utf8'
+    );
+    assert.equal(src.includes('transacoesTefAutorizadas'), false);
+    assert.match(src, /coletarIdsTefAutorizados/);
+    assert.match(src, /erro_emissao/);
+  });
+});
+
 describe('Orquestrador / regra de persistência — venda #76 equivalente', () => {
   it('PIX 2,50 + dinheiro 2,50 em F 2,50 / NF 2,50 quita e não descarta NF', async () => {
     const r = await Orquestrador.processarFluxoPagamentoVenda({

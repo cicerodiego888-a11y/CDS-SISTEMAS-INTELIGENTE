@@ -1384,30 +1384,6 @@ function criarTabelas() {
       }
     });
 
-    // Adicionar colunas TEF à tabela venda_pagamentos
-    db.all(`PRAGMA table_info(venda_pagamentos)`, (err, columns) => {
-      if (err) return console.error('Erro ao verificar venda_pagamentos:', err.message);
-
-      const nomes = columns.map(c => c.name);
-
-      function addColuna(nome, tipo) {
-        if (!nomes.includes(nome)) {
-          db.run(`ALTER TABLE venda_pagamentos ADD COLUMN ${nome} ${tipo}`, (e) => {
-            if (e) console.error(`Erro ao adicionar coluna ${nome}:`, e.message);
-            else console.log(`Coluna ${nome} adicionada em venda_pagamentos`);
-          });
-        }
-      }
-
-      addColuna('tef_transacao_id', 'INTEGER');
-      addColuna('tef_nsu', 'TEXT');
-      addColuna('tef_autorizacao', 'TEXT');
-      addColuna('tef_bandeira', 'TEXT');
-      addColuna('tef_adquirente', 'TEXT');
-      addColuna('tef_comprovante_cliente', 'TEXT');
-      addColuna('tef_comprovante_estabelecimento', 'TEXT');
-    });
-
     // Tabela de categorias
     db.run(`
       CREATE TABLE IF NOT EXISTS categorias (
@@ -1868,6 +1844,7 @@ function criarTabelas() {
         venda_id INTEGER NOT NULL,
         forma_pagamento TEXT NOT NULL,
         valor DECIMAL(10,2) NOT NULL,
+        tipo_recebimento TEXT,
         tef_transacao_id INTEGER,
         tef_nsu TEXT,
         tef_autorizacao TEXT,
@@ -1879,8 +1856,33 @@ function criarTabelas() {
         FOREIGN KEY (venda_id) REFERENCES vendas(id)
       )
     `, (err) => {
-      if (err) console.error('Erro ao criar tabela venda_pagamentos:', err);
-      else console.log('Tabela venda_pagamentos criada/verificada');
+      if (err) {
+        console.error('Erro ao criar tabela venda_pagamentos:', err);
+        return;
+      }
+      console.log('Tabela venda_pagamentos criada/verificada');
+      db.all(`PRAGMA table_info(venda_pagamentos)`, (pragmaErr, columns) => {
+        if (pragmaErr) {
+          return console.error('Erro ao verificar venda_pagamentos:', pragmaErr.message);
+        }
+        const nomes = (columns || []).map((c) => c.name);
+        function addColuna(nome, tipo) {
+          if (!nomes.includes(nome)) {
+            db.run(`ALTER TABLE venda_pagamentos ADD COLUMN ${nome} ${tipo}`, (e) => {
+              if (e) console.error(`Erro ao adicionar coluna ${nome}:`, e.message);
+              else console.log(`Coluna ${nome} adicionada em venda_pagamentos`);
+            });
+          }
+        }
+        addColuna('tef_transacao_id', 'INTEGER');
+        addColuna('tef_nsu', 'TEXT');
+        addColuna('tef_autorizacao', 'TEXT');
+        addColuna('tef_bandeira', 'TEXT');
+        addColuna('tef_adquirente', 'TEXT');
+        addColuna('tef_comprovante_cliente', 'TEXT');
+        addColuna('tef_comprovante_estabelecimento', 'TEXT');
+        addColuna('tipo_recebimento', 'TEXT');
+      });
     });
 
     // Tabela de movimentações financeiras
@@ -2937,6 +2939,8 @@ function inserirConfiguracoesPadrao() {
     ['backup_google_refresh_token', '', 'text', 'Google Refresh Token para backup']
     ,['tef_ativo', 'true', 'boolean', 'TEF habilitado']
     ,['modo_dashboard_fiscal', '1', 'boolean', 'Modo fiscal ativo por padrão (F12) — ERP e PDV']
+    ,['pdv_permitir_transferencia_nao_fiscal_fiscal', 'DESATIVADO', 'string', 'Permitir transferência de estoque não fiscal para fiscal no PDV']
+    ,['empresa_controla_validade', 'ATIVADO', 'string', 'Empresa controla validade de produtos (lotes/FEFO/alertas)']
   ];
 
   configs.forEach(config => {
@@ -2951,6 +2955,18 @@ function inserirConfiguracoesPadrao() {
   });
   
   console.log('Configurações padrão inseridas/verificadas');
+  try {
+    const cfgTransfPdv = require('./services/estoque/pdvTransferenciaNaoFiscalFiscalConfig');
+    cfgTransfPdv.hidratar(db);
+  } catch (hidrErr) {
+    console.warn('[PDV] Falha ao hidratar flag de transferência NF→F:', hidrErr && hidrErr.message);
+  }
+  try {
+    const cfgValidadeEmpresa = require('./services/estoque/empresaControlaValidadeConfig');
+    cfgValidadeEmpresa.hidratar(db);
+  } catch (hidrValErr) {
+    console.warn('[VALIDADE] Falha ao hidratar flag empresa_controla_validade:', hidrValErr && hidrValErr.message);
+  }
 
   // RC0.1.0 — remove identidade de demonstração (não altera schema nem regras de negócio)
   db.run(

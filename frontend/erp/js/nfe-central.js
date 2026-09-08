@@ -578,7 +578,7 @@ function renderCorpoFichaNfe(f, n, emit, dest, itens, pags) {
         <ul class="list-group list-group-flush small">
           ${pags.map((p) => `
             <li class="list-group-item d-flex justify-content-between">
-              <span>${escapeHtmlNfe(p.forma_pagamento || '—')}${p.tipo_recebimento ? ` · ${escapeHtmlNfe(p.tipo_recebimento)}` : ''}</span>
+              <span>${escapeHtmlNfe(p.forma_pagamento || '—')}${p.rotulo_recebimento ? ` · ${escapeHtmlNfe(p.rotulo_recebimento)}` : ''}</span>
               <strong>${formatarMoedaNfe(p.valor)}</strong>
             </li>`).join('') || '<li class="list-group-item text-muted">Sem pagamentos</li>'}
         </ul>
@@ -645,7 +645,15 @@ function visualizarFichaNfe(id, opcoes = {}) {
       const emit = f.emitente || {};
       const dest = f.destinatario || {};
       const itens = f.itens || [];
-      const pags = f.pagamentos || [];
+      const pags = (f.pagamentos || []).slice().sort(function (a, b) {
+        const ordem = function (p) {
+          const x = String(p.grupo_recebimento || p.tipo_recebimento || p.rotulo_recebimento || '').toLowerCase();
+          if (x === 'a' || x === 'fiscal' || x.indexOf('recebimento a') >= 0) return 0;
+          if (x === 'b' || x === 'nao_fiscal' || x.indexOf('recebimento b') >= 0) return 1;
+          return 2;
+        };
+        return ordem(a) - ordem(b);
+      });
       const st = String(n.status || '').toLowerCase();
       const autorizada = st === 'autorizada';
       const cancelada = st === 'cancelada';

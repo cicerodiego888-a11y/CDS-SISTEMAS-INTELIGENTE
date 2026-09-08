@@ -2366,7 +2366,7 @@ function gerarRelatorioEstoque() {
 function renderProdutos(produtos) {
     window.produtosCache = produtos;
     window.produtosOriginais = produtos;
-    resetarEstadoArvoreProdutos();
+    // Não zerar a árvore: recargas (modo fiscal / PDV aberto) fechavam as categorias.
     const shell = (typeof CdsPageShell !== 'undefined' && CdsPageShell.renderHeader)
         ? CdsPageShell.renderHeader({ page: 'produtos' })
         : '';
@@ -3138,6 +3138,9 @@ function showProdutoModal(produto = null, opcoes = {}) {
                                                         Controlar validade deste produto
                                                     </label>
                                                 </div>
+                                                <div class="form-text text-warning d-none" id="avisoValidadeEmpresaDesligada">
+                                                    A empresa não controla validade (Centro de Configurações → Empresa). Este produto não usa lote/FEFO.
+                                                </div>
                                             </div>
 
                                             <div class="col-12" id="areaLoteInicial" style="display: none;">
@@ -3769,13 +3772,35 @@ function inicializarImagemProdutoCadastro(produto = null, isEdit = false) {
 }
 window.inicializarImagemProdutoCadastro = inicializarImagemProdutoCadastro;
 
+function aplicarPoliticaValidadeEmpresaNoCadastro() {
+    const $check = $('#controlar_validade');
+    const $aviso = $('#avisoValidadeEmpresaDesligada');
+    const $area = $('#areaLoteInicial');
+    if (!$check.length) return;
+    const api = typeof API_URL !== 'undefined' ? API_URL : '/api';
+    const token = localStorage.getItem('token') || '';
+    fetch(`${api}/configuracoes/empresa_controla_validade`, {
+        headers: { Authorization: 'Bearer ' + token }
+    }).then((r) => r.ok ? r.json() : { permitido: true }).then((data) => {
+        const permitido = data && data.permitido !== false && data.valor !== 'DESATIVADO';
+        if (permitido) {
+            $check.prop('disabled', false);
+            $aviso.addClass('d-none');
+            return;
+        }
+        $check.prop('checked', false).prop('disabled', true);
+        $aviso.removeClass('d-none');
+        $area.hide();
+    }).catch(() => {});
+}
+
 // Função para controlar visibilidade dos campos de lote inicial
 function inicializarControleLoteInicial() {
     const $controlarValidade = $('#controlar_validade');
     const $areaLoteInicial = $('#areaLoteInicial');
 
     function atualizarVisibilidadeLoteInicial() {
-        const controlarValidade = $controlarValidade.prop('checked');
+        const controlarValidade = $controlarValidade.prop('checked') && !$controlarValidade.prop('disabled');
 
         console.log('Atualizando visibilidade lote inicial:', controlarValidade);
 
@@ -3788,6 +3813,8 @@ function inicializarControleLoteInicial() {
     }
 
     $controlarValidade.on('change', atualizarVisibilidadeLoteInicial);
+
+    aplicarPoliticaValidadeEmpresaNoCadastro();
 
     // Verificar estado inicial com delay
     setTimeout(atualizarVisibilidadeLoteInicial, 100);
@@ -4871,7 +4898,7 @@ async function saveProduto() {
         data_validade: ($('#data_validade').val() || '').trim() || null,
         lote: ($('#lote').val() || '').trim(),
         dias_alerta_validade: parseInt($('#dias_alerta_validade').val(), 10) || 30,
-        controlar_validade: $('#controlar_validade').is(':checked') ? 1 : 0,
+        controlar_validade: ($('#controlar_validade').is(':checked') && !$('#controlar_validade').prop('disabled')) ? 1 : 0,
         controla_estoque: $('#controla_estoque').is(':checked') ? 1 : 0,
         ncm: ($('#ncm').val() || '').trim(),
         cfop: resolverCfopSalvarNovoProduto(($('#cfop').val() || '').trim()),

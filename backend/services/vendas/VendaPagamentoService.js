@@ -12,12 +12,38 @@ const { normalizarTipoVendaItem } = require('../vendaUnidadeHelpers');
 const { separarItensDistribuidos } = require('../fiscalNaoFiscalService');
 const OrquestradorPagamento = require('../OrquestradorPagamento');
 const { parseVendaFiscalFlag, distribuirItensVendaComValorFiscalEfetivo } = require('../distribuidorEstoqueVenda');
+const {
+  prepararEntradasMotorComTransferenciaPdv,
+  aplicarTransferenciasPdv
+} = require('../estoque/transferenciaNaoFiscalParaFiscalPdv');
+const cfgTransferenciaPdv = require('../estoque/pdvTransferenciaNaoFiscalFiscalConfig');
+const {
+  ordenarRecebimentosAB,
+  persistirGrupoRecebimento,
+  aplicarPoliticaRecebimentosFluxoVenda
+} = require('./recebimentoPagamento');
 const mpfc = require('../mpfc');
 const {
   obterCreditoReservaPedidoCb,
   creditarDisponibilidadeComReservaPedido,
   consumirReservasPedidoNaVendaCb
 } = require('../estoque/pedidoReservaPonteNucleo');
+
+function iniciarTransacaoVendaComTransferenciaPdv(dbConn, aplicacoes, usuarioId, next) {
+  dbConn.run('BEGIN IMMEDIATE', (beginErr) => {
+    if (beginErr) return next(beginErr);
+    if (!Array.isArray(aplicacoes) || aplicacoes.length === 0) {
+      return next(null);
+    }
+    aplicarTransferenciasPdv(aplicacoes, {
+      db: dbConn,
+      usuarioId,
+      jaEmTransacao: true
+    }).then(() => next(null)).catch((err) => {
+      dbConn.run('ROLLBACK', () => next(err));
+    });
+  });
+}
 
 /**
  * RC8.2 — carrega MPFC e entrega política aos consumidores.
@@ -274,6 +300,66 @@ function gravarRecebimentos(vendaId, recebimentos, callback) {
   }
 
   next();
+}
+
+function linhasPagamentoPersistencia(pagamentosVenda, recebimentos, formaPagamentoFinal, total, tef) {
+  const rec = flattenRecebimentos(recebimentos).filter((r) => Number(r.valor || 0) > 0);
+  const origem = rec.length > 0
+    ? rec
+    : (Array.isArray(pagamentosVenda) && pagamentosVenda.length > 0
+      ? pagamentosVenda
+      : [{
+          forma_pagamento: formaPagamentoFinal,
+          valor: Number(total || 0),
+          tef_transacao_id: tef?.transacao_id || null,
+          nsu: tef?.nsu || null,
+          autorizacao: tef?.autorizacao || null,
+          bandeira: tef?.bandeira || null,
+          adquirente: tef?.adquirente || null,
+          tef
+        }]);
+
+  return ordenarRecebimentosAB(origem).map((p) => ({
+    ...p,
+    tipo_recebimento: persistirGrupoRecebimento(p)
+  }));
+}
+
+function gravarVendaPagamentos(vendaId, linhas, callback) {
+  const lista = Array.isArray(linhas) ? linhas : [];
+  if (lista.length === 0) {
+    if (typeof callback === 'function') callback(null);
+    return;
+  }
+
+  const stmt = db.prepare(`
+    INSERT INTO venda_pagamentos (
+      venda_id, forma_pagamento, valor, tipo_recebimento,
+      tef_transacao_id, tef_nsu, tef_autorizacao,
+      tef_bandeira, tef_adquirente,
+      tef_comprovante_cliente, tef_comprovante_estabelecimento
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  lista.forEach((p) => {
+    stmt.run(
+      vendaId,
+      p.forma_pagamento,
+      Number(p.valor || 0),
+      p.tipo_recebimento || null,
+      p.tef_transacao_id || p.tef?.transacao_id || null,
+      p.nsu || p.tef?.nsu || null,
+      p.autorizacao || p.tef?.autorizacao || null,
+      p.bandeira || p.tef?.bandeira || null,
+      p.adquirente || p.tef?.adquirente || null,
+      p.tef?.comprovante_cliente || null,
+      p.tef?.comprovante_estabelecimento || null
+    );
+  });
+
+  stmt.finalize((err) => {
+    if (typeof callback === 'function') callback(err || null);
+  });
 }
 
 // TEF exclusivo para recebimentos fiscais (conta empresa)
@@ -575,7 +661,19 @@ db.all(`
     entradasMotor.push({
       item,
       saldoFiscal: saldos.saldoFiscal,
-      saldoNaoFiscal: saldos.saldoNaoFiscal
+      saldoNaoFiscal: saldos.saldoNaoFiscal,
+      controlaEstoque: Number(produto.controla_estoque) !== 0,
+      produto
+    });
+  }
+
+  const preparadoPdv = prepararEntradasMotorComTransferenciaPdv(entradasMotor, {
+    permitido: cfgTransferenciaPdv.estaAtivadaSync()
+  });
+  if (preparadoPdv.sucesso === false) {
+    return res.status(400).json({
+      sucesso: false,
+      error: preparadoPdv.erro || 'Falha ao validar transferência de estoque.'
     });
   }
 
@@ -583,7 +681,7 @@ db.all(`
   const midpAtivo = Boolean(politicaMpfc.preservarDinheiro);
   const pagamentosPre = Array.isArray(req.body?.pagamentos) ? req.body.pagamentos : [];
   const resultadoMotor = distribuirItensVendaComValorFiscalEfetivo(
-    entradasMotor,
+    preparadoPdv.entradas,
     vendaFiscal,
     {
       pagamentos: pagamentosPre,
@@ -843,9 +941,21 @@ db.all(`
     entradasMotor.push({
       item,
       saldoFiscal: saldos.saldoFiscal,
-      saldoNaoFiscal: saldos.saldoNaoFiscal
+      saldoNaoFiscal: saldos.saldoNaoFiscal,
+      controlaEstoque: Number(produto.controla_estoque) !== 0,
+      produto
     });
   }
+
+  const preparadoTransferenciaPdv = prepararEntradasMotorComTransferenciaPdv(entradasMotor, {
+    permitido: cfgTransferenciaPdv.estaAtivadaSync()
+  });
+  if (preparadoTransferenciaPdv.sucesso === false) {
+    return res.status(400).json({
+      error: preparadoTransferenciaPdv.erro || 'Falha ao validar transferência de estoque.'
+    });
+  }
+  const aplicacoesTransferenciaPdv = preparadoTransferenciaPdv.aplicacoes || [];
 
   const { politica: politicaMpfc, snapshot: snapshotMpfc } = carregarPoliticaFiscalComercialPassiva();
   const midpAtivo = Boolean(politicaMpfc.preservarDinheiro);
@@ -868,7 +978,7 @@ db.all(`
       : []);
 
   const resultadoMotor = distribuirItensVendaComValorFiscalEfetivo(
-    entradasMotor,
+    preparadoTransferenciaPdv.entradas,
     vendaFiscal,
     {
       pagamentos: pagamentosParaMotor,
@@ -979,9 +1089,21 @@ db.all(`
     
     modoConfirmacaoFiscal = configService.getModoConfirmacaoFiscal() || 'TEF';
 
+    const politicaRecebimentosPrazo = aplicarPoliticaRecebimentosFluxoVenda({
+      body: req.body,
+      totalFiscal,
+      totalNaoFiscal,
+      totalComercial: totalNum,
+      pagamentosVenda,
+      formaPagamento: formaPagamentoFinal,
+      tef,
+      recebimentosOrquestrador: []
+    });
+
     // Processar fluxo de pagamento usando o Orquestrador → MIDP (única via)
     const resultadoPagamento = await OrquestradorPagamento.processarFluxoPagamentoVenda({
-      totalFiscal,
+      totalFiscal: politicaRecebimentosPrazo.valorFiscalStatus,
+      totalNaoFiscal: politicaRecebimentosPrazo.valorNaoFiscalStatus,
       totalNaoFiscal,
       formaPagamento: formaPagamentoFinal,
       pagamentos: req.body.pagamentos || [],
@@ -1004,16 +1126,31 @@ db.all(`
     }
 
     const { resultadoFiscal } = resultadoPagamento;
+    const politicaRecebimentos = aplicarPoliticaRecebimentosFluxoVenda({
+      body: req.body,
+      totalFiscal,
+      totalNaoFiscal,
+      totalComercial: totalNum,
+      pagamentosVenda,
+      formaPagamento: formaPagamentoFinal,
+      tef,
+      recebimentosOrquestrador: resultadoPagamento.recebimentos
+    });
     const resultadoStatus = aplicarRegraStatusPagamentoVenda({
-      valorFiscal: totalFiscal,
-      valorNaoFiscal: totalNaoFiscal,
+      valorFiscal: politicaRecebimentos.valorFiscalStatus,
+      valorNaoFiscal: politicaRecebimentos.valorNaoFiscalStatus,
       statusPagamento: resultadoPagamento.statusPagamento,
-      recebimentos: resultadoPagamento.recebimentos
+      recebimentos: politicaRecebimentos.recebimentos
     });
     const { statusPagamento, recebimentos } = resultadoStatus;
 
     db.serialize(() => {
-      db.run('BEGIN IMMEDIATE');
+      iniciarTransacaoVendaComTransferenciaPdv(db, aplicacoesTransferenciaPdv, req.operadorId, (trErr) => {
+      if (trErr) {
+        return res.status(400).json({
+          error: trErr.message || 'Falha ao transferir estoque.'
+        });
+      }
       db.run(`
         INSERT INTO vendas (codigo, data_venda, cliente_id, total, desconto, forma_pagamento, status, caixa_sessao_id, caixa_id, terminal_id, operador_id, valor_fiscal, valor_nao_fiscal, status_pagamento, tef_transacao_id, mpfc_politica_snapshot)
           VALUES (?, ?, ?, ?, ?, ?, 'concluida', ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1133,56 +1270,16 @@ db.all(`
               itensProcessados++;
               if (itensProcessados === itens.length) {
                 consumirReservaPedidoAposBaixa(vendaId, () => {
-                if (pagamentosVenda.length > 0) {
-                  const stmtPagamentos = db.prepare(`
-                    INSERT INTO venda_pagamentos (
-                      venda_id, forma_pagamento, valor,
-                      tef_transacao_id, tef_nsu, tef_autorizacao,
-                      tef_bandeira, tef_adquirente,
-                      tef_comprovante_cliente, tef_comprovante_estabelecimento
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                  `);
-
-                  pagamentosVenda.forEach((p) => {
-                    stmtPagamentos.run(
-                      vendaId,
-                      p.forma_pagamento,
-                      Number(p.valor || 0),
-                      p.tef_transacao_id || p.tef?.transacao_id || null,
-                      p.nsu || p.tef?.nsu || null,
-                      p.autorizacao || p.tef?.autorizacao || null,
-                      p.bandeira || p.tef?.bandeira || null,
-                      p.adquirente || p.tef?.adquirente || null,
-                      p.tef?.comprovante_cliente || null,
-                      p.tef?.comprovante_estabelecimento || null
-                    );
-                  });
-
-                  stmtPagamentos.finalize();
-                } else {
-                  db.run(
-                    `
-                    INSERT INTO venda_pagamentos (
-                      venda_id, forma_pagamento, valor,
-                      tef_transacao_id, tef_nsu, tef_autorizacao,
-                      tef_bandeira, tef_adquirente,
-                      tef_comprovante_cliente, tef_comprovante_estabelecimento
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    `,
-                    [
-                      vendaId,
-                      formaPagamentoFinal,
-                      Number(total || 0),
-                      tef?.transacao_id || null,
-                      tef?.nsu || null,
-                      tef?.autorizacao || null,
-                      tef?.bandeira || null,
-                      tef?.adquirente || null,
-                      tef?.comprovante_cliente || null,
-                      tef?.comprovante_estabelecimento || null
-                    ]
-                  );
-                }
+                gravarVendaPagamentos(
+                  vendaId,
+                  linhasPagamentoPersistencia(
+                    pagamentosVenda,
+                    recebimentos,
+                    formaPagamentoFinal,
+                    total,
+                    tef
+                  )
+                );
 
                 // Gerar parcelas (caminho financeiro existente)
                 const qtdParcelas = Number(parcelas) || 1;
@@ -1262,6 +1359,7 @@ db.all(`
         });
       });
     });
+    });
   }
   return;
 }
@@ -1300,9 +1398,21 @@ const executarVenda = async () => {
   
   modoConfirmacaoFiscal = configService.getModoConfirmacaoFiscal() || 'TEF';
 
+  const politicaRecebimentosVistaPre = aplicarPoliticaRecebimentosFluxoVenda({
+    body: req.body,
+    totalFiscal,
+    totalNaoFiscal,
+    totalComercial: totalNum,
+    pagamentosVenda,
+    formaPagamento: formaPagamentoFinal,
+    tef,
+    recebimentosOrquestrador: []
+  });
+
   // Processar fluxo de pagamento usando o Orquestrador → MIDP (única via)
   const resultadoPagamento = await OrquestradorPagamento.processarFluxoPagamentoVenda({
-    totalFiscal,
+    totalFiscal: politicaRecebimentosVistaPre.valorFiscalStatus,
+    totalNaoFiscal: politicaRecebimentosVistaPre.valorNaoFiscalStatus,
     totalNaoFiscal,
     formaPagamento: formaPagamentoFinal,
     pagamentos: req.body.pagamentos || [],
@@ -1325,16 +1435,31 @@ const executarVenda = async () => {
   }
 
   const { distribuicao, resultadoFiscal } = resultadoPagamento;
+  const politicaRecebimentos = aplicarPoliticaRecebimentosFluxoVenda({
+    body: req.body,
+    totalFiscal,
+    totalNaoFiscal,
+    totalComercial: totalNum,
+    pagamentosVenda,
+    formaPagamento: formaPagamentoFinal,
+    tef,
+    recebimentosOrquestrador: resultadoPagamento.recebimentos
+  });
   const resultadoStatus = aplicarRegraStatusPagamentoVenda({
-    valorFiscal: totalFiscal,
-    valorNaoFiscal: totalNaoFiscal,
+    valorFiscal: politicaRecebimentos.valorFiscalStatus,
+    valorNaoFiscal: politicaRecebimentos.valorNaoFiscalStatus,
     statusPagamento: resultadoPagamento.statusPagamento,
-    recebimentos: resultadoPagamento.recebimentos
+    recebimentos: politicaRecebimentos.recebimentos
   });
   const { statusPagamento, recebimentos } = resultadoStatus;
 
   db.serialize(() => {
-    db.run('BEGIN IMMEDIATE');
+    iniciarTransacaoVendaComTransferenciaPdv(db, aplicacoesTransferenciaPdv, req.operadorId, (trErr) => {
+    if (trErr) {
+      return res.status(400).json({
+        error: trErr.message || 'Falha ao transferir estoque.'
+      });
+    }
     db.run(`
       INSERT INTO vendas (
         codigo,
@@ -1491,56 +1616,16 @@ const executarVenda = async () => {
             itensProcessados++;
             if (itensProcessados === itens.length) {
               consumirReservaPedidoAposBaixa(vendaId, () => {
-              if (pagamentosVenda.length > 0) {
-                const stmtPagamentos = db.prepare(`
-                  INSERT INTO venda_pagamentos (
-                    venda_id, forma_pagamento, valor,
-                    tef_transacao_id, tef_nsu, tef_autorizacao,
-                    tef_bandeira, tef_adquirente,
-                    tef_comprovante_cliente, tef_comprovante_estabelecimento
-                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                `);
-
-                pagamentosVenda.forEach((p) => {
-                  stmtPagamentos.run(
-                    vendaId,
-                    p.forma_pagamento,
-                    Number(p.valor || 0),
-                    p.tef_transacao_id || p.tef?.transacao_id || null,
-                    p.nsu || p.tef?.nsu || null,
-                    p.autorizacao || p.tef?.autorizacao || null,
-                    p.bandeira || p.tef?.bandeira || null,
-                    p.adquirente || p.tef?.adquirente || null,
-                    p.tef?.comprovante_cliente || null,
-                    p.tef?.comprovante_estabelecimento || null
-                  );
-                });
-
-                stmtPagamentos.finalize();
-              } else {
-                db.run(
-                  `
-                  INSERT INTO venda_pagamentos (
-                    venda_id, forma_pagamento, valor,
-                    tef_transacao_id, tef_nsu, tef_autorizacao,
-                    tef_bandeira, tef_adquirente,
-                    tef_comprovante_cliente, tef_comprovante_estabelecimento
-                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                  `,
-                  [
-                    vendaId,
-                    formaPagamentoFinal,
-                    Number(total || 0),
-                    tef?.transacao_id || null,
-                    tef?.nsu || null,
-                    tef?.autorizacao || null,
-                    tef?.bandeira || null,
-                    tef?.adquirente || null,
-                    tef?.comprovante_cliente || null,
-                    tef?.comprovante_estabelecimento || null
-                  ]
-                );
-              }
+              gravarVendaPagamentos(
+                vendaId,
+                linhasPagamentoPersistencia(
+                  pagamentosVenda,
+                  recebimentos,
+                  formaPagamentoFinal,
+                  total,
+                  tef
+                )
+              );
 
               const statusFinanceiro = vendaFicaPendente ? 'pendente' : 'recebido';
               const baixadoEm = statusFinanceiro === 'recebido' ? data_venda : null;
@@ -1640,6 +1725,7 @@ const executarVenda = async () => {
           });
         });
       });
+    });
     });
   });
 };
@@ -2061,6 +2147,8 @@ module.exports = {
   atualizarStatusPagamentoVenda,
   flattenRecebimentos,
   gravarRecebimentos,
+  linhasPagamentoPersistencia,
+  gravarVendaPagamentos,
   processarPagamentosTef,
   calcularSaldoNaoFiscal,
   filtrarRecebimentosNaoFiscal,

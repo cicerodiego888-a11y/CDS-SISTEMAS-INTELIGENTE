@@ -294,7 +294,7 @@ async function processarTEFFiscal(recebimentosFiscal) {
       // Cancelar transações anteriores
       for (const transacaoId of transacoesAutorizadas) {
         try {
-          await tefManager.cancelar(transacaoId, 'Erro no pagamento fiscal');
+          await tefManager.cancelar(transacaoId, 'Erro no Recebimento A');
         } catch (cancelError) {
           console.error(`Erro ao cancelar transação TEF ${transacaoId}:`, cancelError);
         }
@@ -486,12 +486,16 @@ function normalizarPagamentosEntrada(pagamentos, formaPagamentoPadrao, totalLiqu
     }];
   }
   
-  return pagamentos.map(p => ({
+  return pagamentos.map((p) => ({
+    ...p,
     forma_pagamento: p.forma_pagamento || formaPagamentoPadrao || 'dinheiro',
     valor: Number(p.valor || 0),
-    tef_transacao_id: p.tef_transacao_id || null,
-    nsu: p.nsu || null,
-    autorizacao: p.autorizacao || null
+    tef_transacao_id: p.tef_transacao_id || p.tef?.transacao_id || null,
+    nsu: p.nsu || p.tef?.nsu || null,
+    autorizacao: p.autorizacao || p.tef?.autorizacao || null,
+    bandeira: p.bandeira || p.tef?.bandeira || null,
+    adquirente: p.adquirente || p.tef?.adquirente || null,
+    tef: p.tef || null
   }));
 }
 
@@ -538,7 +542,7 @@ async function processarPagamentoNaoFiscal({
   if (Math.abs(totalInformado - valorNaoFiscal) > 0.01) {
     return {
       sucesso: false,
-      erro: 'Valor informado não confere com o saldo não fiscal pendente.',
+      erro: 'Valor informado não confere com o Recebimento B pendente.',
       saldo_pendente: valorNaoFiscal
     };
   }

@@ -180,6 +180,19 @@ function resolverStatusPagamentoResposta(payload = {}) {
   );
 }
 
+function coletarIdsTefAutorizados(payload = {}) {
+  const ids = [];
+  const pags = Array.isArray(payload.pagamentosTef) ? payload.pagamentosTef : [];
+  for (const p of pags) {
+    const id = p && (p.tef_transacao_id || p.tef?.transacao_id);
+    if (id) ids.push(id);
+  }
+  if (payload.tef && payload.tef.transacao_id) {
+    ids.push(payload.tef.transacao_id);
+  }
+  return [...new Set(ids)];
+}
+
 async function responderVendaComFiscal(res, payload) {
   const valorFiscal = Number(payload.valorFiscal || 0);
   const valorNaoFiscal = Number(payload.valorNaoFiscal || 0);
@@ -267,20 +280,22 @@ async function responderVendaComFiscal(res, payload) {
     });
   } catch (error) {
     console.error('Erro ao emitir NFC-e:', error);
-    
-    // Reverter pagamentos TEF autorizados
-    if (transacoesTefAutorizadas.length > 0) {
-      for (const transacaoId of transacoesTefAutorizadas) {
-        try {
-          await tefManager.cancelar(transacaoId, 'Falha na emissão NFC-e');
-          console.log(`Transação TEF ${transacaoId} cancelada devido a falha na NFC-e`);
-        } catch (cancelError) {
-          console.error(`Erro ao cancelar transação TEF ${transacaoId}:`, cancelError);
-        }
+
+    const transacoesTef = coletarIdsTefAutorizados(payload);
+    for (const transacaoId of transacoesTef) {
+      try {
+        await tefManager.cancelar(transacaoId, 'Falha na emissão NFC-e');
+        console.log(`Transação TEF ${transacaoId} cancelada devido a falha na NFC-e`);
+      } catch (cancelError) {
+        console.error(`Erro ao cancelar transação TEF ${transacaoId}:`, cancelError);
       }
     }
 
-    res.json({
+    if (res.headersSent) {
+      return;
+    }
+
+    return res.json({
       ...respostaBase,
       fiscal: {
         success: false,
@@ -299,6 +314,7 @@ module.exports = {
   vincularNfceTransacoesVenda,
   emitirFiscalSeSolicitado,
   responderVendaComFiscal,
+  coletarIdsTefAutorizados,
   resolverStatusPagamentoResposta,
   registrarPoliticaSnapshotReprocessamento
 };

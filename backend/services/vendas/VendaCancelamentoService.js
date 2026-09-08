@@ -32,16 +32,16 @@ function cancelarRecebimentosVenda(vendaId, callback) {
     UPDATE venda_recebimentos
     SET status = 'cancelado'
     WHERE venda_id = ?
-      AND tipo_recebimento = 'fiscal'
+      AND LOWER(COALESCE(tipo_recebimento, '')) IN ('fiscal', 'a')
       AND COALESCE(status, 'aprovado') != 'cancelado'
-  `, [vendaId], (errFiscal) => {
-    if (errFiscal) return callback(errFiscal);
+  `, [vendaId], (errA) => {
+    if (errA) return callback(errA);
 
     db.run(`
       UPDATE venda_recebimentos
       SET status = 'cancelado'
       WHERE venda_id = ?
-        AND tipo_recebimento = 'nao_fiscal'
+        AND LOWER(COALESCE(tipo_recebimento, '')) IN ('nao_fiscal', 'b')
         AND COALESCE(status, 'aprovado') != 'cancelado'
     `, [vendaId], callback);
   });
@@ -368,10 +368,10 @@ db.get(
       estornarFiscal
         .then(() => prosseguirCancelamento())
         .catch((tefErr) => {
-          console.error('Erro ao cancelar pagamento fiscal TEF:', tefErr);
+          console.error('Erro ao estornar TEF do Recebimento A:', tefErr);
           return res.status(500).json({
             sucesso: false,
-            mensagem: 'Erro ao estornar pagamento fiscal.'
+            mensagem: 'Erro ao estornar o Recebimento A.'
           });
         });
       return;

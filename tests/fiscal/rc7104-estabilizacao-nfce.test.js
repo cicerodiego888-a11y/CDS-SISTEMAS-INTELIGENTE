@@ -12,6 +12,7 @@ const path = require('path');
 const {
   buildNfceXml,
   determinarModeloDeTotais,
+  resolverPagamentosNfce,
   MODELO_BRUTO,
   MODELO_LIQUIDO
 } = require('../../backend/services/fiscal/xmlBuilder');
@@ -282,6 +283,40 @@ describe('RC7.10.4 — NF-e 55 alinhada', () => {
     assert.equal(built.valores.vProd, 83.4);
     assert.equal(built.valores.vDesc, 5.4);
     assert.equal(built.valores.vNF, 78);
+  });
+});
+
+describe('RC7.10.4 — pagamento fiscal separado do não fiscal', () => {
+  it('recebimentos F+NF: NFC-e usa só a parcela fiscal', () => {
+    const built = buildNfceXml({
+      config: cfg,
+      venda: {
+        total: 100,
+        desconto: 0,
+        valor_fiscal: 60,
+        forma_pagamento: 'pix',
+        pagamentos: [
+          { forma_pagamento: 'pix', valor: 60, tipo_recebimento: 'fiscal' },
+          { forma_pagamento: 'pix', valor: 40, tipo_recebimento: 'nao_fiscal' }
+        ]
+      },
+      itens: [itemFiscal({ valor_fiscal: 60 })],
+      numero: 21
+    });
+    assert.equal(built.valores.vNF, 60);
+    assert.match(built.xmlSemAssinatura, /<vPag>60\.00<\/vPag>/);
+    assert.doesNotMatch(built.xmlSemAssinatura, /<vPag>100\.00<\/vPag>/);
+    assert.doesNotMatch(built.xmlSemAssinatura, /<vPag>40\.00<\/vPag>/);
+    assert.doesNotMatch(built.xmlSemAssinatura, /<vTroco>/);
+  });
+
+  it('PIX comercial 100 sobre vNF 60 não vira troco', () => {
+    const r = resolverPagamentosNfce({
+      pagamentos: [{ forma_pagamento: 'pix', valor: 100 }]
+    }, 60);
+    assert.equal(r.pagamentos.length, 1);
+    assert.equal(r.pagamentos[0].valor, 60);
+    assert.equal(r.vTroco, 0);
   });
 });
 

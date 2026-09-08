@@ -13,6 +13,7 @@ const {
   definirSaldosIniciaisProduto
 } = require('../services/ajusteEstoqueService');
 const { excluirProdutoCadastro } = require('../services/excluirProdutoService');
+const cfgValidadeEmpresa = require('../services/estoque/empresaControlaValidadeConfig');
 const { sqlRankingProdutos, isModoFiscalRelatorio } = require('../services/reportFiscalHelpers');
 const { espelharIdentificadoresSafe } = require('../motores/produto-identidade');
 const PdvProdutoIdentificacaoService = require('../motores/produto-identidade/services/PdvProdutoIdentificacaoService');
@@ -2335,13 +2336,17 @@ router.post('/', (req, res) => {
     ? normalizarImagemPrincipalOpcional(imagem_principal)
     : null;
 
-  const controlarValidade = controlar_validade ? 1 : 0;
   const controlaEstoque = normalizarFlagControlaEstoque(controla_estoque);
   const flagFracionado = resolverFlagProdutoFracionado({
     produto_fracionado,
     vendido_por_peso,
     produto_pesavel
   }) ?? 0;
+
+  cfgValidadeEmpresa.resolverFlagControlarValidade(db, controlar_validade, (flagValErr, controlarValidade) => {
+    if (flagValErr) {
+      return res.status(500).json({ error: flagValErr.message });
+    }
 
   let saldoFiscalInicial;
   let saldoNaoFiscalInicial;
@@ -2569,6 +2574,7 @@ router.post('/', (req, res) => {
       }
     });
   });
+  });
 });
 
 // Obter estatísticas de vencimentos para o dashboard
@@ -2765,6 +2771,10 @@ router.put('/:id', (req, res) => {
 
   if (controlar_validade !== undefined) {
     bodyUpdates.controlar_validade = controlar_validade ? 1 : 0;
+  }
+
+  if (cfgValidadeEmpresa.cacheHidratado() && !cfgValidadeEmpresa.estaAtivadaSync()) {
+    bodyUpdates.controlar_validade = 0;
   }
 
   if (Object.prototype.hasOwnProperty.call(req.body, 'controla_estoque')) {

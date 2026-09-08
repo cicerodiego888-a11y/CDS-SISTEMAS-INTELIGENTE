@@ -5,6 +5,12 @@ const multer = require('multer');
 const router = express.Router();
 const db = require('../database');
 const { gravarAuditoria } = require('../services/auditoria');
+const cfgTransferenciaPdv = require('../services/estoque/pdvTransferenciaNaoFiscalFiscalConfig');
+const cfgValidadeEmpresa = require('../services/estoque/empresaControlaValidadeConfig');
+
+function chaveReservadaSuperAdmin(chave) {
+  return cfgTransferenciaPdv.ehChave(chave) || cfgValidadeEmpresa.ehChave(chave);
+}
 
 function auditarConfiguracao(req, acao, chave, detalhes = {}) {
   const usuario = req.user || {};
@@ -301,13 +307,78 @@ router.post('/impressora_cupom', (req, res) => {
   });
 });
 
+router.get('/pdv_permitir_transferencia_nao_fiscal_fiscal', (req, res) => {
+  cfgTransferenciaPdv.ler(db, (err, dados) => {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+    res.json(dados);
+  });
+});
+
+router.put(
+  '/pdv_permitir_transferencia_nao_fiscal_fiscal',
+  cfgTransferenciaPdv.exigirSuperAdminAlteracao,
+  (req, res) => {
+    cfgTransferenciaPdv.salvar(db, req.body && req.body.valor, (err, dados) => {
+      if (err) {
+        const status = err.status || 500;
+        return res.status(status).json({ error: err.message });
+      }
+      auditarConfiguracao(req, 'atualizar_configuracao', cfgTransferenciaPdv.CHAVE, {
+        valor: dados.valor
+      });
+      res.json({
+        message: 'Configuração atualizada com sucesso',
+        ...dados
+      });
+    });
+  }
+);
+
+router.get('/empresa_controla_validade', (req, res) => {
+  cfgValidadeEmpresa.ler(db, (err, dados) => {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+    res.json(dados);
+  });
+});
+
+router.put(
+  '/empresa_controla_validade',
+  cfgValidadeEmpresa.exigirSuperAdminAlteracao,
+  (req, res) => {
+    cfgValidadeEmpresa.salvar(db, req.body && req.body.valor, (err, dados) => {
+      if (err) {
+        const status = err.status || 500;
+        return res.status(status).json({ error: err.message });
+      }
+      auditarConfiguracao(req, 'atualizar_configuracao', cfgValidadeEmpresa.CHAVE, {
+        valor: dados.valor,
+        produtos_desmarcados: dados.produtos_desmarcados
+      });
+      res.json({
+        message: dados.valor === 'DESATIVADO'
+          ? `Validade DESATIVADA. ${dados.produtos_desmarcados} produto(s) desmarcado(s).`
+          : 'Controle de validade da empresa ATIVADO.',
+        ...dados
+      });
+    });
+  }
+);
+
 router.get('/', (req, res) => {
   db.all('SELECT * FROM configuracoes ORDER BY chave', (err, rows) => {
     if (err) {
       res.status(500).json({ error: err.message });
       return;
     }
-    res.json(rows);
+    const perfil = String(req.user?.perfil || '').toUpperCase();
+    const lista = perfil === 'SUPER_ADMIN'
+      ? (rows || [])
+      : (rows || []).filter((row) => !chaveReservadaSuperAdmin(row.chave));
+    res.json(lista);
   });
 });
 
@@ -325,6 +396,35 @@ router.get('/:chave', (req, res) => {
 router.put('/:chave', (req, res) => {
   const { chave } = req.params;
   const { valor } = req.body;
+
+  if (cfgTransferenciaPdv.ehChave(chave)) {
+    return cfgTransferenciaPdv.exigirSuperAdminAlteracao(req, res, () => {
+      cfgTransferenciaPdv.salvar(db, valor, (err, dados) => {
+        if (err) {
+          const status = err.status || 500;
+          return res.status(status).json({ error: err.message });
+        }
+        auditarConfiguracao(req, 'atualizar_configuracao', chave, { valor: dados.valor });
+        res.json({ message: 'Configuração atualizada com sucesso', ...dados });
+      });
+    });
+  }
+
+  if (cfgValidadeEmpresa.ehChave(chave)) {
+    return cfgValidadeEmpresa.exigirSuperAdminAlteracao(req, res, () => {
+      cfgValidadeEmpresa.salvar(db, valor, (err, dados) => {
+        if (err) {
+          const status = err.status || 500;
+          return res.status(status).json({ error: err.message });
+        }
+        auditarConfiguracao(req, 'atualizar_configuracao', chave, {
+          valor: dados.valor,
+          produtos_desmarcados: dados.produtos_desmarcados
+        });
+        res.json({ message: 'Configuração atualizada com sucesso', ...dados });
+      });
+    });
+  }
 
   console.log(`[CONFIG] Salvando configuração: chave=${chave}, valor=${valor}`);
 
@@ -362,6 +462,37 @@ router.put('/:chave', (req, res) => {
 
 router.post('/', (req, res) => {
   const { chave, valor, tipo, descricao } = req.body;
+
+  if (cfgTransferenciaPdv.ehChave(chave)) {
+    return cfgTransferenciaPdv.exigirSuperAdminAlteracao(req, res, () => {
+      cfgTransferenciaPdv.salvar(db, valor, (err, dados) => {
+        if (err) {
+          const status = err.status || 500;
+          return res.status(status).json({ error: err.message });
+        }
+        auditarConfiguracao(req, 'criar_configuracao', chave, { valor: dados.valor, tipo, descricao });
+        res.json({ message: 'Configuração criada com sucesso', ...dados });
+      });
+    });
+  }
+
+  if (cfgValidadeEmpresa.ehChave(chave)) {
+    return cfgValidadeEmpresa.exigirSuperAdminAlteracao(req, res, () => {
+      cfgValidadeEmpresa.salvar(db, valor, (err, dados) => {
+        if (err) {
+          const status = err.status || 500;
+          return res.status(status).json({ error: err.message });
+        }
+        auditarConfiguracao(req, 'criar_configuracao', chave, {
+          valor: dados.valor,
+          produtos_desmarcados: dados.produtos_desmarcados,
+          tipo,
+          descricao
+        });
+        res.json({ message: 'Configuração criada com sucesso', ...dados });
+      });
+    });
+  }
 
   db.run(`
     INSERT INTO configuracoes (chave, valor, tipo, descricao)

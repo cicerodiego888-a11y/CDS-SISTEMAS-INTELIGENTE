@@ -317,12 +317,26 @@ function obterEstatisticasVencimentos(callback) {
 
 // Verificar se produto controla validade
 function produtoControlaValidade(produtoId, callback) {
-  db.get(`
-    SELECT controlar_validade FROM produtos WHERE id = ?
-  `, [produtoId], (err, row) => {
-    if (err) return callback(err);
-    if (!row) return callback(new Error('Produto não encontrado'));
-    callback(null, row.controlar_validade === 1);
+  const cfgValidadeEmpresa = require('./estoque/empresaControlaValidadeConfig');
+
+  const consultarProduto = () => {
+    db.get(`
+      SELECT controlar_validade FROM produtos WHERE id = ?
+    `, [produtoId], (err, row) => {
+      if (err) return callback(err);
+      if (!row) return callback(new Error('Produto não encontrado'));
+      callback(null, row.controlar_validade === 1);
+    });
+  };
+
+  if (cfgValidadeEmpresa.cacheHidratado() && !cfgValidadeEmpresa.estaAtivadaSync()) {
+    return callback(null, false);
+  }
+
+  cfgValidadeEmpresa.estaAtivada(db, (cfgErr, permitido) => {
+    if (cfgErr) return callback(cfgErr);
+    if (!permitido) return callback(null, false);
+    consultarProduto();
   });
 }
 

@@ -1489,7 +1489,7 @@ body.modo-fiscal-ativo #btnFinalizarVendaPdv {
   background: #16a34a !important;
 }
 
-/* Sprint 3 — Drawer Prestação de Contas */
+/* Sprint 3 — Drawer Prestação de Contas (acima do painel de aparência e de .modal Bootstrap) */
 .pdv-prestacao-backdrop {
   position: fixed;
   inset: 0;
@@ -1497,7 +1497,7 @@ body.modo-fiscal-ativo #btnFinalizarVendaPdv {
   opacity: 0;
   pointer-events: none;
   transition: opacity 180ms ease;
-  z-index: 12040;
+  z-index: 13040;
 }
 .pdv-prestacao-backdrop.is-open {
   opacity: 1;
@@ -1511,7 +1511,8 @@ body.modo-fiscal-ativo #btnFinalizarVendaPdv {
   height: 100vh;
   background: #fff;
   color: #111827;
-  z-index: 12050;
+  z-index: 13050;
+  isolation: isolate;
   box-shadow: -12px 0 40px rgba(0,0,0,.25);
   transform: translateX(104%);
   transition: transform 180ms ease;
@@ -1519,6 +1520,50 @@ body.modo-fiscal-ativo #btnFinalizarVendaPdv {
   flex-direction: column;
 }
 .pdv-prestacao-drawer.is-open { transform: translateX(0); }
+.pdv-prestacao-conferencia {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(15, 23, 42, 0.55);
+}
+.pdv-prestacao-conferencia__card {
+  width: 100%;
+  max-height: 100%;
+  overflow: auto;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+  display: flex;
+  flex-direction: column;
+}
+.pdv-prestacao-conferencia__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 16px;
+  background: #111827;
+  color: #fff;
+  border-radius: 12px 12px 0 0;
+}
+.pdv-prestacao-conferencia__header h5 {
+  margin: 0;
+  font-size: 1rem;
+}
+.pdv-prestacao-conferencia__body {
+  padding: 12px 16px;
+  overflow: auto;
+}
+.pdv-prestacao-conferencia__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px 16px;
+}
 .pdv-prestacao-drawer__header {
   display: flex;
   align-items: flex-start;

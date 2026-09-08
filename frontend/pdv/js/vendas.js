@@ -105,7 +105,7 @@ function renderVendas(vendas) {
                                     <td>${formatDate(v.data_venda || v.created_at)}</td>
                                     <td>${escapeHtml(v.cliente_nome || 'Não informado')}</td>
                                     <td>${formatCurrency(v.total)}</td>
-                                    <td>${rotuloFormaPagamento(v.forma_pagamento)}</td>
+                                    <td class="historico-venda-forma">${typeof montarHtmlPagamentosHistoricoVenda === 'function' ? montarHtmlPagamentosHistoricoVenda(v) : rotuloFormaPagamento(v.forma_pagamento)}</td>
                                     <td>${rotuloStatusVenda(v.status)}</td>
                                     <td class="historico-venda-acoes-col">${montarHtmlAcoesHistoricoVenda(v, { incluirDevolucao: false })}</td>
                                 </tr>
@@ -166,10 +166,15 @@ function showVendaModal(venda) {
                         <div class="row mb-3">
                             <div class="col-sm-4"><strong>Total:</strong> ${formatCurrency(totalExibido)}</div>
                             <div class="col-sm-4"><strong>Desconto:</strong> ${formatCurrency(venda.desconto)}</div>
-                            <div class="col-sm-4"><strong>Pagamento:</strong> ${rotuloFormaPagamento(venda.forma_pagamento)}</div>
+                            <div class="col-sm-4"><strong>Status:</strong> ${rotuloStatusVenda(venda.status)}</div>
                         </div>
                         <div class="row mb-3">
-                            <div class="col-sm-4"><strong>Status:</strong> ${rotuloStatusVenda(venda.status)}</div>
+                            <div class="col-12 venda-detalhe-pagamentos">
+                                <strong>Pagamento:</strong>
+                                <div id="vendaDetalhePagamentos">${typeof montarHtmlPagamentosHistoricoVenda === 'function' ? montarHtmlPagamentosHistoricoVenda(venda) : rotuloFormaPagamento(venda.forma_pagamento)}</div>
+                            </div>
+                        </div>
+                        <div class="row mb-3">
                             <div class="col-sm-4"><strong>Documento:</strong> ${escapeHtml(venda.documento || '-')}</div>
                             <div class="col-sm-4"><strong>Número de itens:</strong> ${itens.length}</div>
                         </div>

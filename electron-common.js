@@ -1,6 +1,6 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const { resolverIconeJanela } = require('./electron-icon');
-const { configurarAberturaJanelas, registrarIpcAbrirModulo, registrarJanelaPrincipalComoModulo } = require('./electron-janelas-modulo');
+const { configurarAberturaJanelas, registrarIpcAbrirModulo, registrarIpcForcarReflow, registrarIpcAbrirComprovante, registrarJanelaPrincipalComoModulo, nomeImpressoraTermicaValido } = require('./electron-janelas-modulo');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -328,154 +328,8 @@ function imprimirHtmlEmJanelaOculta(html, deviceName, callback) {
 
 function registrarHandlersIpc() {
   registrarIpcAbrirModulo(ipcMain);
-  ipcMain.removeAllListeners('forcar-reflow');
-  ipcMain.on('forcar-reflow', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.executeJavaScript(`
-        document.body.style.display = 'none';
-        document.body.offsetHeight;
-        document.body.style.display = '';
-      `);
-    }
-  });
-
-  ipcMain.removeAllListeners('abrir-comprovante');
-  ipcMain.on('abrir-comprovante', (event, html, options = {}) => {
-    const {
-      deviceName,
-      silent = false,
-      autoFecharMs = 5000,
-      htmlImpressao = null
-    } = options;
-
-    const cupomWindow = new BrowserWindow({
-      width: 380,
-      height: 720,
-      title: 'DANFE NFC-e',
-      parent: mainWindow,
-      modal: false,
-      show: false,
-      alwaysOnTop: true,
-      autoHideMenuBar: true,
-      webPreferences: {
-        nodeIntegration: false,
-        contextIsolation: true,
-        preload: path.join(__dirname, 'preload.js')
-      }
-    });
-
-    const papelMatch = String(html || '').match(/danfe-(58|80)/);
-    const papelMm = papelMatch ? papelMatch[1] : '80';
-    const utilMm = papelMm === '58' ? '54' : '76';
-    const htmlFinal = html.replace('</head>', `
-    <style>
-      @page { size: ${papelMm}mm auto; margin: 0; }
-      html, body.danfe {
-        width: ${utilMm}mm !important; max-width: ${utilMm}mm !important;
-        margin: 0 auto !important;
-        background: #fff !important; color: #000 !important;
-        -webkit-print-color-adjust: exact !important;
-        print-color-adjust: exact !important;
-      }
-      .qr img { display: block !important; margin: 8px auto !important; object-fit: contain !important; image-rendering: pixelated !important; }
-      table.items { width: 100% !important; border-collapse: collapse !important; table-layout: fixed !important; }
-    </style>
-  </head>`);
-
-    let impressaoConcluida = false;
-    let conteudoPronto = false;
-    let autoFecharTimer = null;
-
-    function executarImpressao(callback) {
-      const printOptions = {
-        silent: true,
-        printBackground: true,
-        margins: { marginType: 'none' }
-      };
-
-      if (deviceName) {
-        printOptions.deviceName = deviceName;
-      }
-
-      if (htmlImpressao) {
-        imprimirHtmlEmJanelaOculta(htmlImpressao, deviceName, () => {
-          impressaoConcluida = true;
-          if (typeof callback === 'function') {
-            callback();
-          }
-        });
-        return;
-      }
-
-      cupomWindow.webContents.print(printOptions, () => {
-        impressaoConcluida = true;
-        if (typeof callback === 'function') {
-          callback();
-        }
-      });
-    }
-
-    function fecharCupomComImpressao() {
-      if (cupomWindow.isDestroyed()) {
-        return;
-      }
-
-      if (autoFecharTimer) {
-        clearTimeout(autoFecharTimer);
-        autoFecharTimer = null;
-      }
-
-      if (impressaoConcluida) {
-        cupomWindow.destroy();
-        return;
-      }
-
-      if (!conteudoPronto) {
-        cupomWindow.destroy();
-        return;
-      }
-
-      executarImpressao(() => {
-        if (!cupomWindow.isDestroyed()) {
-          cupomWindow.destroy();
-        }
-      });
-    }
-
-    cupomWindow.on('close', (e) => {
-      if (impressaoConcluida || cupomWindow.isDestroyed()) {
-        return;
-      }
-
-      e.preventDefault();
-      fecharCupomComImpressao();
-    });
-
-    cupomWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlFinal)}`);
-
-    cupomWindow.webContents.once('did-finish-load', async () => {
-      await cupomWindow.webContents.executeJavaScript(`new Promise(r => setTimeout(r, 800));`);
-      conteudoPronto = true;
-
-      if (silent) {
-        executarImpressao(() => {
-          if (!cupomWindow.isDestroyed()) {
-            cupomWindow.destroy();
-          }
-        });
-        return;
-      }
-
-      cupomWindow.show();
-      cupomWindow.focus();
-
-      autoFecharTimer = setTimeout(() => {
-        if (!cupomWindow.isDestroyed()) {
-          cupomWindow.close();
-        }
-      }, Math.max(Number(autoFecharMs) || 5000, 1000));
-    });
-  });
+  registrarIpcForcarReflow(ipcMain);
+  registrarIpcAbrirComprovante(ipcMain);
 
   ipcMain.removeHandler('imprimir-danfe-silencioso');
   ipcMain.handle('imprimir-danfe-silencioso', async (event, html, deviceName) => {
@@ -487,8 +341,12 @@ function registrarHandlersIpc() {
     });
     await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
     await new Promise(resolve => setTimeout(resolve, 500));
-    const printOptions = { silent: true, printBackground: true };
-    if (deviceName) printOptions.deviceName = deviceName;
+    const device = nomeImpressoraTermicaValido(deviceName);
+    if (!device) {
+      if (!printWindow.isDestroyed()) printWindow.close();
+      return { sucesso: false, motivo: 'sem-impressora-termica' };
+    }
+    const printOptions = { silent: true, printBackground: true, deviceName: device };
     return new Promise((resolve, reject) => {
       printWindow.webContents.print(printOptions, (success, errorType) => {
         if (!printWindow.isDestroyed()) printWindow.close();

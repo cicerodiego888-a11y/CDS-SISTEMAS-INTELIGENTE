@@ -470,6 +470,27 @@ body.sidebar-collapsed #sidebar-brand {
     white-space: nowrap;
 }
 
+.historico-venda-forma {
+    min-width: 200px;
+    white-space: normal;
+    vertical-align: middle;
+}
+
+.venda-pagamentos-exibicao {
+    display: block;
+    white-space: normal;
+    line-height: 1.4;
+}
+
+.venda-pagamento-linha {
+    display: block;
+}
+
+.venda-detalhe-pagamentos {
+    display: block;
+    visibility: visible;
+}
+
 .historico-vendas-tabela {
     max-height: calc(100vh - 280px);
     overflow-y: auto;

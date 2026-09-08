@@ -568,7 +568,7 @@
   function imprimirComprovanteEntrega(html) {
     try {
       if (window.electronAPI && typeof window.electronAPI.abrirComprovante === 'function') {
-        window.electronAPI.abrirComprovante(html, { deviceName: 'cupom' });
+        window.electronAPI.abrirComprovante(html, { silent: false, autoFecharMs: 5000 });
         return;
       }
     } catch (_) { /* fallback */ }

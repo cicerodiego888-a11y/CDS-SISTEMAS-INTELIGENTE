@@ -157,11 +157,23 @@ function resolverTefPagamento(pagamento, dadosVenda = {}) {
  * RC7.10.4 — resolve pagamentos fiscais e troco.
  * Σ vPag = vNF + vTroco (nunca clipar overpay de dinheiro).
  */
+function isFormaDinheiroNfce(forma) {
+  const f = String(forma || '').toLowerCase().trim();
+  return f === 'dinheiro' || f === 'especie' || f === 'espécie' || f === 'cash';
+}
+
 function resolverPagamentosNfce(venda, totalFiscal) {
   const pagamentosBrutos = Array.isArray(venda?.pagamentos) ? venda.pagamentos : [];
-  let pagamentosFiscais = pagamentosBrutos.filter((p) => (
-    !p.tipo_recebimento || p.tipo_recebimento === 'fiscal'
-  ));
+  const temTipoRecebimento = pagamentosBrutos.some((p) =>
+    String(p.tipo_recebimento || '').trim() !== ''
+  );
+  let pagamentosFiscais = pagamentosBrutos.filter((p) => {
+    const tipo = String(p.tipo_recebimento || '').toLowerCase().trim();
+    if (temTipoRecebimento) {
+      return tipo === 'fiscal';
+    }
+    return !tipo || tipo === 'fiscal';
+  });
 
   if (pagamentosFiscais.length === 0 && venda?.forma_pagamento) {
     pagamentosFiscais = [{
@@ -189,7 +201,18 @@ function resolverPagamentosNfce(venda, totalFiscal) {
   let vTroco = 0;
 
   if (somaPagamentos > vNF + 0.009) {
-    vTroco = round2(somaPagamentos - vNF);
+    const soDinheiro = pagamentosFiscais.every((p) => isFormaDinheiroNfce(p.forma_pagamento));
+    if (soDinheiro) {
+      vTroco = round2(somaPagamentos - vNF);
+    } else if (pagamentosFiscais.length === 1) {
+      // PIX/cartão comercial (F+NF) sem split: NFC-e recebe só o vNF, sem troco.
+      pagamentosFiscais = [{
+        ...pagamentosFiscais[0],
+        valor: vNF
+      }];
+    } else {
+      vTroco = round2(somaPagamentos - vNF);
+    }
   } else if (Math.abs(somaPagamentos - vNF) > 0.01 && pagamentosFiscais.length === 1) {
     // Pagamento único aquém / ruído: normaliza para vNF (sem troco).
     pagamentosFiscais = [{
