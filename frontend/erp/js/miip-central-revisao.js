@@ -316,17 +316,19 @@
 
   function renderMotivosSemCandidato(pendencia) {
     const I = intel();
+    const diag = pendencia?.diagnosticoBusca
+      || pendencia?.miip_resultado?._meta?.compatibilityDiagnostico
+      || pendencia?.miip_resultado?._meta?.mubcDiagnostico
+      || null;
     const motivos = I?.motivosSemCandidatoPadrao
-      ? I.motivosSemCandidatoPadrao(pendencia?.diagnosticoBusca)
-      : (pendencia?.diagnosticoBusca?.motivos || [
-        'GTIN inexistente.',
-        'Fornecedor sem associação.',
-        'Descrição não localizada.',
-        'Nenhum produto semelhante.'
+      ? I.motivosSemCandidatoPadrao(diag)
+      : (diag?.motivos || [
+        'Nenhum produto CDS compatível encontrado.',
+        'Cadastre um novo produto ou selecione manualmente no catálogo.'
       ]);
     return `
       <div class="miip-v2-sem-candidato">
-        <h6>Sem candidato</h6>
+        <h6>Sem candidato compatível</h6>
         <p class="mb-1"><strong>Motivos:</strong></p>
         <ul class="miip-central-motivos-vazio">
           ${motivos.map((m) => `<li>${escapeHtml(m)}</li>`).join('')}
@@ -511,10 +513,24 @@
       ? I.enriquecerProdutoCds(produtoBase, produtosLista)
       : produtoBase;
 
+    const semanticXml = pendencia?.miip_resultado?._meta?.semanticProduct
+      || pendencia?.semanticProduct
+      || null;
+    const tipoXml = (semanticXml?.tipo && (semanticXml.tipo.valor || semanticXml.tipo))
+      || xml.tipo
+      || xml.tipo_produto
+      || '';
+    const tipoCds = produto?.tipo
+      || produto?.tipo_produto
+      || (pendencia?.candidatoSelecionado?.atributosExtraidos?.tipo)
+      || '';
+
     const comparacao = I?.montarComparacaoVisual
       ? I.montarComparacaoVisual(xml, produto || {}, {
         fornecedorXml: sessao.fornecedor,
-        fornecedor: sessao.fornecedor
+        fornecedor: sessao.fornecedor,
+        tipoXml,
+        tipoCds
       })
       : { linhas: [], divergencias: [], iguais: 0, total: 0 };
 
@@ -873,6 +889,64 @@
         <p class="miip-central-resumo-final-msg mb-0">${escapeHtml(estado.inteligencia.mensagemResumo || 'Nenhum preço será alterado automaticamente.')}</p>
       </div>
     `;
+  }
+
+  /**
+   * Tela final da revisão: um único CTA — Finalizar Entrada → abre Compras.
+   */
+  function renderTelaFinalizarEntrada() {
+    const { sessao } = estado;
+    const ind = estado?.inteligencia?.indicadores;
+    const total = sessao.pendencias.length || sessao.itens.length || 0;
+    const resolvidas = sessao.resolvidas.length;
+    const ignoradas = sessao.ignoradas.length;
+
+    $('#miipCentralResumo').html(`
+      <div class="miip-central-resumo miip-central-resumo--finalizar">
+        <strong><i class="fas fa-check-circle text-success me-1"></i> Revisão concluída</strong>
+        <span class="ms-2 text-muted">${resolvidas} confirmado(s) · ${ignoradas} ignorado(s) · ${total} item(ns)</span>
+      </div>
+    `);
+    $('#miipCentralLista').html('');
+    $('#miipCentralDetalhes').html(`
+      <div class="p-4 text-center miip-central-finalizar-entrada">
+        <h4 class="mb-2">Pronto para finalizar a entrada</h4>
+        <p class="text-muted mb-4">
+          As decisões foram salvas. Ao finalizar, a Compra será aberta automaticamente
+          com os dados da NF-e para conferência. A compra <strong>não</strong> será gravada automaticamente.
+        </p>
+        ${ind ? `
+          <div class="miip-central-resumo-final mb-4 d-inline-block text-start">
+            <div class="miip-central-resumo-final-grid">
+              <span>Produtos: <strong>${ind.produtos}</strong></span>
+              <span>Produtos Novos: <strong>${ind.produtosNovos}</strong></span>
+              <span>Custo Alterado: <strong>${ind.custoAlterado}</strong></span>
+              <span>Sem Cadastro: <strong>${ind.semCadastro}</strong></span>
+            </div>
+          </div>
+        ` : ''}
+        <div>
+          <button type="button" class="btn btn-success btn-lg" id="miipCentralBtnFinalizarEntrada">
+            <i class="fas fa-check-double me-1"></i> Finalizar Entrada
+          </button>
+        </div>
+        <p class="small text-muted mt-3 mb-0">Você será levado para Compras para conferir e salvar.</p>
+      </div>
+    `);
+    $('#miipCentralCandidato').html('');
+    $('#miipCentralResumoFinal').html('');
+    $('#miipCentralContador').text('Revisão concluída');
+    $('#miipCentralProgressoPersistente').html(
+      '<span class="miip-central-progresso-label">Pronto</span><strong>Finalizar Entrada para abrir Compras</strong>'
+    );
+
+    $('#miipCentralBtnFinalizarEntrada').off('click.miipFinalizar').on('click.miipFinalizar', function () {
+      const $btn = $(this);
+      if ($btn.prop('disabled') || estado?._encerrando) return;
+      $btn.prop('disabled', true);
+      $btn.html('<i class="fas fa-spinner fa-spin me-1"></i> Finalizando entrada...');
+      encerrarRevisaoAutomaticamente('finalizar_entrada_manual');
+    });
   }
 
   function renderAcoesRapidasDocumento() {
@@ -1370,7 +1444,8 @@
     const I = intel();
 
     if (abertas === 0) {
-      encerrarRevisaoAutomaticamente('todas_pendencias_resolvidas');
+      estado.sessao.fase = 'final';
+      renderTelaFinalizarEntrada();
       return;
     }
 
@@ -1419,14 +1494,14 @@
   }
 
   /**
-   * RC7.5 — encerra a Central MIIP e devolve o controle ao caller (Central de Entradas).
-   * Nunca navega para Pedido/Compra daqui.
+   * Encerra a Central MIIP e devolve ao caller (Central), que chama finalizar-entrada
+   * e navega automaticamente para Compras.
    */
   function encerrarRevisaoAutomaticamente(motivo) {
     if (!estado || estado._encerrando) return;
     estado._encerrando = true;
     estado.sessao.fase = 'final';
-    notificar('Revisão MIIP concluída. Retornando à Central de Entradas…', 'success');
+    notificar('Finalizando entrada… Abrindo compra…', 'success');
     concluirRevisao({ motivoEncerramento: motivo || 'auto' });
   }
 
@@ -1668,7 +1743,8 @@
       }
 
       if (contarAbertas(estado.sessao) === 0) {
-        encerrarRevisaoAutomaticamente('ultimo_item_resolvido');
+        estado.sessao.fase = 'final';
+        renderTelaFinalizarEntrada();
         return;
       }
 
@@ -1700,7 +1776,8 @@
       }
 
       if (contarAbertas(estado.sessao) === 0) {
-        encerrarRevisaoAutomaticamente('ultimo_item_ignorado');
+        estado.sessao.fase = 'final';
+        renderTelaFinalizarEntrada();
         return;
       }
 
@@ -2641,11 +2718,12 @@
         // RC3.7.6 — espelho read-only (não altera conclusão)
         inteligenciaComercial: ind ? { ...ind } : null
       },
-      // RC7.5 — caller (Central) decide o próximo passo; MIIP não abre Compra/Pedido.
+      // Caller (Central) chama finalizar-entrada e abre Compras automaticamente.
       navegacao: {
-        abrirCompra: false,
+        abrirCompra: true,
         abrirPedido: false,
-        permanecerNaCentral: true,
+        permanecerNaCentral: false,
+        proximaAcao: 'ABRIR_COMPRA',
         motivo: meta?.motivoEncerramento || 'manual'
       }
     };
@@ -2777,11 +2855,16 @@
       sessao
     );
 
-    // RC7.5 — sem pendências: conclui e devolve à Central (sem UI de Compra).
-    if (estado.sessao.pendencias.length === 0 || contarAbertas(estado.sessao) === 0) {
-      encerrarRevisaoAutomaticamente(
-        estado.sessao.pendencias.length === 0 ? 'xml_sem_pendencias' : 'todas_pendencias_resolvidas'
-      );
+    // Sem pendências no XML: encerra e a Central abre Compras.
+    // Com pendências já todas resolvidas: mostra CTA Finalizar Entrada.
+    if (estado.sessao.pendencias.length === 0) {
+      encerrarRevisaoAutomaticamente('xml_sem_pendencias');
+      return;
+    }
+    if (contarAbertas(estado.sessao) === 0) {
+      abrirModal();
+      estado.sessao.fase = 'final';
+      renderTelaFinalizarEntrada();
       return;
     }
 

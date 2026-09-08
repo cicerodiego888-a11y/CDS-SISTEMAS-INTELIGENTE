@@ -31,19 +31,19 @@ flowchart TD
     I --> J[MIIP + MIP]
     J --> K[Persistência em parseJson + miipResumoJson]
     K --> L{Há pendências MIIP?}
-    L -->|Sim| M[AGUARDANDO_REVISAO]
-    L -->|Não| N[PRONTA_PARA_COMPRA]
-    M --> O[concluirRevisao]
-    O --> P[CentralComprasBridgeService]
-    N --> P
-    P --> Q[Payload de compra / abrir compra]
-    Q --> R[rotas/compras.js]
+    L -->|Sim| M[EM_REVISAO]
+    L -->|Não| N[PRONTA_IMPORTACAO — estado interno]
+    M --> O[Finalizar Entrada]
+    N --> O
+    O --> P[CentralComprasBridgeService.finalizarEntrada]
+    P --> Q[EM_IMPORTACAO + payload / abre Compras]
+    Q --> R[rotas/compras.js — Salvar Compra]
     R --> S[processarItensCompra]
     S --> T[resolverQuantidadesEstoqueCompraItem]
     T --> U[compras_itens + produtos + estoque]
     U --> V[Custo / preço de venda sugerido / estoque]
+    R --> W[vincularCompra → IMPORTADA]
 ```
-
 ---
 
 ## 2. Mapa do pipeline por camada

@@ -8,7 +8,9 @@ function main() {
   });
 
   assert.strictEqual(retorno.documentoId, 42);
-  assert.strictEqual(retorno.focarImportarCompra, true);
+  assert.strictEqual(retorno.focarImportarCompra, false);
+  assert.strictEqual(retorno.navegarParaCompras, true);
+  assert.strictEqual(retorno.labelCta, 'Finalizar Entrada');
   assert.strictEqual(retorno.aba, 'resumo');
   assert.strictEqual(retorno.seletorImportarCompra, '#centralBtnAbrirCompra');
 

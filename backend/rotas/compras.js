@@ -95,19 +95,61 @@ function _setComprasMipServiceForTests(svc) {
 
 /**
  * Vínculo oficial via Orchestrator (RC3) — mesmo pipeline da Central.
+ * Retry controlado; nunca engole erro silenciosamente.
+ * A compra já foi COMMIT — falha de vínculo retorna estado reconciliável.
+ *
  * @param {number|string|null} centralDocumentoId
  * @param {number} compraId
  * @param {number|null} usuarioId
- * @returns {Promise<void>}
+ * @returns {Promise<{ok: boolean, ignorado?: boolean, reconciliacaoPendente?: boolean, erro?: string, compraId?: number, documento?: Object}>}
  */
 async function vincularDocumentoCentralAposCompra(centralDocumentoId, compraId, usuarioId) {
-  if (!centralDocumentoId) return;
-
-  try {
-    await centralOrchestrator.vincularCompra(centralDocumentoId, compraId, { usuarioId });
-  } catch (err) {
-    logCentralErro('COMPRAS', err, { documentoId: centralDocumentoId, compraId });
+  if (!centralDocumentoId) {
+    return { ok: true, ignorado: true };
   }
+
+  const maxTentativas = 3;
+  let ultimoErro = null;
+
+  for (let tentativa = 1; tentativa <= maxTentativas; tentativa += 1) {
+    try {
+      const resultado = await centralOrchestrator.vincularCompra(centralDocumentoId, compraId, { usuarioId });
+      return {
+        ok: true,
+        compraId: Number(compraId),
+        documentoId: Number(centralDocumentoId),
+        documento: resultado?.documento || null,
+        idempotente: resultado?.idempotente === true,
+        tentativa
+      };
+    } catch (err) {
+      ultimoErro = err;
+      logCentralErro('COMPRAS', err, {
+        documentoId: centralDocumentoId,
+        compraId,
+        tentativa,
+        codigo: err?.codigo || null
+      });
+      if (tentativa < maxTentativas) {
+        await new Promise((resolve) => setTimeout(resolve, 80 * tentativa));
+      }
+    }
+  }
+
+  console.error('[COMPRAS][vinculo-central] reconciliacao_pendente', {
+    documentoId: centralDocumentoId,
+    compraId,
+    erro: ultimoErro?.message
+  });
+
+  return {
+    ok: false,
+    reconciliacaoPendente: true,
+    documentoId: Number(centralDocumentoId),
+    compraId: Number(compraId),
+    erro: ultimoErro?.message || 'Falha ao vincular documento Central à compra',
+    codigo: ultimoErro?.codigo || 'VINCULO_CENTRAL_FALHOU'
+  };
 }
 
 function agoraLocalBrasil() {
@@ -1554,7 +1596,25 @@ router.post('/', (req, res) => {
             };
 
             vincularDocumentoCentralAposCompra(centralDocumentoId, compraId, req.user?.id)
-              .finally(() => res.json(payloadResposta));
+              .then((vinculoCentral) => {
+                payloadResposta.vinculoCentral = vinculoCentral;
+                if (vinculoCentral && vinculoCentral.ok === false) {
+                  payloadResposta.aviso = 'Compra gravada, mas o vínculo com a Central ficou pendente de reconciliação.';
+                }
+                return res.json(payloadResposta);
+              })
+              .catch((vinculoErr) => {
+                console.error('[COMPRAS][vinculo-central] erro inesperado', vinculoErr);
+                payloadResposta.vinculoCentral = {
+                  ok: false,
+                  reconciliacaoPendente: true,
+                  documentoId: Number(centralDocumentoId),
+                  compraId: Number(compraId),
+                  erro: vinculoErr?.message || 'Erro inesperado no vínculo'
+                };
+                payloadResposta.aviso = 'Compra gravada, mas o vínculo com a Central ficou pendente de reconciliação.';
+                return res.json(payloadResposta);
+              });
           });
         } else {
           // Compra Normal: process items and create financial records
@@ -1630,7 +1690,25 @@ router.post('/', (req, res) => {
               };
 
               vincularDocumentoCentralAposCompra(centralDocumentoId, compraId, req.user?.id)
-                .finally(() => res.json(payloadResposta));
+                .then((vinculoCentral) => {
+                  payloadResposta.vinculoCentral = vinculoCentral;
+                  if (vinculoCentral && vinculoCentral.ok === false) {
+                    payloadResposta.aviso = 'Compra gravada, mas o vínculo com a Central ficou pendente de reconciliação.';
+                  }
+                  return res.json(payloadResposta);
+                })
+                .catch((vinculoErr) => {
+                  console.error('[COMPRAS][vinculo-central] erro inesperado', vinculoErr);
+                  payloadResposta.vinculoCentral = {
+                    ok: false,
+                    reconciliacaoPendente: true,
+                    documentoId: Number(centralDocumentoId),
+                    compraId: Number(compraId),
+                    erro: vinculoErr?.message || 'Erro inesperado no vínculo'
+                  };
+                  payloadResposta.aviso = 'Compra gravada, mas o vínculo com a Central ficou pendente de reconciliação.';
+                  return res.json(payloadResposta);
+                });
             });
           });
         }

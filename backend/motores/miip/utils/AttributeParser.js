@@ -72,6 +72,10 @@ function carregarConfig(caminhoDir = DEFAULT_CONFIG_DIR) {
     marcas: new Set((brands.marcas ?? []).map((m) => m.toUpperCase())),
     tecnologias: new Set((technologies.tecnologias ?? []).map((t) => t.toUpperCase())),
     tipos: new Set((technologies.tipos ?? []).map((t) => t.toUpperCase())),
+    tiposCompostos: (technologies.tiposCompostos ?? [])
+      .map((t) => String(t).toUpperCase().replace(/-/g, ' ').replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .sort((a, b) => b.length - a.length),
     embalagens: new Set((packages.embalagens ?? []).map((e) => e.toUpperCase())),
     unidades: new Set((units.unidades ?? []).map((u) => u.toUpperCase())),
     cores: new Set((colors.cores ?? []).map((c) => c.toUpperCase())),
@@ -239,6 +243,63 @@ function extrairMedida(token, resultado) {
 }
 
 /**
+ * Palavras que são componente/característica — não devem virar tipo
+ * quando existe um tipo comercial explícito na descrição.
+ */
+const COMPONENTES_NAO_TIPO = new Set([
+  'CABO', 'ALMA', 'PLASTICO', 'PLÁSTICO', 'ACO', 'AÇO', 'INOX', 'INOXIDAVEL',
+  'FLEXIVEL', 'COMPRIDO', 'METAL', 'CAIXA', 'UN', 'PCS', 'CX', 'COM', 'DE',
+  'DA', 'DO', 'PARA', 'P'
+]);
+
+/**
+ * Tipos compostos (ex.: PASSA FIO) — maior primeiro.
+ *
+ * @param {CanonicalToken[]} tokens
+ * @param {Object} config
+ * @param {Object<string, SemanticAttribute>} resultado
+ * @param {Set<number>} usados
+ */
+function extrairTipoComposto(tokens, config, resultado, usados) {
+  if (resultado.tipo) return;
+  const compostos = config.tiposCompostos || [];
+  if (!compostos.length) return;
+
+  const textos = tokens.map((t) => String(t.textoCanonico || '').toUpperCase());
+
+  for (const composto of compostos) {
+    const partes = composto.split(/\s+/).filter(Boolean);
+    if (partes.length < 2) continue;
+
+    for (let i = 0; i <= textos.length - partes.length; i += 1) {
+      let ok = true;
+      for (let j = 0; j < partes.length; j += 1) {
+        if (usados.has(tokens[i + j].posicao)) {
+          ok = false;
+          break;
+        }
+        if (textos[i + j] !== partes[j]) {
+          ok = false;
+          break;
+        }
+      }
+      if (!ok) continue;
+
+      resultado.tipo = criarAtributo(
+        'tipo',
+        composto,
+        CONFIANCA.DICIONARIO,
+        ORIGEM.DICIONARIO
+      );
+      for (let j = 0; j < partes.length; j += 1) {
+        usados.add(tokens[i + j].posicao);
+      }
+      return;
+    }
+  }
+}
+
+/**
  * @param {CanonicalToken} token
  * @param {Object} config
  * @param {Object<string, SemanticAttribute>} resultado
@@ -253,6 +314,7 @@ function extrairPorDicionario(token, config, resultado, usados) {
     return;
   }
 
+  // Tipo comercial: não permitir componente (CABO/ALMA) sobrescrever tipo já definido
   if (config.tipos.has(texto) && !resultado.tipo) {
     resultado.tipo = criarAtributo('tipo', texto, CONFIANCA.DICIONARIO, ORIGEM.DICIONARIO);
     usados.add(token.posicao);
@@ -335,7 +397,7 @@ function extrairQuantidadeEmbalagem(tokens, resultado) {
 function extrairTipoInferido(tokens, resultado, usados) {
   if (resultado.tipo) return;
 
-  const candidato = tokens.find((token) => {
+  const candidatos = tokens.filter((token) => {
     if (usados.has(token.posicao)) return false;
     const texto = token.textoCanonico.toUpperCase();
     if (ehNumeroPuro(texto)) return false;
@@ -346,14 +408,18 @@ function extrairTipoInferido(tokens, resultado, usados) {
     return token.tipo === TokenType.PALAVRA || token.tipo === TokenType.DESCONHECIDO;
   });
 
-  if (candidato) {
+  // Preferir palavra comercial; componentes (CABO/ALMA) só se for a única opção
+  const preferidos = candidatos.filter((t) => !COMPONENTES_NAO_TIPO.has(t.textoCanonico.toUpperCase()));
+  const escolhido = preferidos[0] || candidatos[0];
+
+  if (escolhido) {
     resultado.tipo = criarAtributo(
       'tipo',
-      candidato.textoCanonico,
+      escolhido.textoCanonico,
       CONFIANCA.INFERENCIA,
       ORIGEM.INFERENCIA
     );
-    usados.add(candidato.posicao);
+    usados.add(escolhido.posicao);
   }
 }
 
@@ -420,6 +486,23 @@ function extrairAtributos(canonicalProduct, opcoes = {}) {
       }
     }
   });
+
+  // 1) tipos compostos (PASSA FIO) antes de token único
+  extrairTipoComposto(tokens, config, resultado, usados);
+
+  // 2) Passagem dedicada a tipos do dicionário (esquerda → direita)
+  //    evita que material/componente seja resolvido antes do tipo comercial.
+  if (!resultado.tipo) {
+    for (const token of tokens) {
+      if (usados.has(token.posicao)) continue;
+      const texto = token.textoCanonico.toUpperCase();
+      if (config.tipos.has(texto)) {
+        resultado.tipo = criarAtributo('tipo', texto, CONFIANCA.DICIONARIO, ORIGEM.DICIONARIO);
+        usados.add(token.posicao);
+        break;
+      }
+    }
+  }
 
   tokens.forEach((token) => {
     if (!usados.has(token.posicao)) {

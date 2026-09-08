@@ -70,9 +70,16 @@ DocumentoDfeClassifier
     ↓
 CentralProcessamentoService (Parser Oficial → MIIP)  ← só NFE/PROC_NFE
     ↓
-Revisão / PRONTA_PARA_COMPRA
+Revisão MIIP (somente se houver pendências)
     ↓
-Compras (abrir-compra → saveCompra → Orchestrator.vincularCompra)
+POST /:id/finalizar-entrada  (caso de uso único)
+    ├─ conclui revisão se EM_REVISAO
+    ├─ PRONTA_IMPORTACAO (estado interno)
+    └─ EM_IMPORTACAO + payload Bridge → abre Compras
+    ↓
+Usuário confere e Salva Compra (Motor de Compras)
+    ↓
+Orchestrator.vincularCompra → IMPORTADA/GRAVADA
     ↓
 ERP
 
@@ -80,6 +87,7 @@ ERP
     → AGUARDANDO_XML_COMPLETO (sem Parser)
 ```
 
+Documentos em `EM_IMPORTACAO` interrompidos (tela fechada sem salvar) reaparecem na Central com **Retomar Importação** — sem duplicar compra.
 ## Configuração Enterprise (RC4)
 
 Provider oficial único: **`CentralConfiguracaoService`**.

@@ -28,6 +28,8 @@ const centralEntradasState = {
     notasNovasUltimaSync: 0,
     processando: false,
     etapaProcessamento: null,
+    finalizandoEntrada: false,
+    finalizandoEntradaDocumentoId: null,
     detalheAtual: null,
     xmlAtual: null,
     parseAtual: null,
@@ -79,8 +81,8 @@ const CENTRAL_STATUS_META = {
     XML_INDISPONIVEL: { cor: '#dc3545', bg: 'rgba(220,53,69,.12)', icone: 'fa-file-excel', badge: 'bg-danger', descricao: 'XML indisponível' },
     XML_COMPLETO: { cor: '#0d6efd', bg: 'rgba(13,110,253,.10)', icone: 'fa-file-code', badge: 'bg-primary', descricao: 'XML completo' },
     EM_REVISAO: { cor: '#fd7e14', bg: 'rgba(253,126,20,.12)', icone: 'fa-user-check', badge: 'central-badge-orange', descricao: 'Em revisão MIIP' },
-    PRONTA_IMPORTACAO: { cor: '#198754', bg: 'rgba(25,135,84,.12)', icone: 'fa-check-circle', badge: 'bg-success', descricao: 'Pronta para importar' },
-    EM_IMPORTACAO: { cor: '#6610f2', bg: 'rgba(102,16,242,.12)', icone: 'fa-shopping-cart', badge: 'bg-info', descricao: 'Importando compra' },
+    PRONTA_IMPORTACAO: { cor: '#198754', bg: 'rgba(25,135,84,.12)', icone: 'fa-check-circle', badge: 'bg-success', descricao: 'Aguardando finalização' },
+    EM_IMPORTACAO: { cor: '#6610f2', bg: 'rgba(102,16,242,.12)', icone: 'fa-shopping-cart', badge: 'bg-info', descricao: 'Em importação' },
     IMPORTADA: { cor: '#6c757d', bg: 'rgba(108,117,125,.12)', icone: 'fa-archive', badge: 'bg-secondary', descricao: 'Importada' },
     FINALIZADA: { cor: '#212529', bg: 'rgba(33,37,41,.10)', icone: 'fa-flag-checkered', badge: 'bg-dark', descricao: 'Finalizada' },
     CANCELADA: { cor: '#dc3545', bg: 'rgba(220,53,69,.12)', icone: 'fa-ban', badge: 'bg-danger', descricao: 'Cancelada' },
@@ -93,8 +95,8 @@ const CENTRAL_STATUS_META = {
     EM_PROCESSAMENTO: { cor: '#f59e0b', bg: 'rgba(245,158,11,.12)', icone: 'fa-cog', badge: 'bg-warning text-dark', descricao: 'Processando XML' },
     AGUARDANDO_REVISAO: { cor: '#fd7e14', bg: 'rgba(253,126,20,.12)', icone: 'fa-user-check', badge: 'central-badge-orange', descricao: 'Em revisão' },
     AGUARDANDO_XML_COMPLETO: { cor: '#64748b', bg: 'rgba(100,116,139,.12)', icone: 'fa-file-import', badge: 'bg-secondary', descricao: 'Resumo recebido' },
-    REVISADA: { cor: '#0dcaf0', bg: 'rgba(13,202,240,.12)', icone: 'fa-clipboard-check', badge: 'bg-info', descricao: 'Pronta' },
-    PRONTA_PARA_COMPRA: { cor: '#198754', bg: 'rgba(25,135,84,.12)', icone: 'fa-check-circle', badge: 'bg-success', descricao: 'Pronta para importar' },
+    REVISADA: { cor: '#0dcaf0', bg: 'rgba(13,202,240,.12)', icone: 'fa-clipboard-check', badge: 'bg-info', descricao: 'Aguardando finalização' },
+    PRONTA_PARA_COMPRA: { cor: '#198754', bg: 'rgba(25,135,84,.12)', icone: 'fa-check-circle', badge: 'bg-success', descricao: 'Aguardando finalização' },
     EM_COMPRA: { cor: '#6610f2', bg: 'rgba(102,16,242,.12)', icone: 'fa-shopping-cart', badge: 'bg-info', descricao: 'Em importação' },
     GRAVADA: { cor: '#6c757d', bg: 'rgba(108,117,125,.12)', icone: 'fa-archive', badge: 'bg-secondary', descricao: 'Importada' },
     DESCARTADA: { cor: '#212529', bg: 'rgba(33,37,41,.10)', icone: 'fa-trash-alt', badge: 'bg-dark', descricao: 'Finalizada' },
@@ -788,7 +790,7 @@ const CENTRAL_UX1_FILTROS = [
     { codigo: 'todos', label: 'Todos' },
     { codigo: 'pendentes', label: 'Pendentes', filtroRapido: 'pendentes' },
     { codigo: 'em_revisao', label: 'Em Revisão', filtroRapido: 'em_revisao' },
-    { codigo: 'prontas', label: 'Prontas', filtroRapido: 'prontas' },
+    { codigo: 'prontas', label: 'Pendentes de Compra', filtroRapido: 'prontas' },
     { codigo: 'importadas', label: 'Importadas', filtroRapido: 'importadas' },
     { codigo: 'canceladas', label: 'Canceladas', filtroRapido: 'canceladas' },
     { codigo: 'erro', label: 'Erro', filtroRapido: 'erro' }
@@ -1006,9 +1008,9 @@ function renderCardsUx1Central(contadores = {}, indicadores = {}) {
     const cards = [
         { codigo: 'hoje', titulo: 'Recebidos Hoje', valor: hoje, cor: '#0d6efd', emoji: '📥' },
         { codigo: 'pendentes', titulo: 'Pendentes', valor: pendentes, cor: '#64748b', emoji: '📋' },
-        { codigo: 'em_revisao', titulo: 'Em Revisão', valor: revisar, cor: '#f59e0b', emoji: '🟡' },
-        { codigo: 'prontas', titulo: 'Prontas', valor: prontas, cor: '#198754', emoji: '🟢' },
-        { codigo: 'erro', titulo: 'Erro / XML Indisp.', valor: erro, cor: '#dc3545', emoji: '🔴' }
+        { codigo: 'em_revisao', titulo: 'Aguardando Revisão', valor: revisar, cor: '#f59e0b', emoji: '🟡' },
+        { codigo: 'prontas', titulo: 'Pendentes de Compra', valor: prontas, cor: '#198754', emoji: '🟢' },
+        { codigo: 'erro', titulo: 'Precisam de Atenção', valor: erro, cor: '#dc3545', emoji: '🔴' }
     ];
 
     return cards.map((card) => `
@@ -1208,9 +1210,9 @@ function renderCardsDashboardCentral(contadores = {}) {
         { titulo: 'Novas Notas', valor: contadores.novas ?? 0, status: 'SINCRONIZADA', subtitulo: 'aguardando processamento', trendKey: 'novas' },
         { titulo: 'Em Processamento', valor: contadores.emProcessamento ?? 0, status: 'EM_PROCESSAMENTO', subtitulo: 'pipeline em execução', trendKey: 'emProcessamento' },
         { titulo: 'Aguardando Revisão', valor: contadores.aguardandoRevisao ?? 0, status: 'AGUARDANDO_REVISAO', subtitulo: 'pendências MIIP', trendKey: 'aguardandoRevisao', invertTrend: true },
-        { titulo: 'Prontas para Compra', valor: contadores.prontasParaCompra ?? 0, status: 'PRONTA_PARA_COMPRA', subtitulo: 'prontas para lançamento', trendKey: 'prontasParaCompra' },
+        { titulo: 'Pendentes de Compra', valor: contadores.prontasParaCompra ?? 0, status: 'PRONTA_PARA_COMPRA', subtitulo: 'aguardando finalização / importação', trendKey: 'prontasParaCompra' },
         { titulo: 'Compras Gravadas', valor: contadores.gravadas ?? 0, status: 'GRAVADA', subtitulo: 'fluxo concluído', trendKey: 'gravadas' },
-        { titulo: 'Erros', valor: contadores.erros ?? 0, status: 'ERRO', subtitulo: 'exigem atenção', trendKey: 'erros', invertTrend: true }
+        { titulo: 'Precisam de Atenção', valor: contadores.erros ?? 0, status: 'ERRO', subtitulo: 'exigem atenção', trendKey: 'erros', invertTrend: true }
     ];
 
     return cards.map((card) => {
@@ -2965,7 +2967,7 @@ function listarFiltrosAtivosRestritivosCentral() {
         pendentes: 'Pendentes',
         em_revisao: 'Em Revisão',
         revisar: 'Em Revisão',
-        prontas: 'Prontas',
+        prontas: 'Pendentes de Compra',
         importadas: 'Importadas',
         canceladas: 'Canceladas',
         denegadas: 'Denegadas',
@@ -3706,6 +3708,11 @@ function renderAbaCompraCentral(doc) {
     }
 
     const podeAbrir = ['PRONTA_IMPORTACAO', 'EM_IMPORTACAO', 'PRONTA_PARA_COMPRA', 'EM_COMPRA', 'REVISADA'].includes(doc.status) && doc.parseDisponivel;
+    const emImportacao = ['EM_IMPORTACAO', 'EM_COMPRA'].includes(doc.status);
+    const labelBtn = emImportacao ? 'Retomar Importação' : 'Finalizar Entrada';
+    const tituloBtn = emImportacao
+        ? 'Retomar importação da NF-e em Compras'
+        : 'Finalizar entrada e abrir Compras com a NF preparada';
 
     return `
         <div class="text-muted small mb-3">
@@ -3713,8 +3720,8 @@ function renderAbaCompraCentral(doc) {
             O usuário pode ajustar produtos, valores, pagamento e fornecedor antes de salvar.
         </div>
         ${podeAbrir
-            ? `<button type="button" class="btn btn-success btn-sm w-100" id="centralBtnAbrirCompra" data-doc-id="${doc.id}">
-                <i class="fas fa-shopping-cart me-1"></i> Abrir em Compras
+            ? `<button type="button" class="btn btn-success btn-sm w-100" id="centralBtnAbrirCompra" data-doc-id="${doc.id}" title="${escapeHtmlCentralEntradas(tituloBtn)}">
+                <i class="fas fa-shopping-cart me-1"></i> ${escapeHtmlCentralEntradas(labelBtn)}
             </button>`
             : `<div class="alert alert-light small py-2 mb-0"><i class="fas fa-lock me-1"></i>Disponível quando o documento estiver pronto para compra.</div>`}
     `;
@@ -3755,8 +3762,16 @@ function renderCtaImportarCompraCentral(doc) {
             <i class="fas fa-lock me-1"></i> ${escapeHtmlCentralEntradas(acao.label || 'Aguardando')}
         </button>`;
     }
-    return `<button type="button" class="btn btn-success central-ux1-btn-importar" id="centralBtnAbrirCompra" data-doc-id="${doc.id}" title="Importar compra a partir desta NF-e">
-        <i class="fas fa-shopping-cart me-1"></i> Importar Compra
+
+    const emImportacao = acao.acao === 'retomar' || ['EM_IMPORTACAO', 'EM_COMPRA'].includes(doc.status);
+    const label = emImportacao ? 'Retomar Importação' : 'Finalizar Entrada';
+    const titulo = emImportacao
+        ? 'Retomar importação interrompida em Compras'
+        : 'Finalizar entrada e abrir Compras automaticamente';
+    const icon = emImportacao ? 'fa-redo' : 'fa-check-double';
+
+    return `<button type="button" class="btn btn-success central-ux1-btn-importar" id="centralBtnAbrirCompra" data-doc-id="${doc.id}" title="${escapeHtmlCentralEntradas(titulo)}">
+        <i class="fas ${icon} me-1"></i> ${escapeHtmlCentralEntradas(label)}
     </button>`;
 }
 
@@ -4077,52 +4092,18 @@ async function abrirCentralRevisaoMiip(documentoId, dadosImportacao, opcoesAbert
             }
         },
         onConcluir: async function (resultado) {
-            let finalizouOk = false;
             try {
-                console.info('[MIIP] concluir revisão', { documentoId, correlationId });
+                console.info('[MIIP] finalizar entrada', { documentoId, correlationId });
                 const itens = resultado?.itens || dadosImportacao.itens;
-                await centralEntradasFetch(`/${documentoId}/revisar/concluir`, {
-                    method: 'POST',
-                    body: JSON.stringify({
-                        itens,
-                        usuario_id: obterUsuarioLogadoCentral()?.id,
-                        correlation_id: correlationId
-                    })
-                });
-                finalizouOk = true;
-                showNotification('Documento pronto para lançamento.', 'success');
-            } catch (error) {
-                console.error('[MIIP] concluir revisão', error);
-                showNotification('Erro ao finalizar revisão: ' + error.message, 'danger');
-                return;
-            }
-
-            try {
-                console.info('[MIIP] refresh Central', { documentoId });
-                await Promise.all([
-                    carregarDashboardCentral(),
-                    carregarDocumentosCentral()
-                ]);
-            } catch (error) {
-                console.warn('[MIIP] refresh Central', error);
-                showNotification('Revisão salva, mas a Central não atualizou automaticamente. Atualize a lista.', 'warning');
-            }
-
-            try {
-                console.info('[MIIP] navegação', { documentoId });
-                const docAtualizado = centralEntradasState.documentos?.find((d) => Number(d.id) === Number(documentoId))
-                    || { status: 'PRONTA_IMPORTACAO', parseDisponivel: true };
-                await selecionarDocumentoCentral(documentoId);
-                aplicarRetornoCentralDepoisDaRevisao(documentoId, {
-                    ...docAtualizado,
-                    status: docAtualizado.status || 'PRONTA_IMPORTACAO',
-                    parseDisponivel: docAtualizado.parseDisponivel !== false
+                await finalizarEntradaDesdeCentral(documentoId, {
+                    itens,
+                    correlationId,
+                    origem: 'revisao_miip',
+                    mensagemProcessando: 'Finalizando entrada...'
                 });
             } catch (error) {
-                console.warn('[MIIP] navegação', error);
-                if (finalizouOk) {
-                    showNotification('Revisão concluída. Selecione o documento na lista se necessário.', 'info');
-                }
+                console.error('[MIIP] finalizar entrada', error);
+                showNotification('Erro ao finalizar entrada: ' + (error.message || error), 'danger');
             }
         },
         onCancelar: function (meta) {
@@ -4172,6 +4153,11 @@ async function processarDocumentoCentral(documentoId) {
 
         if (resultado.proximaAcao === 'revisar_produtos' && resultado.parse) {
             await abrirCentralRevisaoMiip(documentoId, resultado.parse);
+        } else if (resultado.proximaAcao === 'abrir_compra') {
+            await finalizarEntradaDesdeCentral(documentoId, {
+                origem: 'processamento_sem_pendencias',
+                mensagemProcessando: 'Abrindo compra...'
+            });
         }
     } catch (error) {
         showNotification('Erro ao processar: ' + error.message, 'danger');
@@ -4581,6 +4567,8 @@ async function abrirRevisaoMiipCentral(documentoId, opcoesAbertura = {}) {
 }
 
 function aplicarRetornoCentralDepoisDaRevisao(documentoId, doc) {
+    // Compatibilidade: revisão agora finaliza entrada e navega para Compras.
+    // Mantido para documentos legados / chamadas residuais.
     const reviewUx = (typeof window !== 'undefined' && window.CentralEntradasReviewUx)
         || (typeof globalThis !== 'undefined' && globalThis.CentralEntradasReviewUx)
         || null;
@@ -4591,22 +4579,61 @@ function aplicarRetornoCentralDepoisDaRevisao(documentoId, doc) {
 
     centralEntradasState.abaAtiva = retorno.aba || 'resumo';
     centralEntradasState.documentoSelecionadoId = retorno.documentoId;
-    if (retorno.focarImportarCompra) {
-        setTimeout(() => {
-            reviewUx.prepararFocoImportarCompraCentral({ documentoId: retorno.documentoId });
-        }, 250);
-    }
 }
 
-async function abrirCompraDesdeCentral(documentoId) {
+/**
+ * Fluxo único: Finalizar Entrada → prepara payload → abre Compras.
+ * Não grava a compra. Protege contra duplo clique.
+ *
+ * @param {number|string} documentoId
+ * @param {Object} [opcoes]
+ * @returns {Promise<Object|null>}
+ */
+async function finalizarEntradaDesdeCentral(documentoId, opcoes = {}) {
+    const id = Number(documentoId);
+    if (!id) return null;
+
+    if (
+        centralEntradasState.finalizandoEntrada
+        && Number(centralEntradasState.finalizandoEntradaDocumentoId) === id
+    ) {
+        return null;
+    }
+
+    centralEntradasState.finalizandoEntrada = true;
+    centralEntradasState.finalizandoEntradaDocumentoId = id;
+
+    const btn = document.getElementById('centralBtnAbrirCompra');
+    const btnHtmlOriginal = btn ? btn.innerHTML : null;
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = `<i class="fas fa-spinner fa-spin me-1"></i> ${escapeHtmlCentralEntradas(opcoes.mensagemProcessando || 'Finalizando entrada...')}`;
+    }
+
+    showNotification(opcoes.mensagemProcessando || 'Finalizando entrada...', 'info');
+
     try {
-        const resultado = await centralEntradasFetch(`/${documentoId}/abrir-compra`, {
+        const body = {
+            usuario_id: obterUsuarioLogadoCentral()?.id,
+            correlation_id: opcoes.correlationId || null
+        };
+        if (Array.isArray(opcoes.itens)) {
+            body.itens = opcoes.itens;
+        }
+
+        const resultado = await centralEntradasFetch(`/${id}/finalizar-entrada`, {
             method: 'POST',
-            body: JSON.stringify({ usuario_id: obterUsuarioLogadoCentral()?.id })
+            body: JSON.stringify(body)
         });
 
+        if (!resultado?.dadosCompra) {
+            throw new Error('Resposta sem dados da compra para abrir Compras.');
+        }
+
+        showNotification('Abrindo compra...', 'info');
+
         sessionStorage.setItem('central_abrir_compra', JSON.stringify({
-            documentoId: resultado.documentoId || documentoId,
+            documentoId: resultado.documentoId || id,
             dadosCompra: resultado.dadosCompra
         }));
 
@@ -4615,9 +4642,32 @@ async function abrirCompraDesdeCentral(documentoId) {
         } else {
             showNotification('Navegue até Compras para concluir o lançamento.', 'info');
         }
+
+        return resultado;
     } catch (error) {
-        showNotification('Erro ao abrir Compras: ' + error.message, 'danger');
+        const msg = error?.message || String(error);
+        if (error?.codigo === 'DOCUMENTO_JA_IMPORTADO' || /já (possui compra|foi importado)/i.test(msg)) {
+            showNotification(msg, 'warning');
+        } else {
+            showNotification('Erro ao finalizar entrada: ' + msg, 'danger');
+        }
+        throw error;
+    } finally {
+        centralEntradasState.finalizandoEntrada = false;
+        centralEntradasState.finalizandoEntradaDocumentoId = null;
+        if (btn && document.body.contains(btn)) {
+            btn.disabled = false;
+            if (btnHtmlOriginal) btn.innerHTML = btnHtmlOriginal;
+        }
     }
+}
+
+async function abrirCompraDesdeCentral(documentoId) {
+    // Compatibilidade: CTA de retomada / legado usa o mesmo caso de uso único.
+    return finalizarEntradaDesdeCentral(documentoId, {
+        origem: 'cta_central',
+        mensagemProcessando: 'Abrindo compra...'
+    });
 }
 
 async function buscarChaveCentralEntradas() {

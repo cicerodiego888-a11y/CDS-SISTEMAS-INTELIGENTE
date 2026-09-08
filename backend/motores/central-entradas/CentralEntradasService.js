@@ -124,6 +124,10 @@ class CentralEntradasService {
     return this._orchestrator.concluirRevisao(id, dados);
   }
 
+  finalizarEntrada(id, dados = {}) {
+    return this._orchestrator.finalizarEntrada(id, dados);
+  }
+
   obterOuCriarSessaoRevisao(id, opcoes = {}) {
     return this._orchestrator.obterOuCriarSessaoRevisao(id, opcoes);
   }

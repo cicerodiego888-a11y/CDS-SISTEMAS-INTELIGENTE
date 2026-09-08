@@ -911,7 +911,10 @@
    * Comparação linha a linha XML × CDS (UX only).
    */
   function montarComparacaoVisual(xml = {}, produto = {}, ctx = {}) {
+    const tipoXml = xml.tipo || xml.tipo_produto || ctx.tipoXml || '';
+    const tipoCds = produto.tipo || produto.tipo_produto || ctx.tipoCds || '';
     const linhas = [
+      classificarCampoComparacao('Tipo', tipoXml, tipoCds, { tipo: 'texto' }),
       classificarCampoComparacao('Descrição', xml.produto_nome || xml.nome, produto.nome, { tipo: 'texto' }),
       classificarCampoComparacao('GTIN', xml.codigo_barras || xml.gtin, produto.codigoBarras || produto.codigo_barras, { tipo: 'codigo' }),
       classificarCampoComparacao('Marca', xml.marca, produto.marca || produto.marca_nome, { tipo: 'texto' }),
@@ -930,7 +933,11 @@
         produto.embalagem || produto.unidade,
         { tipo: 'unidade' }
       )
-    ];
+    ].filter((l) => {
+      // Oculta linha Tipo quando ambos vazios (não poluir UX)
+      if (l.campo === 'Tipo' && !String(l.xml || '').trim() && !String(l.cds || '').trim()) return false;
+      return true;
+    });
 
     const divergencias = linhas.filter((l) => l.status === COMP_STATUS.DIFERENTE || l.status === COMP_STATUS.SEMELHANTE);
     const iguais = linhas.filter((l) => l.status === COMP_STATUS.IGUAL).length;
@@ -979,11 +986,20 @@
     if (Array.isArray(diagnostico?.motivos) && diagnostico.motivos.length) {
       return diagnostico.motivos.slice(0, 8);
     }
+    const bloqueados = Number(diagnostico?.quantidadeCandidatosBloqueados
+      || diagnostico?.compatibility?.quantidadeCandidatosBloqueados
+      || 0);
+    if (bloqueados > 0) {
+      return [
+        'Nenhum produto CDS compatível encontrado.',
+        'Cadastre um novo produto ou selecione manualmente no catálogo.',
+        `${bloqueados} candidato(s) descartado(s) por incompatibilidade comercial.`
+      ];
+    }
     return [
-      'GTIN inexistente.',
-      'Fornecedor sem associação.',
-      'Descrição não localizada.',
-      'Nenhum produto semelhante.'
+      'Nenhum produto CDS compatível encontrado.',
+      'Cadastre um novo produto ou selecione manualmente no catálogo.',
+      'GTIN inexistente ou sem associação de fornecedor.'
     ];
   }
 

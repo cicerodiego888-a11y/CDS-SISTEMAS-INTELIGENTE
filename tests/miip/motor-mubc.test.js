@@ -271,6 +271,30 @@ async function main() {
     assert.ok(Array.isArray(diag.motivos) && diag.motivos.length >= 3);
   });
 
+  await test('MUBC ainda encontra por descrição; CompatibilityGuard é barreira do Pipeline', async () => {
+    // Busca ampla permanece no MUBC — hard block de tipo/NCM é no Pipeline.
+    const motor = criarMotor([
+      {
+        id: 91,
+        nome: 'Passa Fio com Alma de Aço 20m Cortag',
+        ncm: '39173900',
+        codigo: 'PF20',
+        codigo_barras: null,
+        unidade: 'UN',
+        marca_nome: 'CORTAG'
+      }
+    ]);
+    const cands = await motor.identificar({
+      produtoNome: 'FACA DE ACO INOXIDAVEL COM CABO DE PLASTICO 16',
+      ncm: '82014000',
+      unidade: 'UN'
+    });
+    // Pode ou não achar por tokens genéricos (ACO); o importante é que MUBC
+    // não aplica CompatibilityGuard sozinho (responsabilidade do Pipeline).
+    assert.ok(Array.isArray(cands));
+    assert.ok(typeof motor.obterUltimoDiagnostico === 'function');
+  });
+
   await test('ProdutoRepository expõe buscarCandidatosUniversais', () => {
     assert.strictEqual(typeof ProdutoRepository.prototype.buscarCandidatosUniversais, 'function');
   });

@@ -11,13 +11,22 @@
     return parseOk && ['PRONTA_IMPORTACAO', 'EM_IMPORTACAO', 'PRONTA_PARA_COMPRA', 'EM_COMPRA', 'REVISADA'].includes(statusNormalizado);
   }
 
+  /**
+   * Após revisão, o fluxo oficial navega direto para Compras via finalizar-entrada.
+   * Mantido para compatibilidade com documentos legados / retomada.
+   */
   function montarRetornoCentralDepoisDaRevisao(documentoId, doc) {
+    const status = String(doc?.status || '');
+    const emImportacao = ['EM_IMPORTACAO', 'EM_COMPRA'].includes(status);
     return {
       documentoId: Number(documentoId) || null,
       aba: 'resumo',
-      focarImportarCompra: podeMostrarBotaoImportarCompraCentral(doc?.status, doc?.parseDisponivel),
+      // Não foca mais "Importar Compra" — jornada segue para Compras automaticamente.
+      focarImportarCompra: false,
+      navegarParaCompras: podeMostrarBotaoImportarCompraCentral(doc?.status, doc?.parseDisponivel),
+      labelCta: emImportacao ? 'Retomar Importação' : 'Finalizar Entrada',
       seletorImportarCompra: '#centralBtnAbrirCompra',
-      status: String(doc?.status || '')
+      status
     };
   }
 

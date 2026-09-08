@@ -34,6 +34,8 @@ class CentralComprasBridgeService {
     this._revisaoPersistenteService = deps.revisaoPersistenteService
       ?? deps.revisaoService
       ?? null;
+    /** @private @type {Map<string, Promise>} */
+    this._finalizarEntradaEmAndamento = new Map();
   }
 
   /**
@@ -345,6 +347,128 @@ class CentralComprasBridgeService {
   }
 
   /**
+   * Caso de uso único: concluir revisão (se necessário) + abrir importação em Compras.
+   * Não grava a compra — apenas prepara o payload e transiciona para EM_IMPORTACAO.
+   *
+   * @param {number|string} documentoId
+   * @param {Object} [dados]
+   * @returns {Promise<Object>}
+   */
+  async finalizarEntrada(documentoId, dados = {}) {
+    const chave = String(documentoId);
+    const emAndamento = this._finalizarEntradaEmAndamento.get(chave);
+    if (emAndamento) {
+      return emAndamento;
+    }
+
+    const execucao = this._executarFinalizarEntrada(documentoId, dados)
+      .finally(() => {
+        this._finalizarEntradaEmAndamento.delete(chave);
+      });
+
+    this._finalizarEntradaEmAndamento.set(chave, execucao);
+    return execucao;
+  }
+
+  /**
+   * @private
+   * @param {number|string} documentoId
+   * @param {Object} [dados]
+   * @returns {Promise<Object>}
+   */
+  async _executarFinalizarEntrada(documentoId, dados = {}) {
+    const correlationId = dados.correlationId ?? dados.correlation_id ?? null;
+    const usuarioId = dados.usuarioId ?? dados.usuario_id ?? null;
+    let etapa = 'buscar';
+
+    try {
+      const documento = await this._documentosRepository.buscarPorId(documentoId);
+      if (!documento) {
+        const erro = new Error('Documento não encontrado');
+        erro.statusCode = 404;
+        throw erro;
+      }
+
+      const statusCanonico = normalizarStatus(documento.status);
+      const compraVinculada = Number(documento.compraId || documento.compra_id || 0) || null;
+
+      console.log('[CentralEntradas][finalizarEntrada] start', {
+        correlationId,
+        documentoId,
+        usuarioId,
+        statusAnterior: documento.status,
+        compraVinculada
+      });
+
+      if (
+        compraVinculada
+        || statusCanonico === DocumentoFiscalStatus.IMPORTADA
+        || statusCanonico === DocumentoFiscalStatus.FINALIZADA
+      ) {
+        const erro = new Error(
+          compraVinculada
+            ? `Documento já possui compra vinculada (#${compraVinculada}).`
+            : `Documento já foi importado (status: ${documento.status}).`
+        );
+        erro.statusCode = 409;
+        erro.codigo = 'DOCUMENTO_JA_IMPORTADO';
+        throw erro;
+      }
+
+      etapa = 'revisao';
+      if (statusCanonico === DocumentoFiscalStatus.EM_REVISAO) {
+        await this.concluirRevisao(documentoId, {
+          itens: dados.itens,
+          usuarioId,
+          correlationId,
+          permitirParcial: dados.permitirParcial === true
+        });
+      } else if (
+        statusCanonico !== DocumentoFiscalStatus.PRONTA_IMPORTACAO
+        && statusCanonico !== DocumentoFiscalStatus.EM_IMPORTACAO
+      ) {
+        const erro = new Error(
+          `Documento não pode finalizar entrada no status atual (${documento.status}).`
+        );
+        erro.statusCode = 400;
+        erro.codigo = 'STATUS_INVALIDO_FINALIZAR_ENTRADA';
+        throw erro;
+      }
+
+      etapa = 'abrir_compra';
+      const docAposRevisao = await this._documentosRepository.buscarPorId(documentoId);
+      const statusApos = normalizarStatus(docAposRevisao?.status);
+      const retomada = statusApos === DocumentoFiscalStatus.EM_IMPORTACAO;
+
+      const abertura = await this.registrarAberturaCompra(documentoId, { usuarioId });
+      const statusFinal = abertura?.documento?.status
+        || abertura?.status
+        || DocumentoFiscalStatus.EM_IMPORTACAO;
+
+      return {
+        sucesso: true,
+        documentoId: Number(abertura.documentoId || documentoId),
+        chave: abertura.chave || documento.chave || null,
+        status: statusFinal,
+        proximaAcao: 'ABRIR_COMPRA',
+        dadosCompra: abertura.dadosCompra,
+        documento: abertura.documento,
+        retomada: retomada === true,
+        correlationId
+      };
+    } catch (err) {
+      console.error('[CentralEntradas][finalizarEntrada]', {
+        etapa,
+        correlationId,
+        documentoId,
+        message: err?.message,
+        stack: err?.stack
+      });
+      throw err;
+    }
+  }
+
+  /**
    * @param {number|string} documentoId
    * @param {number|string} compraId
    * @param {Object} [opcoes]
@@ -358,8 +482,35 @@ class CentralComprasBridgeService {
       throw erro;
     }
 
+    const compraIdNum = Number(compraId);
+    const compraExistente = Number(documento.compraId || documento.compra_id || 0) || null;
     const statusAtual = documento.status;
+    const statusCanonico = normalizarStatus(statusAtual);
     const statusDestino = DocumentoFiscalStatus.GRAVADA;
+
+    // Idempotência: já vinculado à mesma compra
+    if (
+      compraExistente
+      && compraExistente === compraIdNum
+      && (statusCanonico === DocumentoFiscalStatus.IMPORTADA
+        || statusCanonico === DocumentoFiscalStatus.FINALIZADA)
+    ) {
+      return {
+        sucesso: true,
+        documento: paraDocumentoDetalheDTO(documento),
+        compraId: compraIdNum,
+        idempotente: true
+      };
+    }
+
+    if (compraExistente && compraExistente !== compraIdNum) {
+      const erro = new Error(
+        `Documento já vinculado à compra #${compraExistente}. Não é permitido vincular outra compra.`
+      );
+      erro.statusCode = 409;
+      erro.codigo = 'COMPRA_JA_VINCULADA';
+      throw erro;
+    }
 
     if (statusAtual !== DocumentoFiscalStatus.EM_COMPRA && statusAtual !== DocumentoFiscalStatus.PRONTA_PARA_COMPRA) {
       const validacao = validarTransicao(statusAtual, statusDestino);
@@ -378,29 +529,48 @@ class CentralComprasBridgeService {
     }
 
     await this._documentosRepository.atualizar(documentoId, {
-      compraId: Number(compraId),
+      compraId: compraIdNum,
       processadoEm: new Date().toISOString()
     });
 
-    await this._transitionService.transicionar(
-      documentoId,
-      DocumentoFiscalStatus.EM_COMPRA,
-      DocumentoFiscalStatus.GRAVADA,
-      {
-        detalhe: `Compra #${compraId} gravada via saveCompra()`,
-        usuarioId: opcoes.usuarioId
-      }
-    );
+    try {
+      await this._transitionService.transicionar(
+        documentoId,
+        DocumentoFiscalStatus.EM_COMPRA,
+        DocumentoFiscalStatus.GRAVADA,
+        {
+          detalhe: `Compra #${compraIdNum} gravada via saveCompra()`,
+          usuarioId: opcoes.usuarioId
+        }
+      );
+    } catch (transicaoErr) {
+      // compra_id já persistido — manter rastreabilidade e propagar falha de estado
+      console.error('[CentralComprasBridge][vincularCompra] falha na transição após gravar compra_id', {
+        documentoId,
+        compraId: compraIdNum,
+        message: transicaoErr?.message
+      });
+      const erro = new Error(
+        `Compra #${compraIdNum} vinculada ao documento, mas falhou a transição de status: ${transicaoErr.message}`
+      );
+      erro.statusCode = 500;
+      erro.codigo = 'VINCULO_TRANSICAO_FALHOU';
+      erro.compraId = compraIdNum;
+      erro.causa = transicaoErr;
+      throw erro;
+    }
 
     const atualizado = await this._documentosRepository.buscarPorId(documentoId);
 
     const { emitirCompraGravada } = require('../utils/centralEventosEmitter');
-    emitirCompraGravada(atualizado, compraId).catch(() => {});
+    emitirCompraGravada(atualizado, compraIdNum).catch((emitErr) => {
+      console.warn('[CentralComprasBridge][vincularCompra] evento compra_gravada:', emitErr?.message);
+    });
 
     return {
       sucesso: true,
       documento: paraDocumentoDetalheDTO(atualizado),
-      compraId: Number(compraId)
+      compraId: compraIdNum
     };
   }
 }

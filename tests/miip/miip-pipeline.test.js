@@ -115,6 +115,39 @@ async function main() {
     assert.ok(response.resultado.decisao.melhorCandidato);
   });
 
+  await test('candidato incompatível descartado não influencia DecisionEngine', async () => {
+    const pipeline = new MiipPipeline({
+      engineExecutor: async () => {
+        // Simula saída pós-CompatibilityGuard: MUBC achou, Guard descartou tudo
+        const lista = [];
+        lista._meta = {
+          produtosPorMotor: [null],
+          compatibilityDiagnostico: {
+            quantidadeCandidatosEncontrados: 1,
+            quantidadeCandidatosCompativeis: 0,
+            quantidadeCandidatosBloqueados: 1,
+            candidatosBloqueados: [{
+              produtoId: 999001,
+              nome: 'Passa Fio com Alma de Aço 20m Cortag',
+              motivos: ['Tipo de produto incompatível']
+            }]
+          }
+        };
+        return lista;
+      }
+    });
+
+    const response = await pipeline.executar(MiipRequest.create({
+      item: {
+        produtoNome: 'FACA DE ACO INOXIDAVEL COM CABO DE PLASTICO 16',
+        ncm: '82014000'
+      }
+    }));
+
+    assert.strictEqual(response.resultado.candidatos.length, 0);
+    assert.ok(!response.resultado.decisao?.melhorCandidato);
+  });
+
   console.log(`\nResultado: ${passou} passou, ${falhou} falhou\n`);
   if (falhou > 0) process.exit(1);
 }

@@ -5667,7 +5667,7 @@ function executarGravacaoCompra(data, isUsoConsumo, isNotaAvulsa) {
         method: 'POST',
         contentType: 'application/json',
         data: JSON.stringify(data)
-    }).done(function() {
+    }).done(function(resp) {
         const docCentral = centralDocumentoIdAtual;
         centralDocumentoIdAtual = null;
         origemCompraAtual = ORIGEM_COMPRA.MANUAL;
@@ -5677,11 +5677,18 @@ function executarGravacaoCompra(data, isUsoConsumo, isNotaAvulsa) {
             if (it?.produto_id) invalidarCacheUltimaCompraProduto(it.produto_id);
         });
         $('#compraModal').modal('hide');
-        showNotification(
-            isUsoConsumo ? 'Compra de Uso e Consumo registrada com sucesso!'
-                : (isNotaAvulsa ? 'Nota Fiscal Avulsa registrada com sucesso!' : 'Compra registrada com sucesso!'),
-            'success'
-        );
+        if (resp?.aviso || resp?.vinculoCentral?.ok === false) {
+            showNotification(
+                resp.aviso || 'Compra gravada, mas o vínculo com a Central ficou pendente de reconciliação.',
+                'warning'
+            );
+        } else {
+            showNotification(
+                isUsoConsumo ? 'Compra de Uso e Consumo registrada com sucesso!'
+                    : (isNotaAvulsa ? 'Nota Fiscal Avulsa registrada com sucesso!' : 'Compra registrada com sucesso!'),
+                'success'
+            );
+        }
         loadCompras();
         if (docCentral && typeof loadPage === 'function') {
             sessionStorage.setItem('central_pos_gravacao', String(docCentral));

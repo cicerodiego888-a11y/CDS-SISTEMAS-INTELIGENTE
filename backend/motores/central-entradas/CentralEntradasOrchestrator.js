@@ -592,6 +592,14 @@ class CentralEntradasOrchestrator {
     return this._comprasBridgeService.concluirRevisao(id, dados);
   }
 
+  /**
+   * Fluxo único: revisão (se houver) → PRONTA_IMPORTACAO → EM_IMPORTACAO + payload Compras.
+   * Não grava a compra — apenas encaminha para a tela de Compras.
+   */
+  async finalizarEntrada(id, dados = {}) {
+    return this._comprasBridgeService.finalizarEntrada(id, dados);
+  }
+
   obterOuCriarSessaoRevisao(id, opcoes = {}) {
     return this._revisaoPersistenteService.obterOuCriarSessao(id, opcoes);
   }

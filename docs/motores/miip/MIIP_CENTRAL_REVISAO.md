@@ -16,26 +16,28 @@ A tela de Compras continua **exatamente igual** após a revisão.
 ## Fluxo
 
 ```
-Compras → Importar XML → parse-xml → MIIP (6A)
+Central de Entradas → Parser → MIIP
         ↓
-Central de Revisão MIIP (somente pendências)
+Central de Revisão MIIP (somente se houver pendências)
         ↓
 Usuário confirma / escolhe / cadastra / ignora
         ↓
-MiipLearningService (feedback imediato)
+Finalizar Entrada (CTA único)
         ↓
-Tela de Compras preenchida (fluxo atual)
+POST /central-entradas/:id/finalizar-entrada
         ↓
-Usuário grava a compra
+Compras abre automaticamente (formulário preenchido)
+        ↓
+Usuário confere e grava a compra
 ```
 
 ## Diagrama
 
 ```mermaid
 flowchart TD
-    A[Importar XML] --> B[MIIP processa todos os itens]
+    A[Importar XML / DF-e] --> B[MIIP processa todos os itens]
     B --> C{Pendências?}
-    C -->|Não| D[Tela final — resumo]
+    C -->|Não| FIM[Finalizar Entrada → Compras]
     C -->|Sim| E[Lista ordenada por certeza]
     E --> F[Painel detalhes + candidato]
     F --> G{Ação do usuário}
@@ -48,10 +50,9 @@ flowchart TD
     J --> H
     K --> L
     L -->|Não| E
-    L -->|Sim| D
-    D --> M[onConcluir → Compras]
+    L -->|Sim| D[CTA Finalizar Entrada]
+    D --> FIM
 ```
-
 ## O que a Central mostra
 
 ### Resumo (topo)

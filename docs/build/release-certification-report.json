@@ -2,34 +2,34 @@
   "schema": "cds-release-certification/v1",
   "sprint": "RC4.32.0",
   "status": "APROVADA",
-  "geradoEm": "2026-09-03T13:32:21.995Z",
+  "geradoEm": "2026-09-08T13:47:04.740Z",
   "ambiente": {
     "versao": "1.0.3",
-    "commit": "8c952c1",
-    "build": "2026-09-03T12:51:45.336Z",
-    "hashAppAsar": "5ed08fc636326afa96df3658fe4696f2a2a358998d78c41ecc7ae631620b7e85",
-    "origem": "instalador-desatualizado"
+    "commit": "7c9c571",
+    "build": "2026-09-08T13:40:43.674Z",
+    "hashAppAsar": "423ec562e00e625771fb3209f0e740f78cdbf5cb4033a9f3ab067441b9490e9d",
+    "origem": "instalador"
   },
   "modulos": {
     "inicializacao": {
       "ok": true,
       "titulo": "Inicialização do ERP",
-      "detalhe": "DB ok | pacote: instalador-desatualizado | asar: 5ed08fc63632…"
+      "detalhe": "DB ok | pacote: instalador | asar: 423ec562e00e…"
     },
     "login": {
       "ok": true,
       "titulo": "Login",
-      "detalhe": "user=rc4320_1788442340886 perfil=SUPER_ADMIN"
+      "detalhe": "user=rc4320_1788875224013 perfil=SUPER_ADMIN"
     },
     "produtos": {
       "ok": true,
       "titulo": "Cadastro de Produtos",
-      "detalhe": "CRUD ok | embalagem CX×12 | codigo=RC4320-1788442339579-P"
+      "detalhe": "CRUD ok | embalagem CX×12 | codigo=RC4320-1788875222345-P"
     },
     "compras": {
       "ok": true,
       "titulo": "Compras",
-      "detalhe": "NF-e …00000064 | status=EM_REVISAO"
+      "detalhe": "NF-e …00000064 | status=PRONTA_IMPORTACAO"
     },
     "miip": {
       "ok": true,
@@ -44,7 +44,7 @@
     "financeiro": {
       "ok": true,
       "titulo": "Financeiro",
-      "detalhe": "parser financeiro OK | parcela R$500 | registros financeiro=29"
+      "detalhe": "parser financeiro OK | parcela R$500 | registros financeiro=20"
     },
     "estoque": {
       "ok": true,
@@ -64,21 +64,21 @@
     "relatorios": {
       "ok": true,
       "titulo": "Relatórios",
-      "detalhe": "compras=0 fin=29 prod=227"
+      "detalhe": "compras=1 fin=20 prod=712"
     },
     "performance": {
       "ok": true,
       "titulo": "Performance",
-      "detalhe": "2.4s | mem 26.5MB | sql=16"
+      "detalhe": "2.4s | mem 28.5MB | sql=16"
     }
   },
   "estatisticas": {
-    "tempoTotalMs": 2416,
+    "tempoTotalMs": 2396,
     "tempoTotalSeg": 2.4,
-    "memoriaMaxMb": 26.5,
-    "memoriaAtualMb": 26.6,
-    "cpuUserMs": 1625,
-    "cpuSystemMs": 672,
+    "memoriaMaxMb": 28.5,
+    "memoriaAtualMb": 28,
+    "cpuUserMs": 1657,
+    "cpuSystemMs": 656,
     "quantidadeEtapas": 12,
     "quantidadeExcecoes": 0,
     "quantidadeConsultasSql": 16,
@@ -90,96 +90,96 @@
       {
         "nome": "inicializacao",
         "resultado": "OK",
-        "tempoMs": 1177,
+        "tempoMs": 1498,
         "memoriaMb": 14.1,
-        "detalhe": "DB ok | pacote: instalador-desatualizado | asar: 5ed08fc63632…"
+        "detalhe": "DB ok | pacote: instalador | asar: 423ec562e00e…"
       },
       {
         "nome": "login",
         "resultado": "OK",
-        "tempoMs": 289,
-        "memoriaMb": 18.9,
-        "detalhe": "user=rc4320_1788442340886 perfil=SUPER_ADMIN"
+        "tempoMs": 381,
+        "memoriaMb": 28.5,
+        "detalhe": "user=rc4320_1788875224013 perfil=SUPER_ADMIN"
       },
       {
         "nome": "produtos",
         "resultado": "OK",
-        "tempoMs": 55,
-        "memoriaMb": 19.7,
-        "detalhe": "CRUD ok | embalagem CX×12 | codigo=RC4320-1788442339579-P"
+        "tempoMs": 57,
+        "memoriaMb": 19.6,
+        "detalhe": "CRUD ok | embalagem CX×12 | codigo=RC4320-1788875222345-P"
       },
       {
         "nome": "compras",
         "resultado": "OK",
-        "tempoMs": 854,
-        "memoriaMb": 24.6,
-        "detalhe": "NF-e …00000064 | status=EM_REVISAO"
+        "tempoMs": 412,
+        "memoriaMb": 25.9,
+        "detalhe": "NF-e …00000064 | status=PRONTA_IMPORTACAO"
       },
       {
         "nome": "miip",
         "resultado": "OK",
-        "tempoMs": 10,
-        "memoriaMb": 25.6,
+        "tempoMs": 16,
+        "memoriaMb": 26.9,
         "detalhe": "MUC 10×12 → 120 UN (MULTIPLICADOR)"
       },
       {
         "nome": "central",
         "resultado": "OK",
         "tempoMs": 0,
-        "memoriaMb": 25.6,
+        "memoriaMb": 26.9,
         "detalhe": "documento 000064 processado"
       },
       {
         "nome": "financeiro",
         "resultado": "OK",
         "tempoMs": 1,
-        "memoriaMb": 25.7,
-        "detalhe": "parser financeiro OK | parcela R$500 | registros financeiro=29"
+        "memoriaMb": 26.9,
+        "detalhe": "parser financeiro OK | parcela R$500 | registros financeiro=20"
       },
       {
         "nome": "estoque",
         "resultado": "OK",
-        "tempoMs": 15,
-        "memoriaMb": 25.8,
+        "tempoMs": 11,
+        "memoriaMb": 27.1,
         "detalhe": "fiscal=6+3 | total=15 UN"
       },
       {
         "nome": "nfce",
         "resultado": "OK",
-        "tempoMs": 1,
-        "memoriaMb": 25.9,
+        "tempoMs": 2,
+        "memoriaMb": 27.2,
         "detalhe": "homologação dest.xNome + módulo emissor presente"
       },
       {
         "nome": "nfe",
         "resultado": "OK",
         "tempoMs": 4,
-        "memoriaMb": 26,
+        "memoriaMb": 27.3,
         "detalhe": "autorização cStat=100 | protocolo=123"
       },
       {
         "nome": "relatorios",
         "resultado": "OK",
-        "tempoMs": 2,
-        "memoriaMb": 26.5,
-        "detalhe": "compras=0 fin=29 prod=227"
+        "tempoMs": 3,
+        "memoriaMb": 27.8,
+        "detalhe": "compras=1 fin=20 prod=712"
       },
       {
         "nome": "performance",
         "resultado": "OK",
         "tempoMs": 0,
-        "memoriaMb": 26.5,
-        "detalhe": "2.4s | mem 26.5MB | sql=16"
+        "memoriaMb": 27.8,
+        "detalhe": "2.4s | mem 28.5MB | sql=16"
       }
     ],
     "excecoes": [],
     "resumo": {
-      "tempoTotalMs": 2416,
+      "tempoTotalMs": 2396,
       "tempoTotalSeg": 2.4,
-      "memoriaMaxMb": 26.5,
-      "memoriaAtualMb": 26.6,
-      "cpuUserMs": 1625,
-      "cpuSystemMs": 672,
+      "memoriaMaxMb": 28.5,
+      "memoriaAtualMb": 28,
+      "cpuUserMs": 1657,
+      "cpuSystemMs": 656,
       "quantidadeEtapas": 12,
       "quantidadeExcecoes": 0,
       "quantidadeConsultasSql": 16,

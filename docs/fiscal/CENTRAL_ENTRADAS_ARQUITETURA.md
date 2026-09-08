@@ -126,9 +126,11 @@ flowchart TB
     end
 
     subgraph Saida
-        REV[AGUARDANDO_REVISAO]
-        PRONTA[PRONTA_PARA_COMPRA]
-        COMPRAS[Bridge → Compras → GRAVADA]
+        REV[EM_REVISAO — revisão se necessária]
+        FIN[finalizarEntrada]
+        PRONTA[PRONTA_IMPORTACAO — estado interno]
+        IMPORT[EM_IMPORTACAO — abre Compras]
+        COMPRAS[Conferência + Salvar Compra → IMPORTADA]
     end
 
     DFE --> PERS
@@ -140,10 +142,27 @@ flowchart TB
     AUTO --> PROC
     PROC --> PARSE --> MIIP --> STATUS
     STATUS -->|sim| REV
-    STATUS -->|não| PRONTA
-    REV --> COMPRAS
-    PRONTA --> COMPRAS
+    STATUS -->|não| FIN
+    REV --> FIN
+    FIN --> PRONTA
+    PRONTA --> IMPORT
+    IMPORT --> COMPRAS
 ```
+
+### Fluxo operacional (UX)
+
+```
+XML/DF-e → Parser → MIIP
+  → Revisão quando necessária
+  → Finalizar Entrada (POST /:id/finalizar-entrada)
+  → Compras abre automaticamente (formulário preenchido)
+  → Usuário confere e Salva Compra
+  → Vínculo Central ↔ Compra → IMPORTADA
+```
+
+**Importante:** `PRONTA_IMPORTACAO` continua existindo na máquina de estados, mas **não é etapa operacional** que exige segundo clique. É transição interna do `finalizarEntrada`.
+
+`FINALIZAR ENTRADA` ≠ `SALVAR COMPRA`. A automação termina em abrir Compras; o Motor de Compras permanece soberano sobre a gravação.
 
 ## Máquina de estados
 

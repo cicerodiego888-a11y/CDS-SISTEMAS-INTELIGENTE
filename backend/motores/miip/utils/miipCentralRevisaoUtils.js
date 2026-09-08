@@ -301,7 +301,10 @@ function validarConfirmacaoProduto(pendencia) {
 }
 
 /**
- * RC7.5 — resultado de conclusão nunca solicita abrir Compra/Pedido.
+ * Resultado de conclusão da revisão MIIP.
+ * A navegação indica ao caller (Central) que deve chamar finalizar-entrada → Compras.
+ * MIIP em si não grava compra nem navega.
+ *
  * @param {Object} sessao
  * @param {Object} [meta]
  * @returns {Object}
@@ -311,9 +314,10 @@ function montarResultadoConclusaoRevisao(sessao, meta = {}) {
     itens: sessao?.itens || [],
     estatisticas: montarEstatisticasFinais(sessao),
     navegacao: {
-      abrirCompra: false,
+      abrirCompra: true,
       abrirPedido: false,
-      permanecerNaCentral: true,
+      permanecerNaCentral: false,
+      proximaAcao: 'ABRIR_COMPRA',
       motivo: meta.motivoEncerramento || 'manual'
     }
   };

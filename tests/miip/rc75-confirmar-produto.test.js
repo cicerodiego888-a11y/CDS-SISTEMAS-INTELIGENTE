@@ -75,10 +75,11 @@ function main() {
     assert.ok(!bloco.includes('pedido'));
   });
 
-  test('fonte: sem botão Abrir tela de Compras', () => {
+  test('fonte: CTA Finalizar Entrada (não abre Compras dentro do MIIP)', () => {
     assert.ok(!src.includes('Abrir tela de Compras'));
     assert.ok(src.includes('encerrarRevisaoAutomaticamente'));
-    assert.ok(src.includes('abrirCompra: false'));
+    assert.ok(src.includes('Finalizar Entrada'));
+    assert.ok(src.includes('miipCentralBtnFinalizarEntrada'));
     assert.ok(src.includes("origem: 'Confirmacao Manual'"));
   });
 
@@ -135,7 +136,7 @@ function main() {
     assert.strictEqual(sessao.confirmadosManualmente, 3);
   });
 
-  test('confirmar o último item → conclusão sem abrir compra', () => {
+  test('confirmar o último item → conclusão sinaliza abrir compra via Central', () => {
     const dados = criarImportacao([
       criarResultado({ indice: 0, score: 90, precisaConfirmacao: true, produtoEncontrado: { id: 7 } })
     ]);
@@ -146,18 +147,19 @@ function main() {
     });
     assert.strictEqual(utils.todasPendenciasResolvidas(sessao), true);
     const resultado = utils.montarResultadoConclusaoRevisao(sessao, { motivoEncerramento: 'ultimo_item_resolvido' });
-    assert.strictEqual(resultado.navegacao.abrirCompra, false);
+    assert.strictEqual(resultado.navegacao.abrirCompra, true);
     assert.strictEqual(resultado.navegacao.abrirPedido, false);
-    assert.strictEqual(resultado.navegacao.permanecerNaCentral, true);
+    assert.strictEqual(resultado.navegacao.permanecerNaCentral, false);
+    assert.strictEqual(resultado.navegacao.proximaAcao, 'ABRIR_COMPRA');
   });
 
-  test('XML sem pendências → conclusão direta', () => {
+  test('XML sem pendências → conclusão direta sinaliza abrir compra', () => {
     const dados = criarImportacao([], 5);
     dados.miip_importacao.resumo.totalItens = 5;
     const sessao = utils.montarSessaoRevisao(dados);
     assert.strictEqual(sessao.pendencias.length, 0);
     const resultado = utils.montarResultadoConclusaoRevisao(sessao, { motivoEncerramento: 'xml_sem_pendencias' });
-    assert.strictEqual(resultado.navegacao.abrirCompra, false);
+    assert.strictEqual(resultado.navegacao.abrirCompra, true);
   });
 
   test('produto já aprendido (candidato) confirma sem cadastro', () => {

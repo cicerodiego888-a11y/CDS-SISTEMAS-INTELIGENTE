@@ -555,7 +555,7 @@
             RESUMO_RECEBIDO: { classe: 'central-ux1-badge--azul', texto: 'Resumo recebido' },
             XML_COMPLETO: { classe: 'central-ux1-badge--azul', texto: 'XML completo' },
             EM_REVISAO: { classe: 'central-ux1-badge--amarelo', texto: 'Em revisão' },
-            PRONTA_IMPORTACAO: { classe: 'central-ux1-badge--verde', texto: 'Pronta' },
+            PRONTA_IMPORTACAO: { classe: 'central-ux1-badge--verde', texto: 'Aguardando finalização' },
             EM_IMPORTACAO: { classe: 'central-ux1-badge--azul', texto: 'Em importação' },
             IMPORTADA: { classe: 'central-ux1-badge--cinza', texto: 'Importada' },
             FINALIZADA: { classe: 'central-ux1-badge--cinza', texto: 'Finalizada' },
@@ -569,8 +569,8 @@
             AGUARDANDO_XML_COMPLETO: { classe: 'central-ux1-badge--azul', texto: 'Aguardando XML' },
             EM_PROCESSAMENTO: { classe: 'central-ux1-badge--azul', texto: 'Processando' },
             AGUARDANDO_REVISAO: { classe: 'central-ux1-badge--amarelo', texto: 'Em revisão' },
-            REVISADA: { classe: 'central-ux1-badge--verde', texto: 'Pronto para importar' },
-            PRONTA_PARA_COMPRA: { classe: 'central-ux1-badge--verde', texto: 'Pronto para importar' },
+            REVISADA: { classe: 'central-ux1-badge--verde', texto: 'Aguardando finalização' },
+            PRONTA_PARA_COMPRA: { classe: 'central-ux1-badge--verde', texto: 'Aguardando finalização' },
             EM_COMPRA: { classe: 'central-ux1-badge--azul', texto: 'Em importação' },
             GRAVADA: { classe: 'central-ux1-badge--cinza', texto: 'Importada' },
             DUPLICADA: { classe: 'central-ux1-badge--cinza', texto: 'Importada' },
@@ -589,8 +589,11 @@
         if (status === 'EM_REVISAO' || status === 'AGUARDANDO_REVISAO') {
             return { emoji: '🟡', label: 'Revisar Produtos', tom: 'revisao', acao: 'revisar' };
         }
+        if (status === 'EM_IMPORTACAO' || status === 'EM_COMPRA') {
+            return { emoji: '🔵', label: 'Retomar Importação', tom: 'processando', acao: 'retomar' };
+        }
         if (status === 'PRONTA_IMPORTACAO' || status === 'PRONTA_PARA_COMPRA' || status === 'REVISADA') {
-            return { emoji: '🟢', label: 'Importar Compra', tom: 'pronto', acao: 'importar' };
+            return { emoji: '🟢', label: 'Finalizar Entrada', tom: 'pronto', acao: 'finalizar' };
         }
         if (status === 'RESUMO_RECEBIDO' || status === 'AGUARDANDO_XML_COMPLETO') {
             return { emoji: '🔵', label: 'Aguardando XML', tom: 'processando', acao: 'aguardar' };
@@ -613,9 +616,6 @@
         if (status === 'IMPORTADA' || status === 'GRAVADA' || status === 'FINALIZADA' || status === 'DESCARTADA' || status === 'DUPLICADA') {
             return { emoji: '⚫', label: 'Importada', tom: 'encerrado', acao: null };
         }
-        if (status === 'EM_IMPORTACAO' || status === 'EM_COMPRA') {
-            return { emoji: '🔵', label: 'Importando…', tom: 'processando', acao: null };
-        }
         if ((status === 'XML_COMPLETO' || status === 'SINCRONIZADA') && doc.parseDisponivel) {
             return { emoji: '🔵', label: 'Processar', tom: 'processando', acao: 'processar' };
         }
@@ -628,7 +628,7 @@
             RESUMO_RECEBIDO: 'Resumo recebido',
             XML_COMPLETO: 'XML completo',
             EM_REVISAO: 'Em revisão',
-            PRONTA_IMPORTACAO: 'Pronta',
+            PRONTA_IMPORTACAO: 'Aguardando finalização',
             EM_IMPORTACAO: 'Em importação',
             IMPORTADA: 'Importada',
             FINALIZADA: 'Finalizada',
@@ -642,8 +642,8 @@
             AGUARDANDO_XML_COMPLETO: 'Aguardando XML',
             EM_PROCESSAMENTO: 'Processando',
             AGUARDANDO_REVISAO: 'Em revisão',
-            REVISADA: 'Pronto para importar',
-            PRONTA_PARA_COMPRA: 'Pronto para importar',
+            REVISADA: 'Aguardando finalização',
+            PRONTA_PARA_COMPRA: 'Aguardando finalização',
             EM_COMPRA: 'Em importação',
             GRAVADA: 'Importada',
             DESCARTADA: 'Finalizada',

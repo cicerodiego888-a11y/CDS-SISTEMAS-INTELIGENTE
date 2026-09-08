@@ -8,6 +8,7 @@
 
 const MotorRegistry = require('./MotorRegistry');
 const MiipEvidence = require('./MiipEvidence');
+const ProductCompatibilityGuard = require('../utils/ProductCompatibilityGuard');
 
 const ENGINES_IDENTIFICACAO = Object.freeze([
   'motor_gtin',
@@ -20,6 +21,7 @@ const CODIGO_ATTRIBUTE = 'motor_attribute_extractor';
 const CODIGO_SYNONYMS = 'motor_synonyms';
 const CODIGO_SIMILARITY = 'motor_similarity';
 const CODIGO_MUBC = 'motor_mubc';
+const CODIGO_COMPAT = ProductCompatibilityGuard.MOTOR_CODIGO;
 
 /**
  * @param {import('./MotorRegistry')} [motorRegistry]
@@ -87,13 +89,97 @@ async function construirSemanticDeNome(instancias, nome, contexto) {
 }
 
 /**
+ * Remove candidatos MUBC comercialmente incompatíveis ANTES da similaridade.
+ * Identidade forte (GTIN/Associação) não passa por este filtro (não veioDoMubc).
+ *
+ * @private
+ */
+async function filtrarCandidatosPorCompatibilidade(instancias, candidatos, meta, context, item) {
+  const encontrados = candidatos.length;
+  const bloqueados = [];
+  const restantes = [];
+
+  for (const cand of candidatos) {
+    if (!veioDoMubc(cand)) {
+      restantes.push(cand);
+      continue;
+    }
+
+    const nomeCandidato = cand?.produto?.nome
+      ?? cand?.produtoNome
+      ?? cand?.nome
+      ?? cand?.snapshot?.nome
+      ?? '';
+    const semanticCandidato = await construirSemanticDeNome(instancias, nomeCandidato, context);
+
+    const motivosMatch = cand?.atributosExtraidos?.matchMotivos
+      || cand?.atributosExtraidos?.motivosRelevancia
+      || [];
+
+    const guard = ProductCompatibilityGuard.avaliar({
+      itemXml: item || {},
+      produtoCds: {
+        ...(cand.produto || {}),
+        nome: nomeCandidato,
+        ncm: cand?.snapshot?.ncm ?? cand?.produto?.ncm ?? cand?.ncm,
+        snapshot: cand.snapshot || null,
+        atributosExtraidos: cand.atributosExtraidos || null
+      },
+      semanticXml: meta.semanticProduct,
+      semanticCds: semanticCandidato,
+      motivosMatch
+    });
+
+    if (guard.bloqueado || guard.compativel === false) {
+      bloqueados.push({
+        produtoId: cand.produtoId ?? cand.produto?.id ?? null,
+        nome: nomeCandidato,
+        motivos: guard.motivos || [],
+        divergencias: guard.divergencias || [],
+        nivel: guard.nivel
+      });
+      continue;
+    }
+
+    restantes.push(cand);
+  }
+
+  candidatos.length = 0;
+  candidatos.push(...restantes);
+
+  meta.compatibilityDiagnostico = {
+    quantidadeCandidatosEncontrados: encontrados,
+    quantidadeCandidatosCompativeis: restantes.length,
+    quantidadeCandidatosBloqueados: bloqueados.length,
+    candidatosBloqueados: bloqueados.slice(0, 20),
+    motor: CODIGO_COMPAT
+  };
+
+  if (meta.mubcDiagnostico && typeof meta.mubcDiagnostico === 'object') {
+    meta.mubcDiagnostico.compatibility = meta.compatibilityDiagnostico;
+  }
+}
+
+/**
  * Pontua candidatos MUBC via Motor Similarity (comparação + score).
+ * Compatibilidade é filtrada antes — incompatível nunca recebe score.
  * Não altera candidatos de GTIN/Associação (score de identidade preservado).
  *
  * @private
  */
-async function pontuarCandidatosComSimilarity(instancia, instancias, candidatos, meta, context) {
-  if (!meta.semanticProduct || !candidatos.length || typeof instancia.comparar !== 'function') {
+async function pontuarCandidatosComSimilarity(instancia, instancias, candidatos, meta, context, item) {
+  // Compatibilidade SEMPRE antes da similaridade — mesmo sem semanticProduct
+  // (o Guard pode usar nome/NCM; incompatível não pode ser pontuado).
+  if (candidatos.length > 0) {
+    await filtrarCandidatosPorCompatibilidade(instancias, candidatos, meta, context, item);
+  }
+
+  if (!candidatos.length) {
+    meta.similarityResult = null;
+    return;
+  }
+
+  if (!meta.semanticProduct || typeof instancia.comparar !== 'function') {
     return;
   }
 
@@ -116,6 +202,7 @@ async function pontuarCandidatosComSimilarity(instancia, instancias, candidatos,
     if (veioDoMubc(cand) && scoreSim > 0) {
       const relevancia = Number(cand.scoreTotal ?? 0);
       // Similarity pontua; relevância MUBC serve de piso suave (máx 94)
+      // Somente após CompatibilityGuard (candidato já filtrado)
       cand.scoreTotal = Math.min(94, Math.max(relevancia, Math.round(scoreSim)));
       cand.evidencias = [
         ...(cand.evidencias || []),
@@ -168,6 +255,7 @@ function criarEngineExecutor(motorRegistry = MotorRegistry) {
       semanticProduct: null,
       similarityResult: null,
       mubcDiagnostico: null,
+      compatibilityDiagnostico: null,
       tempoPorEngine: {}
     };
 
@@ -222,7 +310,7 @@ function criarEngineExecutor(motorRegistry = MotorRegistry) {
           );
           candidatos.push(...lista);
         } else if (codigo === CODIGO_SIMILARITY) {
-          await pontuarCandidatosComSimilarity(instancia, instancias, candidatos, meta, context);
+          await pontuarCandidatosComSimilarity(instancia, instancias, candidatos, meta, context, item);
         } else {
           const resultado = await instancia.identificar(item, context);
           const lista = Array.isArray(resultado) ? resultado : [];
@@ -237,12 +325,22 @@ function criarEngineExecutor(motorRegistry = MotorRegistry) {
       meta.tempoPorEngine[codigo] = Date.now() - inicio;
     }
 
+    // Garantia: se Similarity não rodou (ou falhou antes do filtro),
+    // ainda assim remove MUBC incompatíveis antes de devolver a coleção.
+    if (
+      meta.compatibilityDiagnostico == null
+      && candidatos.some(veioDoMubc)
+    ) {
+      await filtrarCandidatosPorCompatibilidade(instancias, candidatos, meta, context, item);
+    }
+
     candidatos._meta = {
       produtosPorMotor,
       canonicalProduct: meta.canonicalProduct,
       semanticProduct: meta.semanticProduct,
       similarityResult: meta.similarityResult,
       mubcDiagnostico: meta.mubcDiagnostico,
+      compatibilityDiagnostico: meta.compatibilityDiagnostico,
       tempoPorEngine: meta.tempoPorEngine
     };
 

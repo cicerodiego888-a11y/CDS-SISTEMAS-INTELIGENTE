@@ -987,6 +987,37 @@ router.post('/:id/revisar/concluir', async (req, res) => {
   }
 });
 
+/**
+ * Fluxo único operacional: Finalizar Entrada → prepara Compras (não grava compra).
+ * Encadeia revisão (se EM_REVISAO) + abertura de importação.
+ */
+router.post('/:id/finalizar-entrada', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const correlationId = body.correlation_id ?? body.correlationId ?? null;
+    const resultado = await centralEntradasService.finalizarEntrada(req.params.id, {
+      itens: body.itens,
+      usuarioId: req.usuario?.id ?? body.usuario_id ?? body.usuarioId ?? null,
+      correlationId,
+      permitirParcial: body.permitirParcial === true
+    });
+    return res.json(resultado);
+  } catch (error) {
+    console.error('[CentralEntradas][finalizar-entrada][rota]', {
+      documentoId: req.params.id,
+      correlationId: req.body?.correlation_id ?? req.body?.correlationId ?? null,
+      message: error?.message,
+      stack: error?.stack
+    });
+    const code = error.statusCode || 500;
+    return res.status(code).json({
+      error: error.message,
+      sucesso: false,
+      codigo: error.codigo || null
+    });
+  }
+});
+
 router.get('/:id/payload-compra', async (req, res) => {
   try {
     const payload = await centralEntradasService.obterPayloadCompra(req.params.id);

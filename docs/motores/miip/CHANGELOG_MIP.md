@@ -4,6 +4,22 @@ Formato baseado em Keep a Changelog. Versões semânticas.
 
 ---
 
+## [MIIP] — 2026-09-08 — Compatibility Guard
+
+### Added
+- `ProductCompatibilityGuard` — barreira comercial antes da similaridade
+- `tiposCompostos` no dicionário (`PASSA FIO`, …) + tipos `FACA`, `TORNEIRA`, `MANGUEIRA`
+- Diagnóstico `compatibilityDiagnostico` no pipeline (candidatos bloqueados)
+- Docs: `MIIP_COMPATIBILITY_GUARD.md`
+- Testes: `product-compatibility-guard`, `faca-passa-fio-compatibility`
+
+### Changed
+- Pipeline: MUBC → CompatibilityGuard → Similarity (incompatível é descartado, não score 0)
+- AttributeParser: tipo composto/dicionário antes de inferência; componentes não roubam tipo
+- Central de Revisão: mensagem sem candidatos compatíveis; comparação visual com Tipo/NCM
+
+---
+
 ## [1.0.0] — 2026-07-19 — PRODUÇÃO
 
 ### Homologado (Sprint 08)

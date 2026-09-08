@@ -21,23 +21,24 @@ describe('RC4.0.0 — linguagem operacional', () => {
     assert.doesNotMatch(html, /MIIP|MIRX|Gate|SOAP/i);
 
     assert.match(UX.badgeStatusUx1('AGUARDANDO_XML_COMPLETO'), /Aguardando XML/);
-    assert.match(UX.badgeStatusUx1('PRONTA_PARA_COMPRA'), /Pronto para importar/);
-    assert.match(UX.badgeStatusUx1('GRAVADA'), /Importado/);
-    assert.match(UX.badgeStatusUx1('ERRO'), /Atenção/);
+    assert.match(UX.badgeStatusUx1('PRONTA_PARA_COMPRA'), /Aguardando finalização/);
+    assert.match(UX.badgeStatusUx1('GRAVADA'), /Importada/);
+    assert.match(UX.badgeStatusUx1('ERRO'), /Atenção|Erro/);
   });
 
   it('próxima ação cobre fluxos oficiais', () => {
     assert.equal(UX.resolverProximaAcaoOperacional({ status: 'AGUARDANDO_REVISAO' }).label, 'Revisar Produtos');
-    assert.equal(UX.resolverProximaAcaoOperacional({ status: 'PRONTA_PARA_COMPRA' }).label, 'Importar Compra');
+    assert.equal(UX.resolverProximaAcaoOperacional({ status: 'PRONTA_PARA_COMPRA' }).label, 'Finalizar Entrada');
+    assert.equal(UX.resolverProximaAcaoOperacional({ status: 'EM_IMPORTACAO' }).label, 'Retomar Importação');
     assert.equal(UX.resolverProximaAcaoOperacional({ status: 'AGUARDANDO_XML_COMPLETO' }).label, 'Aguardando XML');
     assert.equal(UX.resolverProximaAcaoOperacional({ status: 'ERRO' }).label, 'Ver Diagnóstico');
-    assert.equal(UX.resolverProximaAcaoOperacional({ status: 'GRAVADA' }).label, 'Encerrado');
+    assert.equal(UX.resolverProximaAcaoOperacional({ status: 'GRAVADA' }).label, 'Importada');
   });
 
   it('labels operacionais padronizados', () => {
     assert.equal(UX.labelStatusOperacionalCentral('SINCRONIZADA'), 'Recebido');
     assert.equal(UX.labelStatusOperacionalCentral('AGUARDANDO_REVISAO'), 'Em revisão');
-    assert.equal(UX.labelStatusOperacionalCentral('REVISADA'), 'Pronto para importar');
+    assert.equal(UX.labelStatusOperacionalCentral('REVISADA'), 'Aguardando finalização');
   });
 });
 
@@ -51,14 +52,14 @@ describe('RC4.0.0 — estrutura workflow first', () => {
   it('quatro KPIs operacionais', () => {
     assert.match(mainSrc, /Recebidos Hoje/);
     assert.match(mainSrc, /Aguardando Revisão/);
-    assert.match(mainSrc, /Prontos para Importar/);
+    assert.match(mainSrc, /Pendentes de Compra/);
     assert.match(mainSrc, /Precisam de Atenção/);
     assert.match(mainSrc, /central-rc40-kpis/);
   });
 
   it('fila de trabalho com filtros oficiais', () => {
     assert.match(mainSrc, /Fila de Trabalho/);
-    assert.match(mainSrc, /Aguardando XML/);
+    assert.match(mainSrc, /Pendentes de Compra/);
     assert.match(mainSrc, /data-fila-filtro/);
   });
 
