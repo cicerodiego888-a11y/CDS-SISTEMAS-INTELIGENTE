@@ -775,23 +775,27 @@ function setupBackupManualListener() {
             const dados = await resposta.json();
 
             if (!dados.sucesso) {
-                throw new Error(dados.mensagem || "Erro ao fazer backup.");
+                const detalhe = [dados.mensagem || dados.erro || "Erro ao fazer backup.", dados.codigo ? `(${dados.codigo})` : '']
+                    .filter(Boolean)
+                    .join(' ');
+                throw new Error(detalhe);
             }
 
             resultadoBackup.innerHTML = `
                 <div style="color: green;">
                     ✅ Backup realizado com sucesso!<br>
-                    Arquivo: ${dados.backup.arquivo}<br>
-                    Local: ${dados.backup.caminho}
+                    Arquivo: ${escapeHtml(dados.backup.arquivo)}<br>
+                    Local: ${escapeHtml(dados.backup.caminho)}
                 </div>
             `;
             showNotification('Backup realizado com sucesso!', 'success');
         } catch (error) {
             resultadoBackup.innerHTML = `
                 <div style="color: red;">
-                    ❌ Erro ao fazer backup: ${error.message}
+                    ❌ Erro ao fazer backup: ${escapeHtml(error.message)}
                 </div>
             `;
+            showNotification(error.message || 'Erro ao fazer backup', 'danger');
         }
     });
 }
@@ -807,9 +811,12 @@ async function carregarPastaBackup() {
 
         const data = await resp.json();
         const pastaDiv = document.getElementById('pastaAtual');
+        if (!pastaDiv) return;
 
         if (data.sucesso && data.caminho) {
             pastaDiv.innerHTML = `<i class="fas fa-folder"></i> Pasta atual: ${escapeHtml(data.caminho)}`;
+        } else if (data.sucesso && data.fallback) {
+            pastaDiv.innerHTML = `<i class="fas fa-exclamation-triangle text-warning"></i> Nenhuma pasta configurada — fallback: ${escapeHtml(data.fallback)}`;
         } else {
             pastaDiv.innerHTML = `<i class="fas fa-exclamation-triangle text-warning"></i> Nenhuma pasta de backup configurada`;
         }
@@ -822,10 +829,38 @@ function detectarAmbienteElectron() {
     return Boolean(window.electronAPI) || /Electron/i.test(navigator.userAgent || '');
 }
 
+/**
+ * Normaliza retorno do seletor (IPC objeto, API HTTP ou prompt string).
+ * @returns {{ sucesso: true, caminho: string } | { sucesso: false, cancelado?: boolean, erro?: string }}
+ */
+function normalizarResultadoSelecaoPasta(resultado) {
+    if (resultado == null) {
+        return { sucesso: false, cancelado: true };
+    }
+    if (typeof resultado === 'string') {
+        const caminho = resultado.trim();
+        if (!caminho) return { sucesso: false, cancelado: true };
+        return { sucesso: true, caminho };
+    }
+    if (typeof resultado === 'object') {
+        if (resultado.cancelado) {
+            return { sucesso: false, cancelado: true };
+        }
+        if (resultado.sucesso && typeof resultado.caminho === 'string' && resultado.caminho.trim()) {
+            return { sucesso: true, caminho: resultado.caminho.trim() };
+        }
+        if (resultado.erro) {
+            return { sucesso: false, erro: String(resultado.erro) };
+        }
+    }
+    return { sucesso: false, erro: 'Resposta inválida do seletor de pasta.' };
+}
+
 async function solicitarPastaBackup() {
     if (typeof window.electronAPI?.selecionarPastaBackup === 'function') {
         try {
-            return await window.electronAPI.selecionarPastaBackup();
+            const bruto = await window.electronAPI.selecionarPastaBackup();
+            return normalizarResultadoSelecaoPasta(bruto);
         } catch (error) {
             console.warn('[BACKUP] Falha no IPC do Electron, tentando API local:', error);
         }
@@ -843,45 +878,61 @@ async function solicitarPastaBackup() {
             const data = await resp.json().catch(() => ({}));
 
             if (data.cancelado) {
-                return null;
+                return { sucesso: false, cancelado: true };
             }
 
             if (resp.ok && data.sucesso && data.caminho) {
-                return data.caminho;
+                return { sucesso: true, caminho: String(data.caminho).trim() };
             }
 
             if (resp.status === 501 || data.erro === 'NOT_ELECTRON') {
-                showNotification('Seletor de pasta indisponível. Reinicie o aplicativo desktop.', 'danger');
-                return null;
+                return {
+                    sucesso: false,
+                    erro: 'Seletor de pasta indisponível. Reinicie o aplicativo desktop.'
+                };
             }
 
-            showNotification(data.mensagem || 'Erro ao abrir seletor de pasta', 'danger');
-            return null;
+            return {
+                sucesso: false,
+                erro: data.mensagem || data.erro || 'Erro ao abrir seletor de pasta'
+            };
         } catch (error) {
             console.error('[BACKUP] Erro na API de seleção de pasta:', error);
-            showNotification('Erro ao abrir seletor de pasta no aplicativo', 'danger');
-            return null;
+            return { sucesso: false, erro: 'Erro ao abrir seletor de pasta no aplicativo' };
         }
     }
 
-    const caminho = prompt("Digite o caminho da pasta de backup (ex: C:\\CDS-Sistemas\\Backups):");
-    if (!caminho) return null;
-
-    const pasta = caminho.trim();
-    if (!pasta) {
-        showNotification('Caminho inválido', 'danger');
-        return null;
+    const caminho = prompt("Digite o caminho da pasta de backup (ex: C:\\ProgramData\\MercantilFiscal\\dados\\backups):");
+    if (caminho == null) {
+        return { sucesso: false, cancelado: true };
     }
 
-    return pasta;
+    const pasta = String(caminho).trim();
+    if (!pasta) {
+        return { sucesso: false, erro: 'Caminho inválido' };
+    }
+
+    return { sucesso: true, caminho: pasta };
 }
 
 async function escolherPastaBackup() {
-    const pastaSelecionada = await solicitarPastaBackup();
+    const selecao = await solicitarPastaBackup();
 
-    if (!pastaSelecionada) {
+    if (selecao.cancelado) {
+        showNotification('Seleção de pasta cancelada.', 'info');
         return;
     }
+
+    if (!selecao.sucesso || typeof selecao.caminho !== 'string' || !selecao.caminho.trim()) {
+        showNotification(
+            `Pasta de backup não pôde ser configurada.${selecao.erro ? ` ${selecao.erro}` : ''}`,
+            'danger'
+        );
+        return;
+    }
+
+    const pastaSelecionada = selecao.caminho.trim();
+    console.log('[BACKUP CONFIG] Pasta selecionada:', pastaSelecionada);
 
     try {
         const resp = await fetch(`${API_URL}/configuracoes/backup-path`, {
@@ -893,20 +944,27 @@ async function escolherPastaBackup() {
             body: JSON.stringify({ caminho: pastaSelecionada })
         });
 
-        const data = await resp.json();
+        const data = await resp.json().catch(() => ({}));
 
-        if (data.sucesso) {
-            showNotification('Pasta de backup salva com sucesso!', 'success');
-            carregarPastaBackup();
-        } else {
-            showNotification(data.mensagem || 'Erro ao salvar pasta', 'danger');
+        if (resp.ok && data.sucesso) {
+            console.log('[BACKUP CONFIG] Pasta salva:', data.caminho || pastaSelecionada);
+            showNotification(data.mensagem || 'Pasta de backup configurada com sucesso.', 'success');
+            await carregarPastaBackup();
+            return;
         }
+
+        const motivo = data.detalhe || data.erro || data.mensagem || `HTTP ${resp.status}`;
+        showNotification(`Pasta de backup não pôde ser configurada. ${motivo}`, 'danger');
     } catch (error) {
-        showNotification('Erro ao salvar pasta de backup', 'danger');
+        showNotification(
+            `Pasta de backup não pôde ser configurada. ${error.message || ''}`.trim(),
+            'danger'
+        );
     }
 }
 
 window.escolherPastaBackup = escolherPastaBackup;
+window.normalizarResultadoSelecaoPasta = normalizarResultadoSelecaoPasta;
 
 // Função para carregar impressora configurada
 async function carregarImpressoraCupom() {

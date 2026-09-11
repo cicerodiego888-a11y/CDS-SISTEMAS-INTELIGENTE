@@ -2,8 +2,8 @@
  * Matriz oficial de permissões do F12.
  *
  * SUPER_ADMIN possui permissão total.
- * ADMIN não possui bypass automático pela tecla F12.
- * OPERADOR só altera o próprio caixa quando f12_controle = OPERADOR.
+ * Com controle OPERADOR ("Operador do Caixa"), quem opera o PDV (inclui ADMIN) pode usar F12.
+ * Com controle ADMINISTRADOR, ADMIN altera pela tela administrativa (não pela tecla).
  *
  * node --test tests/f12-permissoes.test.js
  */
@@ -43,9 +43,9 @@ describe('Centralização SUPER_ADMIN', () => {
     assert.equal(m.isAdmin(OPERADOR), false);
   });
 
-  it('ADMIN != SUPER_ADMIN: isAdmin não libera a tecla F12', () => {
+  it('ADMIN != SUPER_ADMIN: isAdmin não libera F12 em modo ADMINISTRADOR', () => {
     assert.equal(m.isAdmin(ADMIN), true);
-    assert.equal(pode('OPERADOR', ADMIN, 1), false);
+    assert.equal(pode('OPERADOR', ADMIN, 1), true);
     assert.equal(pode('ADMINISTRADOR', ADMIN, 1), false);
   });
 });
@@ -65,17 +65,15 @@ describe('CENÁRIO A — CONTROLE = OPERADOR', () => {
     assert.equal(auth.erro.status, 403);
   });
 
-  it('ADMIN: podeAlterar via F12 = false', () => {
-    assert.equal(pode(controle, ADMIN, 1), false);
-    const toggle = m.autorizarToggleF12(ADMIN, { podeAlterar: false, controle, escopo: null });
-    assert.equal(toggle.ok, false);
-    assert.equal(toggle.erro.status, 403);
+  it('ADMIN no PDV: podeAlterar via F12 = true (Operador do Caixa)', () => {
+    assert.equal(pode(controle, ADMIN, 1), true);
+    const toggle = m.autorizarToggleF12(ADMIN, { podeAlterar: true, controle, escopo: null });
+    assert.equal(toggle.ok, true);
   });
 
-  it('ADMIN não altera estado de caixa pelo endpoint de operador (sem bypass F12)', () => {
+  it('ADMIN no PDV pode definir estado do próprio caixa quando controle = OPERADOR', () => {
     const auth = m.autorizarDefinirEstadoCaixa(ADMIN, { controle, escopo: null }, 1);
-    assert.equal(auth.ok, false);
-    assert.equal(auth.erro.status, 403);
+    assert.equal(auth.ok, true);
   });
 
   it('ADMIN continua podendo administrar o modelo', () => {
@@ -169,17 +167,19 @@ describe('CENÁRIO C — ADMINISTRADOR + INDIVIDUAL', () => {
 });
 
 describe('Testes de segurança', () => {
-  it('OPERADOR não altera outro caixa nem obtém bypass por parâmetro de caixa', () => {
+  it('OPERADOR sem caixa_id no cadastro pode alterar o caixa do terminal (modelo CDS)', () => {
     assert.equal(pode('OPERADOR', OPERADOR, 1), true);
     assert.equal(pode('OPERADOR', { perfil: 'OPERADOR', caixa_id: 1 }, 999), false);
-    assert.equal(pode('OPERADOR', { perfil: 'OPERADOR' }, 1), false);
+    // Cadastro CDS não vincula usuário→caixa; o caixa vem do terminal.
+    assert.equal(pode('OPERADOR', { perfil: 'OPERADOR' }, 1), true);
+    assert.equal(pode('OPERADOR', { perfil: 'USUARIO' }, 1), true);
   });
 
-  it('ADMIN não recebe permissão de F12 só por possuir perfil ADMIN', () => {
-    ['OPERADOR', 'ADMINISTRADOR'].forEach((controle) => {
-      assert.equal(pode(controle, { perfil: 'ADMIN' }, 1), false);
-      assert.equal(pode(controle, { perfil: 'admin' }, 1), false);
-    });
+  it('perfil ADMIN só libera tecla F12 com controle OPERADOR (não por ser admin)', () => {
+    assert.equal(pode('OPERADOR', { perfil: 'ADMIN' }, 1), true);
+    assert.equal(pode('OPERADOR', { perfil: 'admin' }, 1), true);
+    assert.equal(pode('ADMINISTRADOR', { perfil: 'ADMIN' }, 1), false);
+    assert.equal(pode('ADMINISTRADOR', { perfil: 'admin' }, 1), false);
   });
 
   it('SUPER_ADMIN recebe podeAlterar = true em todos os modos', () => {

@@ -166,14 +166,49 @@ describe('F12 — usa o caixa real, não o terminal', () => {
   });
 
   it('caixa não identificado: F12 não altera estado e não chama endpoint', async () => {
-    const fluxo = await simularF12(contexto({ id: 4, caixa_id: null }));
+    const fluxo = await simularF12(contexto({
+      id: 4,
+      caixa_id: null
+    }, {
+      fetch: async () => ({ ok: false, json: async () => null })
+    }));
 
     assert.equal(fluxo.estadoAlterado, false);
     assert.equal(fluxo.estado.fiscal, true);
     assert.equal(fluxo.endpoint, null);
     assert.equal(fluxo.chamadas.length, 0);
     assert.equal(fluxo.caixaId, null);
-    assert.equal(fluxo.erro, MSG);
+    assert.match(String(fluxo.erro || ''), /Terminal sem caixa vinculado|identificar o caixa/);
+  });
+
+  it('fallback: sessão aberta resolve caixa_config quando terminal.caixa_id está vazio', async () => {
+    const fluxo = await simularF12(contexto({
+      id: 4,
+      caixa_id: null
+    }, {
+      fetch: async (url) => {
+        const u = String(url);
+        if (u.includes('/terminais')) {
+          return { ok: true, json: async () => ([{ id: 4, caixa_id: null }]) };
+        }
+        if (u.includes('/caixa/aberto')) {
+          return {
+            ok: true,
+            json: async () => ({
+              sessao: { id: 9, caixa_id: 2 }
+            })
+          };
+        }
+        if (u.includes('/f12/caixas/2/alternar')) {
+          return { ok: true, json: async () => ({ novoEstado: false, ativo: false, success: true }) };
+        }
+        return { ok: false, json: async () => null };
+      }
+    }));
+
+    assert.equal(fluxo.caixaId, 2);
+    assert.equal(fluxo.estadoAlterado, true);
+    assert.equal(fluxo.endpoint, '/f12/caixas/2/alternar');
   });
 
   it('F12PolicyResolver.obterCaixaAtual delega para a fonte única', async () => {
@@ -202,7 +237,7 @@ describe('F12 — regressão de identificação no código', () => {
     assert.doesNotMatch(CORE_JS, /caixaIdAtual\s*\|\|\s*window\.terminalId\s*\|\|\s*1/);
     assert.doesNotMatch(CORE_JS, /window\.terminalId\s*\|\|\s*1/);
     assert.match(CORE_JS, /obterCaixaAtualParaF12/);
-    assert.match(CORE_JS, /Não foi possível identificar o caixa atual/);
+    assert.match(CORE_JS, /Terminal sem caixa vinculado|Não foi possível identificar o caixa atual/);
   });
 
   it('core.js não cria segundo handler de F12', () => {

@@ -22,7 +22,7 @@ const TEF_CAMPOS_POR_ABA = {
         'clientId', 'clientSecret', 'accessToken', 'refreshToken',
         'chaveComunicacao', 'operador'
     ],
-    pinpad: ['pinpadHabilitado', 'pinpadModelo', 'fabricante', 'modelo', 'portaCom', 'pinpadIp', 'pinpadPorta', 'serial'],
+    pinpad: ['pinpadHabilitado', 'pinpadModelo', 'fabricante', 'modelo', 'tipoConexao', 'portaCom', 'pinpadIp', 'pinpadPorta', 'serial'],
     operacoes: [
         'debito', 'creditoAvista', 'creditoParcelado', 'voucher',
         'pix', 'cancelamento', 'reimpressao', 'preAutorizacao'
@@ -208,7 +208,12 @@ async function salvarConfiguracaoTEF() {
             throw new Error(data.error || 'Erro ao salvar configuração TEF.');
         }
 
-        tefConfigCache = data.config || payload;
+        // Round-trip oficial: resposta do save → recarregar GET da mesma fonte
+        if (data.config && typeof data.config === 'object') {
+            tefConfigCache = data.config;
+        }
+        await carregarConfiguracaoTEF();
+        aplicarValoresNaAbaAtual();
 
         if (typeof showNotification === 'function') {
             showNotification(data.message || 'Configuração TEF salva com sucesso.', 'success');
@@ -276,10 +281,10 @@ function renderizarAbaGeralTEF(conteudo) {
                         <div class="col-md-6">
                             <label for="tefProvedor" class="form-label fw-bold">Provedor</label>
                             <select id="tefProvedor" class="form-select">
+                                <option value="rede">Rede</option>
                                 <option value="paygo">PayGo</option>
                                 <option value="sitef">CliSiTef</option>
                                 <option value="stone">Stone</option>
-                                <option value="rede">Rede</option>
                                 <option value="getnet">Getnet</option>
                                 <option value="cielo">Cielo</option>
                             </select>
@@ -431,8 +436,8 @@ function renderizarAbaPinPadTEF(conteudo) {
             <div class="card-body">
                 <h5 class="card-title mb-4">PinPad</h5>
                 <p class="text-muted small mb-3">
-                    Equipamentos como a <strong>Gertec PPC930 (Rede/Itaú)</strong> são operados via middleware
-                    <strong>CliSiTef</strong> ou <strong>PayGo</strong> — o CDS apenas registra o modelo selecionado.
+                    O CDS registra o modelo e a conexão do PinPad. A comunicação física depende do
+                    <strong>adapter do provedor</strong> configurado (arquitetura agnóstica).
                 </p>
                 <form id="formTefPinpad">
                     <div class="row g-3">
@@ -458,8 +463,17 @@ function renderizarAbaPinPadTEF(conteudo) {
                             <input id="modelo" type="text" class="form-control" autocomplete="off" readonly>
                         </div>
                         <div class="col-md-4">
+                            <label for="tipoConexao" class="form-label fw-bold">Tipo de Conexão</label>
+                            <select id="tipoConexao" class="form-select">
+                                <option value="">Selecione...</option>
+                                <option value="serial">Serial</option>
+                                <option value="ip">IP</option>
+                                <option value="usb">USB</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4">
                             <label for="portaCom" class="form-label fw-bold">Porta COM</label>
-                            <input id="portaCom" type="text" class="form-control" autocomplete="off" placeholder="Ex.: COM3">
+                            <input id="portaCom" type="text" class="form-control" autocomplete="off" placeholder="Ex.: COM4">
                         </div>
                         <div class="col-md-4">
                             <label for="pinpadIp" class="form-label fw-bold">IP do PinPad</label>
@@ -470,8 +484,8 @@ function renderizarAbaPinPadTEF(conteudo) {
                             <input id="pinpadPorta" type="number" class="form-control" min="1" max="65535">
                         </div>
                         <div class="col-md-6">
-                            <label for="serial" class="form-label fw-bold">Serial</label>
-                            <input id="serial" type="text" class="form-control" autocomplete="off">
+                            <label for="serial" class="form-label fw-bold">Serial (opcional)</label>
+                            <input id="serial" type="text" class="form-control" autocomplete="off" placeholder="Opcional">
                         </div>
                     </div>
                 </form>
@@ -491,6 +505,7 @@ function aplicarModeloPinpadSelecionado(codigo) {
     const meta = PINPAD_MODELOS_MAPA[codigo];
     const fabricanteEl = document.getElementById('fabricante');
     const modeloEl = document.getElementById('modelo');
+    const tipoConexaoEl = document.getElementById('tipoConexao');
 
     if (meta && fabricanteEl && modeloEl) {
         fabricanteEl.value = meta.fabricante;
@@ -502,6 +517,15 @@ function aplicarModeloPinpadSelecionado(codigo) {
         modeloEl.value = '';
         definirValorCampoTEF('fabricante', '');
         definirValorCampoTEF('modelo', '');
+    }
+
+    // PPC930 tipicamente serial — não inventa COM; só sugere tipo se ainda vazio
+    if (codigo === 'GERTEC_PPC930' && tipoConexaoEl && !tipoConexaoEl.value) {
+        const tipoSalvo = obterValorCampoTEF('tipoConexao');
+        if (!tipoSalvo) {
+            tipoConexaoEl.value = 'serial';
+            definirValorCampoTEF('tipoConexao', 'serial');
+        }
     }
 
     definirValorCampoTEF('pinpadModelo', codigo || '');
@@ -809,7 +833,15 @@ function renderizarAbaDiagnosticoTEF(conteudo) {
                         <div class="card bg-light">
                             <div class="card-body d-flex align-items-center">
                                 <div id="diagSDK" class="badge bg-secondary me-2">Pendente</div>
-                                <span>SDK encontrado</span>
+                                <span>SDK / Middleware real</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card bg-light">
+                            <div class="card-body d-flex align-items-center">
+                                <div id="diagModoAdapter" class="badge bg-secondary me-2">Pendente</div>
+                                <span>Modo do adapter</span>
                             </div>
                         </div>
                     </div>
@@ -848,8 +880,11 @@ async function executarDiagnosticoCompleto() {
 
         const mapaBadges = {
             adapter_selecionado: 'diagAdapter',
+            adapter_carregado: 'diagAdapter',
             middleware_instalado: 'diagSDK',
+            sdk_encontrado: 'diagSDK',
             dll_encontrada: 'diagSDK',
+            modo_adapter: 'diagModoAdapter',
             pinpad_configurado: 'diagMonitor',
             banco_acessivel: 'diagBanco',
             configuracao_valida: 'diagConfiguracao',
@@ -871,12 +906,15 @@ async function executarDiagnosticoCompleto() {
             const pct = relatorio.percentualProntidao || 0;
             const pendencias = (relatorio.pendencias || []).map((p) => `<li>${p}</li>`).join('');
             const pinpad = relatorio.pinpad || {};
+            const hw = pinpad.hardware || pinpad.deteccaoFisica || null;
 
             resultadoDiv.innerHTML = `
                 <div class="alert ${pct >= 90 ? 'alert-success' : pct >= 70 ? 'alert-warning' : 'alert-danger'}">
                     <strong>Prontidão TEF:</strong> ${pct}%
-                    <div class="small mt-1">Provedor: ${relatorio.resumo?.provedor || '-'} | Ambiente: ${relatorio.resumo?.ambiente || '-'} | Modo: ${relatorio.adapter?.modo || '-'}</div>
-                    ${pinpad.configurado ? `<div class="small mt-1"><strong>PinPad:</strong> ${pinpad.configurado} | <strong>Middleware:</strong> ${pinpad.middleware} | <strong>Status:</strong> ${pinpad.status}</div>` : ''}
+                    <div class="small mt-1">Provedor: ${relatorio.resumo?.provedor || '-'} | Ambiente: ${relatorio.resumo?.ambiente || '-'} | Modo adapter: ${relatorio.resumo?.modoAdapter || relatorio.adapter?.modo || '-'}</div>
+                    <div class="small mt-1">Adapter: ${relatorio.conceitos?.adapterCarregado ? 'carregado' : 'não'} | Middleware real: ${relatorio.conceitos?.middlewareInstalado ? 'sim' : 'não'} | Comunicação real: ${relatorio.conceitos?.comunicacaoRealDisponivel ? 'sim' : 'não'}</div>
+                    ${pinpad.rotulo || pinpad.codigo ? `<div class="small mt-1"><strong>PinPad:</strong> ${pinpad.rotulo || pinpad.codigo} | <strong>Conexão:</strong> ${pinpad.tipoConexao || '-'} ${pinpad.portaCom || ''} | <strong>Status:</strong> ${pinpad.status}</div>` : ''}
+                    ${hw ? `<div class="small mt-1"><strong>Hardware:</strong> ${hw.mensagem || (hw.detectado ? 'detectado' : 'não detectado')} | <strong>Driver:</strong> ${rotuloStatusEvidencia(hw.driverStatus, hw.driver)} | <strong>USB:</strong> ${rotuloStatusEvidencia(hw.usbStatus, hw.usb)}</div>` : ''}
                 </div>
                 ${pendencias ? `<ul class="small text-muted">${pendencias}</ul>` : ''}
                 <pre class="small bg-light p-2 rounded" style="max-height:240px;overflow:auto;">${JSON.stringify(relatorio, null, 2)}</pre>
@@ -892,6 +930,14 @@ async function executarDiagnosticoCompleto() {
             `;
         }
     }
+}
+
+function rotuloStatusEvidencia(status, valor) {
+    if (status === 'confirmado' || valor === true) return 'confirmado';
+    if (status === 'ausente') return 'ausente';
+    if (status === 'indisponivel') return 'indisponível';
+    if (valor === false) return 'não confirmado';
+    return 'não confirmado';
 }
 
 function atualizarStatus(elementId, ok) {

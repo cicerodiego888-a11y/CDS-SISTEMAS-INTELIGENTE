@@ -552,35 +552,60 @@ function filtroStatusUsuarios(status) {
 }
 
 router.get('/usuarios', verificarToken, (req, res) => {
-  const filtro = filtroStatusUsuarios(req.query.status);
+  const filtroStatus = filtroStatusUsuarios(req.query.status);
 
-  db.all(
-    `SELECT
-        u.id,
-        u.username,
-        u.role,
-        COALESCE(u.perfil, 'USUARIO') as perfil,
-        COALESCE(u.pode_alterar_senhas, 0) as pode_alterar_senhas,
-        COALESCE(u.ativo, 1) AS ativo,
-        u.created_at,
-        COALESCE(GROUP_CONCAT(up.permissao), '') AS permissoes
-     FROM usuarios u
-     LEFT JOIN usuario_permissoes up ON up.usuario_id = u.id AND up.permitido = 1
-     ${filtro}
-     GROUP BY u.id
-     ORDER BY u.username`,
-    [],
-    (err, usuarios) => {
-      if (err) {
+  const responderLista = (perfilLogado) => {
+    const perfil = String(perfilLogado || 'USUARIO').toUpperCase();
+    // ADMIN (e demais) não enxergam SUPER_ADMIN na listagem.
+    const ocultarSuperAdmin = perfil !== 'SUPER_ADMIN';
+    let filtro = filtroStatus;
+    if (ocultarSuperAdmin) {
+      const clausulaSuper = `UPPER(TRIM(COALESCE(u.perfil, ''))) != 'SUPER_ADMIN'`;
+      filtro = filtro
+        ? `${filtro} AND ${clausulaSuper}`
+        : `WHERE ${clausulaSuper}`;
+    }
+
+    db.all(
+      `SELECT
+          u.id,
+          u.username,
+          u.role,
+          COALESCE(u.perfil, 'USUARIO') as perfil,
+          COALESCE(u.pode_alterar_senhas, 0) as pode_alterar_senhas,
+          COALESCE(u.ativo, 1) AS ativo,
+          u.created_at,
+          COALESCE(GROUP_CONCAT(up.permissao), '') AS permissoes
+       FROM usuarios u
+       LEFT JOIN usuario_permissoes up ON up.usuario_id = u.id AND up.permitido = 1
+       ${filtro}
+       GROUP BY u.id
+       ORDER BY u.username`,
+      [],
+      (err, usuarios) => {
+        if (err) {
+          return res.status(500).json({ error: 'Erro ao listar usuários.' });
+        }
+
+        const usuariosComPermissoes = (usuarios || []).map(u => ({
+          ...u,
+          permissoes: u.permissoes ? u.permissoes.split(',') : []
+        }));
+
+        res.json(usuariosComPermissoes);
+      }
+    );
+  };
+
+  // Perfil atual do banco (não confiar só no JWT antigo)
+  db.get(
+    `SELECT COALESCE(perfil, 'USUARIO') AS perfil FROM usuarios WHERE id = ?`,
+    [req.user?.id],
+    (errPerfil, row) => {
+      if (errPerfil) {
         return res.status(500).json({ error: 'Erro ao listar usuários.' });
       }
-
-      const usuariosComPermissoes = (usuarios || []).map(u => ({
-        ...u,
-        permissoes: u.permissoes ? u.permissoes.split(',') : []
-      }));
-
-      res.json(usuariosComPermissoes);
+      responderLista(row?.perfil || req.user?.perfil || 'USUARIO');
     }
   );
 });
@@ -716,9 +741,12 @@ router.put('/usuarios/:id', exigirAdmin, (req, res) => {
       return res.status(404).json({ error: 'Usuário não encontrado.' });
     }
 
-    // Impedir que um ADMIN altere um SUPER_ADMIN
-    if (usuario.perfil === 'SUPER_ADMIN' && perfilLogado !== 'SUPER_ADMIN') {
-      return res.status(403).json({ error: 'Apenas SUPER_ADMIN pode alterar outro SUPER_ADMIN.' });
+    // Impedir que um ADMIN altere um SUPER_ADMIN (inclui troca de senha no PUT)
+    if (String(usuario.perfil || '').toUpperCase() === 'SUPER_ADMIN' && String(perfilLogado).toUpperCase() !== 'SUPER_ADMIN') {
+      return res.status(403).json({
+        error: 'Apenas SUPER_ADMIN pode alterar outro SUPER_ADMIN.',
+        mensagem: 'Apenas SUPER_ADMIN pode alterar a senha ou os dados de um Super Administrador.'
+      });
     }
 
     const finalizar = () => {
@@ -910,9 +938,17 @@ router.post('/usuarios/alterar-senha', verificarToken, async (req, res) => {
     }
 
     // Verificar permissões
-    const perfilLogado = logado.perfil || 'USUARIO';
-    const perfilAlvo = alvo.perfil || 'USUARIO';
+    const perfilLogado = String(logado.perfil || 'USUARIO').toUpperCase();
+    const perfilAlvo = String(alvo.perfil || 'USUARIO').toUpperCase();
     const podeAlterarSenhas = logado.pode_alterar_senhas === 1;
+
+    // ADMIN nunca altera senha de SUPER_ADMIN (nem com pode_alterar_senhas).
+    if (perfilAlvo === 'SUPER_ADMIN' && perfilLogado !== 'SUPER_ADMIN') {
+      return res.status(403).json({
+        sucesso: false,
+        mensagem: 'Apenas SUPER_ADMIN pode alterar a senha de um Super Administrador.'
+      });
+    }
 
     let podeAlterar = false;
 
@@ -920,14 +956,14 @@ router.post('/usuarios/alterar-senha', verificarToken, async (req, res) => {
       // SUPER_ADMIN pode alterar qualquer usuário
       podeAlterar = true;
     } else if (perfilLogado === 'ADMIN' && podeAlterarSenhas) {
-      // ADMIN com permissão pode alterar USUARIO comum
+      // ADMIN com permissão pode alterar USUARIO comum (nunca SUPER_ADMIN/ADMIN)
       if (perfilAlvo === 'USUARIO') {
         podeAlterar = true;
       }
     }
 
-    // Usuário pode alterar sua própria senha
-    if (usuarioLogadoId === usuarioAlvoId) {
+    // Usuário pode alterar sua própria senha (exceto o bloqueio SUPER_ADMIN acima)
+    if (Number(usuarioLogadoId) === Number(usuarioAlvoId)) {
       podeAlterar = true;
     }
 

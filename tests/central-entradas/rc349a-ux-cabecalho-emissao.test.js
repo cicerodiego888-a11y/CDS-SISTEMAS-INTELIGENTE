@@ -25,10 +25,14 @@ describe('RC3.4.9A — data de emissão dd/MM/aa', () => {
 describe('RC3.4.9A — lista com cabeçalho e coluna Emissão', () => {
   it('renderiza cabeçalho fixo alinhado às colunas', () => {
     assert.match(mainSrc, /central-rc40-doc-cols-header/);
-    assert.match(mainSrc, /Fornecedor[\s\S]*NF[\s\S]*Emissão[\s\S]*Valor[\s\S]*Status[\s\S]*Ação/);
+    assert.match(mainSrc, /Fornecedor[\s\S]*NF[\s\S]*Emissão[\s\S]*Valor[\s\S]*Ação/);
+    assert.doesNotMatch(mainSrc, /Fornecedor[\s\S]*NF[\s\S]*Emissão[\s\S]*Valor[\s\S]*Status[\s\S]*Ação/);
     assert.match(mainSrc, /formatarDataEmissaoCurtaListaCentral|formatarDataEmissaoCurtaCentral/);
+    assert.match(mainSrc, /central-rc40-doc-fornecedor/);
+    assert.match(mainSrc, /central-rc40-doc-cnpj/);
     assert.match(cssSrc, /central-rc40-doc-cols-header/);
     assert.match(cssSrc, /position:\s*sticky/);
+    assert.doesNotMatch(cssSrc.match(/\.central-rc40-doc-fornecedor\s*\{[^}]+\}/)?.[0] || '', /text-overflow:\s*ellipsis/);
   });
 });
 

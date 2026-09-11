@@ -405,6 +405,19 @@ function marcarMargemManualCompra() {
     calcularValorVendaItem();
 }
 
+/**
+ * Operador alterou o preço de venda: trata como edição manual
+ * (mesma proteção da margem) para o cadastro/% padrão não sobrescrever no save.
+ */
+function marcarPrecoVendaManualCompra() {
+    margemInformadaManualCompra = true;
+    if (itemDraftCompra) {
+        itemDraftCompra.margem_editada_manual = 1;
+        itemDraftCompra.margem_origem = 'manual';
+    }
+    calcularMargemItem();
+}
+
 function atualizarIndicadorBaseComercialCompra(origem) {
     const $hint = $('#hintMargemPadraoCompra');
     if (!$hint.length) return;
@@ -3038,6 +3051,57 @@ function alterarAtualizarPrecoItemCompra(index, checked) {
     });
 }
 
+/**
+ * Edição inline do valor de venda na grade (sem abrir o formulário).
+ * Marca como manual para o % do cadastro não sobrescrever no save.
+ */
+function alterarPrecoVendaItemCompra(index, valorRaw, opcoes = {}) {
+    const valor = Number(String(valorRaw ?? '').replace(',', '.'));
+    if (!Number.isFinite(valor) || valor < 0) return;
+    atualizarItemCompraImutavel(index, (draft) => {
+        draft.preco_venda_sugerido = Number(valor.toFixed(2));
+        draft.margem_editada_manual = 1;
+        draft.margem_origem = 'manual';
+        const custo = Number(draft.preco_unitario || 0);
+        if (custo > 0) {
+            draft.margem_lucro = Number(
+                (((draft.preco_venda_sugerido - custo) / custo) * 100).toFixed(2)
+            );
+        }
+        const qtdPorEmb = Number(draft.quantidade_por_embalagem || 0);
+        if (qtdPorEmb > 0) {
+            draft.valor_embalagem_venda = Number(
+                (draft.preco_venda_sugerido * qtdPorEmb).toFixed(2)
+            );
+        }
+    });
+    renderItensCompraTabelaCore();
+    focarCampoPrecoVendaItemCompra(opcoes.focarIndice);
+}
+
+function focarCampoPrecoVendaItemCompra(indice) {
+    if (!Number.isInteger(indice) || indice < 0 || indice >= itensCompraAtual.length) return;
+    const el = document.querySelector(`#itensCompraBody input[data-preco-venda-item="${indice}"]`);
+    if (!el) return;
+    el.focus();
+    if (typeof el.select === 'function') el.select();
+}
+
+/** Tab / Shift+Tab navega entre os campos de venda da grade; Enter confirma. */
+function onKeydownPrecoVendaItemCompra(event, index) {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        event.target.blur();
+        return;
+    }
+    if (event.key !== 'Tab') return;
+    event.preventDefault();
+    const destino = event.shiftKey ? index - 1 : index + 1;
+    alterarPrecoVendaItemCompra(index, event.target.value, {
+        focarIndice: (destino >= 0 && destino < itensCompraAtual.length) ? destino : null
+    });
+}
+
 function formatarPrecoCompraItem(item = {}) {
     const fracionado = itemCompraEhFracionado(item);
     const valor = Number(item.preco_unitario || 0);
@@ -3077,6 +3141,9 @@ function sincronizarPrecosCadastroItemCompra(item = {}) {
     item.preco_unitario = Number(custo.toFixed(casasCusto));
     item.custo_unitario_final = item.preco_unitario;
     item.custo_por_kg = item.preco_unitario;
+    const vendaOuMargemManual = Number(item.margem_editada_manual) === 1
+        || item.margem_origem === 'manual';
+
     if (deveReaplicarMargemCadastroItemCompra(item)) {
         const produtoRef = resolverProdutoRefItemCompra(item);
         const info = extrairMargemCadastradaProduto(produtoRef || item);
@@ -3094,7 +3161,18 @@ function sincronizarPrecosCadastroItemCompra(item = {}) {
     }
 
     if (Number(item.atualizar_preco_venda ?? 1) === 1 && item.preco_unitario > 0) {
-        item.preco_venda_sugerido = Number((item.preco_unitario * (1 + item.margem_lucro / 100)).toFixed(2));
+        const vendaInformada = Number(item.preco_venda_sugerido || 0);
+        // Edição manual do operador: preserva venda digitada e deriva a margem.
+        if (vendaOuMargemManual && vendaInformada > 0) {
+            item.preco_venda_sugerido = Number(vendaInformada.toFixed(2));
+            item.margem_lucro = Number(
+                (((item.preco_venda_sugerido - item.preco_unitario) / item.preco_unitario) * 100).toFixed(2)
+            );
+            item.margem_editada_manual = 1;
+            item.margem_origem = 'manual';
+        } else {
+            item.preco_venda_sugerido = Number((item.preco_unitario * (1 + item.margem_lucro / 100)).toFixed(2));
+        }
     }
 
     return item;
@@ -3227,12 +3305,16 @@ function renderItensCompraTabelaCore() {
                 : ''}
             </td>
             <td style="min-width:95px;">${formatNumberInput(item.margem_lucro)}%</td>
-            <td style="min-width:110px;">
-              ${formatCurrency(item.preco_venda_sugerido)}
-              <br>
+            <td style="min-width:120px;">
+              <input type="number" step="0.01" min="0" class="form-control form-control-sm"
+                data-preco-venda-item="${index}"
+                value="${Number(item.preco_venda_sugerido || 0).toFixed(2)}"
+                title="Altere o valor de venda. Tab = próximo produto"
+                onchange="alterarPrecoVendaItemCompra(${index}, this.value)"
+                onkeydown="onKeydownPrecoVendaItemCompra(event, ${index})">
               <small>
                 <label>
-                  <input type="checkbox" ${Number(item.atualizar_preco_venda ?? 1) === 1 ? 'checked' : ''}
+                  <input type="checkbox" tabindex="-1" ${Number(item.atualizar_preco_venda ?? 1) === 1 ? 'checked' : ''}
                     onchange="alterarAtualizarPrecoItemCompra(${index}, this.checked)">
                   Atualizar preço
                 </label>
@@ -3240,8 +3322,8 @@ function renderItensCompraTabelaCore() {
             </td>
             <td>${formatCurrency(item.subtotal)}</td>
             <td>
-                <button class="btn btn-sm btn-warning me-1" onclick="editarItemCompra(${index})"><i class="fas fa-edit"></i></button>
-                <button class="btn btn-sm btn-danger" onclick="removerItemCompra(${index})"><i class="fas fa-trash"></i></button>
+                <button type="button" tabindex="-1" class="btn btn-sm btn-warning me-1" onclick="editarItemCompra(${index})"><i class="fas fa-edit"></i></button>
+                <button type="button" tabindex="-1" class="btn btn-sm btn-danger" onclick="removerItemCompra(${index})"><i class="fas fa-trash"></i></button>
             </td>
         </tr>`;
     }).join('') || '<tr><td colspan="10" class="text-center">Nenhum item adicionado.</td></tr>');
@@ -4320,6 +4402,12 @@ async function adicionarItemCompraAsync() {
         ? itensCompraAtual[encontrarIndiceItemCompraPorLinhaId(linhaIdEditandoCompra)]
         : (indiceEditandoCompra != null ? itensCompraAtual[indiceEditandoCompra] : null);
 
+    const margemManualCommit = margemInformadaManualCompra
+        || Number(itemDraftCompra?.margem_editada_manual) === 1
+        || itemDraftCompra?.margem_origem === 'manual'
+        || Number(itemExistente?.margem_editada_manual) === 1
+        || itemExistente?.margem_origem === 'manual';
+
     // RC8.4.1 — monta exclusivamente no draft; commit só no final
     itemDraftCompra = normalizeItemCompra({
         linha_id: itemExistente
@@ -4335,6 +4423,10 @@ async function adicionarItemCompraAsync() {
         ultimo_preco_compra: Number(itemDraftCompra?.ultimo_preco_compra || produto?.preco_compra || preco || 0),
         margem_lucro: margemFinal,
         preco_venda_sugerido: precoVenda,
+        margem_editada_manual: margemManualCommit ? 1 : Number(itemDraftCompra?.margem_editada_manual || itemExistente?.margem_editada_manual || 0),
+        margem_origem: margemManualCommit
+            ? 'manual'
+            : (itemDraftCompra?.margem_origem || itemExistente?.margem_origem || undefined),
         atualizar_preco_venda: Number(
             itemDraftCompra?.atualizar_preco_venda
             ?? itemExistente?.atualizar_preco_venda
@@ -4521,6 +4613,9 @@ function editarItemCompra(index) {
     // RC8.4.1 — NUNCA splice / NUNCA mutar a linha original. Só draft.
     const draft = iniciarDraftCompraEdicao(index);
     if (!draft) return;
+
+    margemInformadaManualCompra = Number(draft.margem_editada_manual) === 1
+        || draft.margem_origem === 'manual';
 
     // RC4.31.26 — ao iniciar edição do próximo destacado, remove o destaque
     if (indiceProximoDestaqueCompra === index) {
@@ -5121,7 +5216,7 @@ function showCompraModal() {
                                 </div>
                                 <div class="col-md-2">
                                     <label class="form-label">Valor venda</label>
-                                    <input type="number" step="0.01" class="form-control" id="preco_venda_item" oninput="calcularMargemItem()">
+                                    <input type="number" step="0.01" class="form-control" id="preco_venda_item" oninput="marcarPrecoVendaManualCompra()">
                                 </div>
                                 <div class="col-md-2">
                                     <button type="button" class="btn btn-success w-100" id="btnAdicionarItemCompra" onclick="adicionarItemCompra()"><i class="fas fa-plus"></i> Adicionar</button>
@@ -5748,6 +5843,13 @@ function recalcularTotalNotaAvulsa() {
 function viewCompra(id) {
     $.ajax({ url: `${API_URL}/compras/${id}`, method: 'GET' }).done(function(compra) {
         const isNotaAvulsa = Number(compra.nota_fiscal_avulsa) === 1;
+        const podeEditarVenda = typeof podeAjustarEstoque === 'function'
+            ? podeAjustarEstoque()
+            : (() => {
+                const u = obterUsuarioLogadoCompra();
+                const perfil = String(u.perfil || u.nivel || '').trim().toUpperCase();
+                return u.role === 'admin' || perfil === 'SUPER_ADMIN' || perfil === 'ADMIN';
+            })();
 
         const financeiroHtml = (compra.financeiro || []).map(f => `
             <tr>
@@ -5757,16 +5859,37 @@ function viewCompra(id) {
                 <td>${formatCurrency(f.valor)}</td>
             </tr>
         `).join('') || '<tr><td colspan="4" class="text-center">Sem lançamentos financeiros.</td></tr>';
-        const itensHtml = isNotaAvulsa ? '<tr><td colspan="8" class="text-center text-muted">Nota Fiscal Avulsa - sem itens</td></tr>' : (compra.itens || []).map(item => `
-            <tr>
+
+        const itensLista = compra.itens || [];
+        const itensHtml = isNotaAvulsa
+            ? '<tr><td colspan="8" class="text-center text-muted">Nota Fiscal Avulsa - sem itens</td></tr>'
+            : itensLista.map((item, index) => {
+                const margem = item.margem_lucro != null ? item.margem_lucro : MARGEM_PADRAO_FALLBACK_COMPRA;
+                const vendaCell = podeEditarVenda
+                    ? `<input type="number" step="0.01" min="0" class="form-control form-control-sm"
+                        data-view-preco-venda-item="${index}"
+                        data-item-id="${Number(item.id)}"
+                        data-custo="${Number(item.preco_unitario || 0)}"
+                        value="${Number(item.preco_venda_sugerido || 0).toFixed(2)}"
+                        title="Admin: altere a venda sugerida. Tab = próximo produto"
+                        onchange="salvarPrecoVendaViewCompra(${compra.id}, ${Number(item.id)}, this, ${index})"
+                        onkeydown="onKeydownPrecoVendaViewCompra(event, ${compra.id}, ${index})">`
+                    : formatCurrency(item.preco_venda_sugerido || 0);
+                return `
+            <tr data-view-compra-item-index="${index}">
                 <td>${escapeHtml(item.produto_nome || item.descricao_produto || '-')}${renderResumoConversaoItemCompraHtml(item)}</td>
                 <td>${formatarQuantidadeItemCompra(item)}</td>
                 <td>${formatCurrency(item.preco_unitario)}</td>
-                <td>${formatNumberInput(item.margem_lucro != null ? item.margem_lucro : MARGEM_PADRAO_FALLBACK_COMPRA)}%</td>
-                <td>${formatCurrency(item.preco_venda_sugerido || 0)}</td>
+                <td class="view-compra-margem-cell">${formatNumberInput(margem)}%</td>
+                <td>${vendaCell}</td>
                 <td>${formatCurrency(item.subtotal)}</td>
-            </tr>
-        `).join('');
+            </tr>`;
+            }).join('');
+
+        const hintAdmin = podeEditarVenda && !isNotaAvulsa
+            ? '<p class="small text-muted mb-2"><i class="fas fa-user-shield"></i> Administrador: você pode alterar a venda sugerida nesta tela (atualiza o cadastro do produto).</p>'
+            : '';
+
         const modalHtml = `
             <div class="modal fade" id="viewCompraModal" tabindex="-1">
                 <div class="modal-dialog modal-lg modal-dialog-scrollable">
@@ -5811,6 +5934,7 @@ function viewCompra(id) {
                                 </button>
                             </div>` : ''}
                             <h6>Itens</h6>
+                            ${hintAdmin}
                             <table class="table table-bordered"><thead><tr><th>Produto</th><th>Qtd</th><th>Preço compra</th><th>Margem</th><th>Venda sugerida</th><th>Subtotal</th></tr></thead><tbody>${itensHtml}</tbody></table>
                             <h6>Lançamentos financeiros gerados</h6>
                             <table class="table table-bordered"><thead><tr><th>Parcela</th><th>Vencimento</th><th>Status</th><th>Valor</th></tr></thead><tbody>${financeiroHtml}</tbody></table>
@@ -5823,6 +5947,64 @@ function viewCompra(id) {
         $('#viewCompraModal').modal('show');
     }).fail(function(xhr) {
         showNotification(xhr.responseJSON?.error || 'Erro ao carregar compra.', 'danger');
+    });
+}
+
+function focarPrecoVendaViewCompra(indice) {
+    const el = document.querySelector(`#viewCompraModal input[data-view-preco-venda-item="${indice}"]`);
+    if (!el) return;
+    el.focus();
+    if (typeof el.select === 'function') el.select();
+}
+
+function onKeydownPrecoVendaViewCompra(event, compraId, index) {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        event.target.blur();
+        return;
+    }
+    if (event.key !== 'Tab') return;
+    event.preventDefault();
+    const destino = event.shiftKey ? index - 1 : index + 1;
+    salvarPrecoVendaViewCompra(compraId, Number(event.target.getAttribute('data-item-id')), event.target, index, {
+        focarIndice: destino
+    });
+}
+
+function salvarPrecoVendaViewCompra(compraId, itemId, inputEl, index, opcoes = {}) {
+    const valor = Number(String(inputEl?.value ?? '').replace(',', '.'));
+    if (!Number.isFinite(valor) || valor < 0) {
+        showNotification('Informe um preço de venda válido.', 'warning');
+        return;
+    }
+    const custo = Number(inputEl?.getAttribute('data-custo') || 0);
+    const margemPreview = custo > 0 ? Number((((valor - custo) / custo) * 100).toFixed(2)) : 0;
+    const $row = $(inputEl).closest('tr');
+    $row.find('.view-compra-margem-cell').text(`${formatNumberInput(margemPreview)}%`);
+
+    $.ajax({
+        url: `${API_URL}/compras/${compraId}/itens/${itemId}/preco-venda`,
+        method: 'PATCH',
+        contentType: 'application/json',
+        headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') },
+        data: JSON.stringify({
+            preco_venda_sugerido: Number(valor.toFixed(2)),
+            atualizar_cadastro: true
+        })
+    }).done(function (resp) {
+        if (resp?.margem_lucro != null) {
+            $row.find('.view-compra-margem-cell').text(`${formatNumberInput(resp.margem_lucro)}%`);
+        }
+        if (inputEl) {
+            inputEl.value = Number(resp?.preco_venda_sugerido ?? valor).toFixed(2);
+        }
+        const focar = opcoes.focarIndice;
+        if (Number.isInteger(focar) && focar >= 0) {
+            const total = document.querySelectorAll('#viewCompraModal input[data-view-preco-venda-item]').length;
+            if (focar < total) focarPrecoVendaViewCompra(focar);
+        }
+    }).fail(function (xhr) {
+        showNotification(xhr.responseJSON?.error || 'Erro ao atualizar preço de venda.', 'danger');
     });
 }
 

@@ -60,7 +60,19 @@ describe('RC4.0.0 — estrutura workflow first', () => {
   it('fila de trabalho com filtros oficiais', () => {
     assert.match(mainSrc, /Fila de Trabalho/);
     assert.match(mainSrc, /Pendentes de Compra/);
+    assert.match(mainSrc, /em_importacao/);
+    assert.match(mainSrc, /Em Importação/);
     assert.match(mainSrc, /data-fila-filtro/);
+  });
+
+  it('lista UX 2.0 prioriza fornecedor sem coluna Status', () => {
+    assert.match(mainSrc, /central-rc40-doc-fornecedor-wrap/);
+    assert.match(mainSrc, /formatarCnpjDocumentoListaCentral/);
+    assert.match(mainSrc, /central-rc40-status-documento/);
+    assert.doesNotMatch(
+      mainSrc.match(/central-rc40-doc-cols-header[\s\S]{0,450}/)?.[0] || '',
+      />Status</
+    );
   });
 
   it('modo técnico e monitoramento recolhíveis', () => {

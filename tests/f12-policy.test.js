@@ -28,6 +28,30 @@ const testCaixas = [
 ];
 
 describe('F12PolicyService', () => {
+  let modeloOriginal = null;
+
+  before((done) => {
+    F12PolicyService.obterModeloControle((err, modelo) => {
+      if (!err && modelo) {
+        modeloOriginal = {
+          controle: modelo.controle || 'OPERADOR',
+          escopo: modelo.escopo || null
+        };
+      } else {
+        modeloOriginal = { controle: 'OPERADOR', escopo: null };
+      }
+      done();
+    });
+  });
+
+  after((done) => {
+    if (!modeloOriginal) return done();
+    F12PolicyService.definirModeloControle(
+      modeloOriginal.controle,
+      modeloOriginal.escopo,
+      () => done()
+    );
+  });
   describe('obterPolitica()', () => {
     it('should return default policy POR_CAIXA', (done) => {
       F12PolicyService.obterPolitica((err, politica) => {
@@ -320,9 +344,9 @@ describe('F12PolicyService', () => {
       assert(F12PolicyService.podeOperadorAlterarF12('MODO_ADMIN', user));
     });
 
-    it('should allow ADMIN in GLOBAL and MODO_ADMIN', () => {
+    it('should allow ADMIN in POR_CAIXA (Operador do Caixa), GLOBAL and MODO_ADMIN', () => {
       const user = { perfil: 'ADMIN', id: 1 };
-      assert(!F12PolicyService.podeOperadorAlterarF12('POR_CAIXA', user));
+      assert(F12PolicyService.podeOperadorAlterarF12('POR_CAIXA', user));
       assert(F12PolicyService.podeOperadorAlterarF12('GLOBAL', user));
       assert(F12PolicyService.podeOperadorAlterarF12('MODO_ADMIN', user));
     });
@@ -383,11 +407,11 @@ describe('F12PolicyService', () => {
       });
     });
 
-    it('ADMIN nunca recebe podeAlterar pela tecla F12', (done) => {
+    it('ADMIN no PDV: podeAlterar com OPERADOR; bloqueado com ADMINISTRADOR', (done) => {
       F12PolicyService.definirModeloControle('OPERADOR', null, () => {
         F12PolicyService.resolverContextoF12(1, { perfil: 'ADMIN', caixa_id: 1 }, (err, ctx) => {
           assert(!err);
-          assert.strictEqual(ctx.podeAlterar, false);
+          assert.strictEqual(ctx.podeAlterar, true);
           F12PolicyService.definirModeloControle('ADMINISTRADOR', 'TODOS', () => {
             F12PolicyService.resolverContextoF12(1, { perfil: 'ADMIN' }, (err2, ctx2) => {
               assert(!err2);
@@ -430,8 +454,22 @@ describe('F12PolicyService', () => {
   });
 
   describe('executarToggleF12() — matriz de autorização', () => {
-    it('ADMIN é bloqueado no fluxo oficial da tecla F12', (done) => {
+    it('ADMIN no PDV consegue F12 com controle OPERADOR', (done) => {
       F12PolicyService.definirModeloControle('OPERADOR', null, () => {
+        F12PolicyService.obterEstadoCaixa(1, (e1, antes) => {
+          assert(!e1);
+          F12PolicyService.executarToggleF12(1, { perfil: 'ADMIN', caixa_id: 1 }, (err, resultado) => {
+            assert(!err);
+            assert.strictEqual(resultado.origem, 'CAIXA');
+            assert.strictEqual(resultado.novoEstado, !antes);
+            F12PolicyService.definirEstadoCaixa(1, antes, done);
+          });
+        });
+      });
+    });
+
+    it('ADMIN é bloqueado no fluxo da tecla F12 com controle ADMINISTRADOR', (done) => {
+      F12PolicyService.definirModeloControle('ADMINISTRADOR', 'TODOS', () => {
         F12PolicyService.executarToggleF12(1, { perfil: 'ADMIN', caixa_id: 1 }, (err) => {
           assert(err);
           assert.strictEqual(err.status, 403);

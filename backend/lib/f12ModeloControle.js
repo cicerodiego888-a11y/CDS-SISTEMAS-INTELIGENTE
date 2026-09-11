@@ -5,10 +5,11 @@
  * Nível 2 — se ADMINISTRADOR, como aplicar: TODOS | INDIVIDUAL
  *
  * Matriz de permissões (tecla F12 = podeAlterar):
- *   SUPER_ADMIN → sempre true (permissão total, independente de controle/escopo)
- *   ADMIN       → sempre false pela tecla F12 (usa a tela administrativa)
- *   OPERADOR    → true só com controle OPERADOR e somente o próprio caixa
+ *   SUPER_ADMIN → sempre true
+ *   Controle OPERADOR → true para quem opera o PDV (USUARIO/OPERADOR/ADMIN)
+ *   Controle ADMINISTRADOR → ADMIN usa a tela admin; SUPER_ADMIN permanece liberado
  *
+ * Caixa atual = terminal.caixa_id (user.caixa_id só restringe se existir).
  * Mapeamento legado (compatibilidade):
  *   POR_CAIXA   → OPERADOR
  *   GLOBAL      → ADMINISTRADOR + TODOS
@@ -99,16 +100,21 @@ function podeAdministrarConfiguracaoF12(user) {
 /**
  * Matriz oficial: podeAlterar via tecla F12.
  *
- * SUPER_ADMIN → true em qualquer controle/escopo/caixa.
- * ADMIN       → false (não possui bypass automático pela tecla F12).
- * OPERADOR    → true só quando f12_controle = OPERADOR e o caixa é o próprio.
+ * SUPER_ADMIN → sempre true.
+ * Controle OPERADOR → quem está no PDV pode alterar (USUARIO/OPERADOR/ADMIN).
+ *   O caixa atual vem do terminal; user.caixa_id só restringe se existir.
+ * Controle ADMINISTRADOR → tecla F12 bloqueada para ADMIN (usa tela admin);
+ *   SUPER_ADMIN continua podendo.
  */
 function resolverPodeAlterarF12({ controle, user, caixaId } = {}) {
   if (temPermissaoTotalF12(user)) return true;
-  if (isPerfilAdmin(user)) return false;
-  if (normalizarTexto(controle) !== 'OPERADOR') return false;
-  if (caixaId == null || caixaId === '') return true;
-  return operadorPodeAlterarEsteCaixa(user, caixaId);
+
+  if (normalizarTexto(controle) === 'OPERADOR') {
+    return operadorPodeAlterarEsteCaixa(user, caixaId);
+  }
+
+  // ADMINISTRADOR: alteração pela tecla não é o caminho do ADMIN comum.
+  return false;
 }
 
 function podeAlterarViaTeclaF12(controle, user, caixaId) {
@@ -117,12 +123,21 @@ function podeAlterarViaTeclaF12(controle, user, caixaId) {
 
 function operadorPodeAlterarEsteCaixa(user, caixaId) {
   if (temPermissaoTotalF12(user)) return true;
-  if (isPerfilAdmin(user)) return false;
-  const proprio = Number(user && user.caixa_id);
+
   const alvo = Number(caixaId);
-  if (!Number.isInteger(proprio) || proprio <= 0) return false;
-  if (!Number.isInteger(alvo) || alvo <= 0) return false;
-  return proprio === alvo;
+  if (caixaId != null && caixaId !== '' && (!Number.isInteger(alvo) || alvo <= 0)) {
+    return false;
+  }
+
+  // Vínculo opcional usuário→caixa (raro no CDS; caixa oficial vem do terminal).
+  const proprio = Number(user && (user.caixa_id != null ? user.caixa_id : user.caixaId));
+  if (Number.isInteger(proprio) && proprio > 0) {
+    if (!Number.isInteger(alvo) || alvo <= 0) return false;
+    return proprio === alvo;
+  }
+
+  // Controlo OPERADOR: autenticado no PDV pode alternar o F12 do caixa do terminal.
+  return true;
 }
 
 function resolverAcaoToggleF12(controle, escopo) {
@@ -177,6 +192,11 @@ function autorizarDefinirEstadoCaixa(user, modelo, caixaId) {
     };
   }
 
+  // Controlo OPERADOR: quem está no PDV (inclui ADMIN) pode definir o estado do caixa do terminal.
+  if (controle === 'OPERADOR' && operadorPodeAlterarEsteCaixa(user, caixaId)) {
+    return { ok: true };
+  }
+
   if (isPerfilAdmin(user)) {
     if (controle === 'ADMINISTRADOR' && escopo === 'INDIVIDUAL') {
       return { ok: true };
@@ -188,10 +208,6 @@ function autorizarDefinirEstadoCaixa(user, modelo, caixaId) {
         'O administrador não altera o F12 pela tecla. Use a tela administrativa conforme o modelo de controle.'
       )
     };
-  }
-
-  if (controle === 'OPERADOR' && operadorPodeAlterarEsteCaixa(user, caixaId)) {
-    return { ok: true };
   }
 
   if (controle === 'OPERADOR') {
@@ -265,7 +281,8 @@ function podeOperadorAlterarF12Compat(politicaOuControle, user) {
     : (valor === 'ADMINISTRADOR' ? 'GLOBAL' : valor);
 
   if (politica === 'POR_CAIXA') {
-    return !isAdmin(user);
+    // Operador do Caixa: qualquer perfil autenticado no PDV pode alterar.
+    return true;
   }
   return isAdmin(user);
 }

@@ -4,6 +4,7 @@ const db = require('../database');
 const moment = require('moment');
 const { gravarAuditoria } = require('../services/auditoria');
 const { validarCaixaAberto } = require('../middleware/validarCaixaAberto');
+const { exigirAdmin } = require('../middleware/auth');
 const lotesService = require('../services/lotesService');
 const {
   resolverQuantidadesCompraItemPersistido,
@@ -2181,6 +2182,113 @@ router.put('/:id/chave-nfe-fornecedor', (req, res) => {
     res.json({
       success: true,
       message: 'Chave da NF-e original salva com sucesso.'
+    });
+  });
+});
+
+/**
+ * Admin+ — altera venda sugerida do item na visualização da compra.
+ * Atualiza o item e, quando houver produto vinculado, o cadastro (preço/margem).
+ */
+router.patch('/:id/itens/:itemId/preco-venda', exigirAdmin, (req, res) => {
+  const compraId = Number(req.params.id);
+  const itemId = Number(req.params.itemId);
+  const precoVenda = Number(req.body?.preco_venda_sugerido ?? req.body?.preco_venda);
+  const atualizarCadastro = !(req.body?.atualizar_cadastro === false || req.body?.atualizar_cadastro === 0);
+
+  if (!Number.isFinite(compraId) || compraId <= 0 || !Number.isFinite(itemId) || itemId <= 0) {
+    return res.status(400).json({ error: 'Compra ou item inválido.' });
+  }
+  if (!Number.isFinite(precoVenda) || precoVenda < 0) {
+    return res.status(400).json({ error: 'Preço de venda inválido.' });
+  }
+
+  const precoVendaFinal = Number(precoVenda.toFixed(2));
+
+  db.get(`
+    SELECT ci.*, p.preco_compra AS produto_preco_compra, p.preco_venda AS produto_preco_venda
+    FROM compras_itens ci
+    LEFT JOIN produtos p ON p.id = ci.produto_id
+    WHERE ci.id = ? AND ci.compra_id = ?
+  `, [itemId, compraId], (err, item) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!item) return res.status(404).json({ error: 'Item da compra não encontrado.' });
+
+    const custo = Number(item.preco_unitario || 0);
+    const margem = custo > 0
+      ? Number((((precoVendaFinal - custo) / custo) * 100).toFixed(2))
+      : Number(item.margem_lucro || 0);
+
+    db.run(`
+      UPDATE compras_itens
+      SET preco_venda_sugerido = ?, margem_lucro = ?
+      WHERE id = ? AND compra_id = ?
+    `, [precoVendaFinal, margem, itemId, compraId], function (updErr) {
+      if (updErr) return res.status(500).json({ error: updErr.message });
+
+      const responder = () => {
+        try {
+          gravarAuditoria({
+            usuario_id: req.user?.id || null,
+            usuario_nome: req.user?.username || req.user?.nome || null,
+            modulo: 'compras',
+            acao: 'COMPRA_ITEM_PRECO_VENDA',
+            referencia_tipo: 'compras_itens',
+            referencia_id: itemId,
+            detalhes: {
+              compra_id: compraId,
+              produto_id: item.produto_id || null,
+              preco_anterior: Number(item.preco_venda_sugerido || 0),
+              preco_novo: precoVendaFinal,
+              margem_nova: margem,
+              atualizar_cadastro: atualizarCadastro
+            },
+            ip_requisicao: req.ip || null
+          });
+        } catch (_e) { /* auditoria best-effort */ }
+
+        res.json({
+          success: true,
+          item_id: itemId,
+          compra_id: compraId,
+          preco_venda_sugerido: precoVendaFinal,
+          margem_lucro: margem,
+          cadastro_atualizado: Boolean(atualizarCadastro && item.produto_id)
+        });
+      };
+
+      if (!atualizarCadastro || !item.produto_id) {
+        return responder();
+      }
+
+      const precoCompraCadastro = Number(item.produto_preco_compra ?? item.preco_unitario ?? 0);
+      const precoVendaAnterior = Number(item.produto_preco_venda || 0);
+
+      db.run(`
+        UPDATE produtos
+        SET preco_venda = ?,
+            lucro_percentual = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [precoVendaFinal, margem, item.produto_id], (prodErr) => {
+        if (prodErr) return res.status(500).json({ error: prodErr.message });
+
+        if (Number(precoVendaAnterior) !== precoVendaFinal) {
+          db.run(`
+            INSERT INTO produtos_preco_historico (
+              produto_id, preco_compra_anterior, preco_compra_novo, preco_venda_anterior, preco_venda_novo
+            ) VALUES (?, ?, ?, ?, ?)
+          `, [
+            item.produto_id,
+            precoCompraCadastro,
+            precoCompraCadastro,
+            precoVendaAnterior,
+            precoVendaFinal
+          ], () => responder());
+        } else {
+          responder();
+        }
+      });
     });
   });
 });

@@ -10,6 +10,19 @@ function getUsernameLogadoUsuarios() {
     }
 }
 
+function getPerfilLogadoUsuarios() {
+    try {
+        const u = typeof obterUsuarioLogado === 'function' ? obterUsuarioLogado() : {};
+        return String(u.perfil || '').trim().toUpperCase();
+    } catch (e) {
+        return '';
+    }
+}
+
+function logadoEhSuperAdminUsuarios() {
+    return getPerfilLogadoUsuarios() === 'SUPER_ADMIN';
+}
+
 function escapeHtmlUsuarios(s) {
     if (!s) return '';
     const div = document.createElement('div');
@@ -18,7 +31,13 @@ function escapeHtmlUsuarios(s) {
 }
 
 function renderLinhaUsuario(u, inativo = false) {
-    const perfil = u.perfil || 'USUARIO';
+    const perfil = String(u.perfil || 'USUARIO').toUpperCase();
+
+    // Defesa de UI: ADMIN nunca lista/age sobre SUPER_ADMIN (backend já filtra).
+    if (perfil === 'SUPER_ADMIN' && !logadoEhSuperAdminUsuarios()) {
+        return '';
+    }
+
     let badgePerfil = 'bg-secondary';
     let labelPerfil = 'Usuário';
     if (perfil === 'SUPER_ADMIN') {
@@ -296,10 +315,14 @@ async function showModalNovoUsuario(usuario = null) {
                             <select class="form-control" id="novo_usuario_perfil">
                                 <option value="USUARIO" ${(usuario?.perfil || 'USUARIO') === 'USUARIO' ? 'selected' : ''}>Usuário Comum</option>
                                 <option value="ADMIN" ${usuario?.perfil === 'ADMIN' ? 'selected' : ''}>Administrador (ADMIN)</option>
+                                ${logadoEhSuperAdminUsuarios() ? `
                                 <option value="SUPER_ADMIN" ${usuario?.perfil === 'SUPER_ADMIN' ? 'selected' : ''}>Super Administrador</option>
+                                ` : ''}
                             </select>
                             <small class="text-muted">
-                                SUPER_ADMIN: pode tudo | ADMIN: pode gerenciar usuários comuns | USUARIO: acesso limitado
+                                ${logadoEhSuperAdminUsuarios()
+        ? 'SUPER_ADMIN: pode tudo | ADMIN: pode gerenciar usuários comuns | USUARIO: acesso limitado'
+        : 'ADMIN: pode gerenciar usuários comuns | USUARIO: acesso limitado'}
                             </small>
                         </div>
 
@@ -373,8 +396,13 @@ function salvarNovoUsuario() {
     const username = $('#novo_usuario_login').val().trim();
     const password = $('#novo_usuario_senha').val();
     const role = $('#novo_usuario_role').val();
-    const perfil = $('#novo_usuario_perfil').val();
+    let perfil = $('#novo_usuario_perfil').val() || 'USUARIO';
     const podeAlterarSenhas = $('#novo_usuario_pode_alterar_senhas').is(':checked') ? 1 : 0;
+
+    // ADMIN não pode criar/definir SUPER_ADMIN pela UI
+    if (String(perfil).toUpperCase() === 'SUPER_ADMIN' && !logadoEhSuperAdminUsuarios()) {
+        perfil = 'ADMIN';
+    }
 
     const permissoes = $('.permissao-usuario:checked')
         .map(function () {

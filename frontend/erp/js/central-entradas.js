@@ -200,6 +200,19 @@ function formatarDataEmissaoCurtaListaCentral(data) {
     return formatarDataCentral(data);
 }
 
+/** UX 2.0 — CNPJ legível na listagem (sem alterar valor interno). */
+function formatarCnpjDocumentoListaCentral(cnpj) {
+    if (!cnpj) return '';
+    if (typeof formatarCpfCnpj === 'function') {
+        return formatarCpfCnpj(cnpj);
+    }
+    const digitos = String(cnpj).replace(/\D/g, '');
+    if (digitos.length === 14) {
+        return digitos.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5');
+    }
+    return String(cnpj);
+}
+
 function formatarDataHoraCentral(data) {
     if (!data) return '—';
     const texto = String(data).trim();
@@ -791,6 +804,7 @@ const CENTRAL_UX1_FILTROS = [
     { codigo: 'pendentes', label: 'Pendentes', filtroRapido: 'pendentes' },
     { codigo: 'em_revisao', label: 'Em Revisão', filtroRapido: 'em_revisao' },
     { codigo: 'prontas', label: 'Pendentes de Compra', filtroRapido: 'prontas' },
+    { codigo: 'em_importacao', label: 'Em Importação', filtroRapido: 'em_importacao' },
     { codigo: 'importadas', label: 'Importadas', filtroRapido: 'importadas' },
     { codigo: 'canceladas', label: 'Canceladas', filtroRapido: 'canceladas' },
     { codigo: 'erro', label: 'Erro', filtroRapido: 'erro' }
@@ -806,6 +820,7 @@ function contadoresFilaTrabalhoCentral() {
         em_revisao: Number(filas.em_revisao ?? c.aguardandoRevisao ?? 0),
         revisar: Number(filas.em_revisao ?? c.aguardandoRevisao ?? 0),
         prontas: Number(filas.prontas ?? c.prontasParaCompra ?? 0),
+        em_importacao: Number(filas.em_importacao ?? c.em_importacao ?? 0),
         importadas: Number(filas.importadas ?? c.gravadas ?? 0),
         canceladas: Number(filas.canceladas ?? 0),
         erro: Number(filas.erro ?? c.erros ?? 0),
@@ -3066,18 +3081,20 @@ function renderGridCentralEntradas() {
                 <span>NF</span>
                 <span>Emissão</span>
                 <span>Valor</span>
-                <span>Status</span>
                 <span>Ação</span>
             </div>`;
         const linhas = centralEntradasState.documentos.map((doc) => {
             const selecionado = centralEntradasState.documentoSelecionadoId === doc.id ? 'central-ux1-doc-card--selected' : '';
             const numero = doc.numero ? `${doc.numero}${doc.serie ? '/' + doc.serie : ''}` : '—';
             const avatar = UX.avatarFornecedorCentral?.(doc.fornecedor) || { iniciais: '?', cor: '#94a3b8' };
-            const badge = UX.badgeStatusUx1?.(doc.status, doc.statusLabel) || renderBadgeStatusCentral(doc.status, doc.statusLabel);
             const emissao = formatarDataEmissaoCurtaListaCentral(doc.dataEmissao || doc.data_emissao);
+            const cnpjFmt = formatarCnpjDocumentoListaCentral(doc.cnpjFornecedor);
             const acao = documentoElegivelPortalNfeCentral(doc)
                 ? { emoji: '☁️', label: 'Portal Nacional', tom: 'atencao', acao: 'portal-nfe' }
                 : (UX.resolverProximaAcaoOperacional?.(doc) || { emoji: '🔵', label: 'Acompanhar', tom: 'processando' });
+            const progressoRevisao = doc.revisaoProgresso && Number(doc.revisaoProgresso.concluidos) > 0
+                ? `<div class="central-rc40-doc-acao-progresso">${escapeHtmlCentralEntradas(`${doc.revisaoProgresso.concluidos}/${doc.revisaoProgresso.total} revisados`)}</div>`
+                : '';
 
             return `
                 <div class="central-rc40-doc-row central-ux1-doc-card ${selecionado} central-entradas-row"
@@ -3086,20 +3103,22 @@ function renderGridCentralEntradas() {
                      role="button"
                      aria-label="Documento ${escapeHtmlCentralEntradas(doc.fornecedor || 'sem fornecedor')}, ${escapeHtmlCentralEntradas(acao.label)}">
                     <span class="central-rc40-doc-avatar" style="background:${escapeHtmlCentralEntradas(avatar.cor)}" aria-hidden="true">${escapeHtmlCentralEntradas(avatar.iniciais)}</span>
-                    <div>
+                    <div class="central-rc40-doc-fornecedor-wrap">
                         <div class="central-rc40-doc-fornecedor">${escapeHtmlCentralEntradas(doc.fornecedor || '—')}</div>
-                        <div class="central-rc40-doc-meta d-md-none">${escapeHtmlCentralEntradas(numero)} · ${escapeHtmlCentralEntradas(emissao)} · ${escapeHtmlCentralEntradas(formatarMoedaCentral(doc.valorTotal))}</div>
+                        ${cnpjFmt
+                            ? `<div class="central-rc40-doc-cnpj">CNPJ ${escapeHtmlCentralEntradas(cnpjFmt)}</div>`
+                            : ''}
+                        <div class="central-rc40-doc-meta central-rc40-doc-meta--mobile">${escapeHtmlCentralEntradas(numero)} · ${escapeHtmlCentralEntradas(emissao)} · ${escapeHtmlCentralEntradas(formatarMoedaCentral(doc.valorTotal))}</div>
                     </div>
-                    <div class="central-rc40-doc-meta" title="NF">${escapeHtmlCentralEntradas(numero)}</div>
-                    <div class="central-rc40-doc-meta" title="Emissão">${escapeHtmlCentralEntradas(emissao)}</div>
-                    <div class="fw-semibold" title="Valor">${escapeHtmlCentralEntradas(formatarMoedaCentral(doc.valorTotal))}</div>
-                    <div>${badge}${doc.revisaoProgresso && Number(doc.revisaoProgresso.concluidos) > 0
-                        ? `<div class="small text-muted mt-1">${escapeHtmlCentralEntradas(`${doc.revisaoProgresso.concluidos}/${doc.revisaoProgresso.total} revisados`)}</div>`
-                        : ''}</div>
+                    <div class="central-rc40-doc-meta central-rc40-doc-nf" title="NF">${escapeHtmlCentralEntradas(numero)}</div>
+                    <div class="central-rc40-doc-meta central-rc40-doc-emissao" title="Emissão">${escapeHtmlCentralEntradas(emissao)}</div>
+                    <div class="central-rc40-doc-valor" title="Valor">${escapeHtmlCentralEntradas(formatarMoedaCentral(doc.valorTotal))}</div>
                     <div class="central-rc40-acao central-rc40-acao--${escapeHtmlCentralEntradas(acao.tom)}"
                         ${acao.acao === 'portal-nfe' ? `data-portal-nfe-id="${doc.id}" data-portal-nfe-chave="${escapeHtmlCentralEntradas(doc.chave || '')}"` : ''}
                         ${acao.acao === 'copiar-chave' ? `data-copiar-chave-id="${doc.id}" data-copiar-chave="${escapeHtmlCentralEntradas(doc.chave || '')}"` : ''}>
-                        ${escapeHtmlCentralEntradas(acao.emoji)} ${escapeHtmlCentralEntradas(acao.label)}
+                        <span class="central-rc40-acao-label">${escapeHtmlCentralEntradas(acao.emoji)} ${escapeHtmlCentralEntradas(acao.label)}</span>
+                        <span class="central-rc40-acao-seta" aria-hidden="true">›</span>
+                        ${progressoRevisao}
                     </div>
                 </div>`;
         }).join('');
@@ -3758,9 +3777,12 @@ function renderCtaImportarCompraCentral(doc) {
 
     const podeAbrir = ['PRONTA_IMPORTACAO', 'EM_IMPORTACAO', 'PRONTA_PARA_COMPRA', 'EM_COMPRA', 'REVISADA'].includes(doc.status) && doc.parseDisponivel;
     if (!podeAbrir) {
-        return `<button type="button" class="btn btn-secondary central-ux1-btn-importar" disabled title="${escapeHtmlCentralEntradas(acao.label || 'Aguardando')}">
-            <i class="fas fa-lock me-1"></i> ${escapeHtmlCentralEntradas(acao.label || 'Aguardando')}
-        </button>`;
+        const tom = escapeHtmlCentralEntradas(acao.tom || 'processando');
+        const label = escapeHtmlCentralEntradas(acao.label || 'Aguardando');
+        return `<div class="central-rc40-status-documento central-rc40-status-documento--${tom}" role="status" title="${label}">
+            <span class="central-rc40-status-documento-icone" aria-hidden="true">${escapeHtmlCentralEntradas(acao.emoji || '🔒')}</span>
+            <span class="central-rc40-status-documento-texto">${label}</span>
+        </div>`;
     }
 
     const emImportacao = acao.acao === 'retomar' || ['EM_IMPORTACAO', 'EM_COMPRA'].includes(doc.status);
@@ -3783,7 +3805,12 @@ function renderPainelLateralCentral(detalhe) {
     const UX = centralUx();
     const badge = UX.badgeStatusUx1?.(doc.status, doc.statusLabel) || renderBadgeStatusCentral(doc.status, doc.statusLabel);
     const numero = doc.numero ? `${doc.numero}${doc.serie ? '/' + doc.serie : ''}` : '—';
+    const cnpjFmt = formatarCnpjDocumentoListaCentral(doc.cnpjFornecedor);
     const acao = UX.resolverProximaAcaoOperacional?.(doc) || { emoji: '🔵', label: 'Acompanhar', tom: 'processando' };
+    const metaLinha = [
+        numero !== '—' ? `NF ${numero}` : null,
+        cnpjFmt ? `CNPJ ${cnpjFmt}` : null
+    ].filter(Boolean).join(' · ');
 
     const abas = [
         { id: 'resumo', label: 'Resumo', icone: 'fa-file-invoice' },
@@ -3799,14 +3826,17 @@ function renderPainelLateralCentral(detalhe) {
     painel.innerHTML = `
         <div class="central-ux1-painel central-entradas-painel-card">
             <div class="central-ux1-painel-header">
-                <div class="d-flex justify-content-between align-items-start gap-2">
-                    <div class="text-truncate">
-                        <strong>${escapeHtmlCentralEntradas(doc.fornecedor || '—')}</strong>
-                        <div class="small text-muted">NF ${escapeHtmlCentralEntradas(numero)}</div>
+                <div class="central-rc40-painel-topo">
+                    <div class="central-rc40-painel-fornecedor">
+                        <div class="central-rc40-painel-fornecedor-nome">${escapeHtmlCentralEntradas(doc.fornecedor || '—')}</div>
+                        ${metaLinha
+                            ? `<div class="central-rc40-painel-fornecedor-meta">${escapeHtmlCentralEntradas(metaLinha)}</div>`
+                            : ''}
                     </div>
-                    ${badge}${renderBadgeUsoConsumoCentral(doc)}
-                    <span class="central-ux1-chip" title="Valor total"><i class="fas fa-coins me-1"></i>${escapeHtmlCentralEntradas(formatarMoedaCentral(doc.valorTotal))}</span>
-                    <span class="central-ux1-chip central-rc40-acao--${escapeHtmlCentralEntradas(acao.tom)}" title="Próxima ação">${escapeHtmlCentralEntradas(acao.emoji)} ${escapeHtmlCentralEntradas(acao.label)}</span>
+                    <div class="central-rc40-painel-chips">
+                        ${badge}${renderBadgeUsoConsumoCentral(doc)}
+                        <span class="central-ux1-chip" title="Valor total"><i class="fas fa-coins me-1"></i>${escapeHtmlCentralEntradas(formatarMoedaCentral(doc.valorTotal))}</span>
+                    </div>
                 </div>
             </div>
             <div class="central-ux1-painel-cta px-3 pt-2">

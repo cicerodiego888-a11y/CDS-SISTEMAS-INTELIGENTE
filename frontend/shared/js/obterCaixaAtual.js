@@ -127,10 +127,41 @@
     }
   }
 
+  async function buscarCaixaSessaoAberta(terminalId, contexto) {
+    const ctx = contexto || {};
+    const g = obterGlobals(ctx);
+    const api = ctx.apiUrl || g.API_URL || '';
+    const fetchFn = ctx.fetch || (typeof fetch === 'function' ? fetch : null);
+    const tid = normalizarId(terminalId);
+    if (!api || !fetchFn || !tid) return null;
+
+    try {
+      const token = (typeof ctx.getToken === 'function' && ctx.getToken())
+        || (typeof localStorage !== 'undefined' && localStorage.getItem('token'))
+        || '';
+      const response = await fetchFn(`${api}/caixa/aberto?terminal_id=${tid}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response || !response.ok) return null;
+      const data = await response.json();
+      if (!data) return null;
+      // Só o caixa de cadastro (caixas.id). Nunca usar id do turno (tabela caixa).
+      return normalizarId(
+        data.caixa_config_id
+        || (data.sessao && (data.sessao.caixa_id || data.sessao.caixaId))
+        || null
+      );
+    } catch (err) {
+      console.warn('[F12] Fallback sessão de caixa indisponível:', err);
+      return null;
+    }
+  }
+
   /**
    * Fonte única do caixa atual para o F12.
-   * Se o contexto local não tiver caixa_id, consulta o cadastro de terminais.
-   * Nunca usa terminalId como caixaId e nunca assume Caixa 1.
+   * 1) terminal.caixa_id
+   * 2) consulta cadastro do terminal
+   * 3) sessão de caixa aberta neste terminal
    */
   async function obterCaixaAtual(contexto) {
     const ctx = contexto || {};
@@ -146,15 +177,38 @@
     }
 
     const fetched = await buscarTerminalNoServidor(terminalId, ctx);
-    if (!fetched) return inicial;
+    if (fetched) {
+      const g = obterGlobals(ctx);
+      atualizarContextoTerminalAtual(fetched, g);
+      const viaTerminal = resolverCaixaAtual({
+        ...ctx,
+        terminal: fetched
+      });
+      if (viaTerminal.ok) return viaTerminal;
+    }
 
-    const g = obterGlobals(ctx);
-    atualizarContextoTerminalAtual(fetched, g);
+    const caixaSessao = await buscarCaixaSessaoAberta(terminalId, ctx);
+    if (caixaSessao) {
+      const g = obterGlobals(ctx);
+      if (g.__cdsTerminalAtual && typeof g.__cdsTerminalAtual === 'object') {
+        g.__cdsTerminalAtual.caixa_id = caixaSessao;
+      }
+      g.terminalCaixaId = caixaSessao;
+      return {
+        ok: true,
+        caixaId: caixaSessao,
+        terminalId,
+        erro: null,
+        origem: 'sessao_aberta'
+      };
+    }
 
-    return resolverCaixaAtual({
-      ...ctx,
-      terminal: fetched
-    });
+    return {
+      ok: false,
+      caixaId: null,
+      terminalId,
+      erro: 'Terminal sem caixa vinculado. Vincule este terminal a um caixa em Configurações → Caixas/Terminais.'
+    };
   }
 
   function atualizarContextoTerminalAtual(terminal, globals) {

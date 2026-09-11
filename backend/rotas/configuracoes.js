@@ -6,10 +6,17 @@ const router = express.Router();
 const db = require('../database');
 const { gravarAuditoria } = require('../services/auditoria');
 const cfgTransferenciaPdv = require('../services/estoque/pdvTransferenciaNaoFiscalFiscalConfig');
+const cfgEditarPrecoUnitarioPdv = require('../services/estoque/pdvEditarPrecoUnitarioConfig');
 const cfgValidadeEmpresa = require('../services/estoque/empresaControlaValidadeConfig');
+const {
+  garantirPastaBackupGravavel,
+  obterPastaBackupPadrao
+} = require('../services/backupManual');
 
 function chaveReservadaSuperAdmin(chave) {
-  return cfgTransferenciaPdv.ehChave(chave) || cfgValidadeEmpresa.ehChave(chave);
+  return cfgTransferenciaPdv.ehChave(chave)
+    || cfgEditarPrecoUnitarioPdv.ehChave(chave)
+    || cfgValidadeEmpresa.ehChave(chave);
 }
 
 function auditarConfiguracao(req, acao, chave, detalhes = {}) {
@@ -219,11 +226,31 @@ router.post('/upload-login-background', loginBgUpload.single('imagem'), handleMu
 
 // salvar pasta backup
 router.post('/backup-path', (req, res) => {
-  const { caminho } = req.body;
+  const bruto = req.body?.caminho;
 
-  if (!caminho) {
-    return res.status(400).json({ sucesso: false, mensagem: 'Caminho inválido' });
+  if (bruto == null || typeof bruto !== 'string' || !String(bruto).trim()) {
+    return res.status(400).json({
+      sucesso: false,
+      mensagem: 'Caminho inválido',
+      erro: 'Caminho inválido'
+    });
   }
+
+  const validacao = garantirPastaBackupGravavel(bruto);
+  if (!validacao.sucesso) {
+    console.error('[BACKUP CONFIG] Pasta rejeitada:', validacao.pasta, validacao.codigo, validacao.detalhe);
+    return res.status(400).json({
+      sucesso: false,
+      erro: validacao.erro || 'Não foi possível acessar ou criar a pasta de backup.',
+      mensagem: validacao.erro || 'Não foi possível acessar ou criar a pasta de backup.',
+      codigo: validacao.codigo || null,
+      pasta: validacao.pasta || null,
+      detalhe: validacao.detalhe || null
+    });
+  }
+
+  const caminho = validacao.caminho;
+  console.log('[BACKUP CONFIG] Pasta salva (validada):', caminho);
 
   const query = `
     INSERT INTO configuracoes (chave, valor, tipo, descricao)
@@ -235,12 +262,27 @@ router.post('/backup-path', (req, res) => {
 
   db.run(query, [caminho], function (err) {
     if (err) {
-      return res.status(500).json({ sucesso: false, erro: err.message });
+      return res.status(500).json({ sucesso: false, erro: err.message, mensagem: err.message });
     }
 
     auditarConfiguracao(req, 'atualizar_backup_path', 'backup_path', { caminho });
 
-    res.json({ sucesso: true, mensagem: 'Pasta de backup salva!' });
+    db.get(
+      "SELECT valor FROM configuracoes WHERE chave = 'backup_path'",
+      [],
+      (readErr, row) => {
+        if (readErr) {
+          return res.status(500).json({ sucesso: false, erro: readErr.message });
+        }
+        const salvo = row?.valor || null;
+        console.log('[BACKUP CONFIG] Pasta confirmada no banco:', salvo);
+        return res.json({
+          sucesso: true,
+          mensagem: 'Pasta de backup configurada com sucesso.',
+          caminho: salvo
+        });
+      }
+    );
   });
 });
 
@@ -254,9 +296,11 @@ router.get('/backup-path', (req, res) => {
         return res.status(500).json({ sucesso: false });
       }
 
+      const configurado = row?.valor && String(row.valor).trim() ? String(row.valor).trim() : null;
       res.json({
         sucesso: true,
-        caminho: row?.valor || null
+        caminho: configurado,
+        fallback: configurado ? null : obterPastaBackupPadrao(db.dbPath)
       });
     }
   );
@@ -336,6 +380,35 @@ router.put(
   }
 );
 
+router.get('/pdv_permitir_editar_preco_unitario', (req, res) => {
+  cfgEditarPrecoUnitarioPdv.ler(db, (err, dados) => {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+    res.json(dados);
+  });
+});
+
+router.put(
+  '/pdv_permitir_editar_preco_unitario',
+  cfgEditarPrecoUnitarioPdv.exigirSuperAdminAlteracao,
+  (req, res) => {
+    cfgEditarPrecoUnitarioPdv.salvar(db, req.body && req.body.valor, (err, dados) => {
+      if (err) {
+        const status = err.status || 500;
+        return res.status(status).json({ error: err.message });
+      }
+      auditarConfiguracao(req, 'atualizar_configuracao', cfgEditarPrecoUnitarioPdv.CHAVE, {
+        valor: dados.valor
+      });
+      res.json({
+        message: 'Configuração atualizada com sucesso',
+        ...dados
+      });
+    });
+  }
+);
+
 router.get('/empresa_controla_validade', (req, res) => {
   cfgValidadeEmpresa.ler(db, (err, dados) => {
     if (err) {
@@ -400,6 +473,19 @@ router.put('/:chave', (req, res) => {
   if (cfgTransferenciaPdv.ehChave(chave)) {
     return cfgTransferenciaPdv.exigirSuperAdminAlteracao(req, res, () => {
       cfgTransferenciaPdv.salvar(db, valor, (err, dados) => {
+        if (err) {
+          const status = err.status || 500;
+          return res.status(status).json({ error: err.message });
+        }
+        auditarConfiguracao(req, 'atualizar_configuracao', chave, { valor: dados.valor });
+        res.json({ message: 'Configuração atualizada com sucesso', ...dados });
+      });
+    });
+  }
+
+  if (cfgEditarPrecoUnitarioPdv.ehChave(chave)) {
+    return cfgEditarPrecoUnitarioPdv.exigirSuperAdminAlteracao(req, res, () => {
+      cfgEditarPrecoUnitarioPdv.salvar(db, valor, (err, dados) => {
         if (err) {
           const status = err.status || 500;
           return res.status(status).json({ error: err.message });

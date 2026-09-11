@@ -97,10 +97,14 @@ describe('Resolução de estado e permissão', () => {
 
     const operador = { perfil: 'OPERADOR' };
     assert.equal(modelo.podeAlterarViaTeclaF12('OPERADOR', operador), true);
-    assert.equal(modelo.podeAlterarViaTeclaF12('OPERADOR', { perfil: 'ADMIN' }), false);
+    assert.equal(modelo.podeAlterarViaTeclaF12('OPERADOR', { perfil: 'ADMIN' }), true);
     assert.equal(modelo.podeAlterarViaTeclaF12('OPERADOR', { perfil: 'SUPER_ADMIN' }), true);
     assert.equal(modelo.operadorPodeAlterarEsteCaixa({ perfil: 'OPERADOR', caixa_id: 1 }, 1), true);
     assert.equal(modelo.operadorPodeAlterarEsteCaixa({ perfil: 'OPERADOR', caixa_id: 1 }, 2), false);
+    // Sem caixa_id no usuário (modelo real CDS): libera o caixa do terminal.
+    assert.equal(modelo.operadorPodeAlterarEsteCaixa({ perfil: 'OPERADOR' }, 1), true);
+    assert.equal(modelo.operadorPodeAlterarEsteCaixa({ perfil: 'USUARIO' }, 3), true);
+    assert.equal(modelo.podeAlterarViaTeclaF12('OPERADOR', { perfil: 'USUARIO' }, 2), true);
   });
 
   it('cenário 2: ADMINISTRADOR + TODOS usa f12_global_ativo e operador não altera', () => {
@@ -145,7 +149,7 @@ describe('Resolução de estado e permissão', () => {
     assert.equal(modelo.podeOperadorAlterarF12Compat('GLOBAL', op), false);
     assert.equal(modelo.podeOperadorAlterarF12Compat('MODO_ADMIN', op), false);
     const admin = { perfil: 'ADMIN' };
-    assert.equal(modelo.podeOperadorAlterarF12Compat('POR_CAIXA', admin), false);
+    assert.equal(modelo.podeOperadorAlterarF12Compat('POR_CAIXA', admin), true);
     assert.equal(modelo.podeOperadorAlterarF12Compat('GLOBAL', admin), true);
     const superA = { perfil: 'SUPER_ADMIN' };
     assert.equal(modelo.podeOperadorAlterarF12Compat('MODO_ADMIN', superA), true);

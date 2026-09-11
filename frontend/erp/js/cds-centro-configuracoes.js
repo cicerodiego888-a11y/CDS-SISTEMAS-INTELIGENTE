@@ -707,6 +707,23 @@
             </button>
           </div>
         `, 'transferência estoque não fiscal fiscal pdv super usuário')}
+        ${card('<i class="fas fa-edit"></i> PDV — Editar preço unitário', `
+          <p class="cds-cfg-hint mb-3">
+            Somente <strong>Super Usuário</strong> controla esta opção.
+            Quando <strong>DESATIVADO</strong> (padrão), o campo <strong>Unitário</strong> no carrinho do PDV permanece somente leitura.
+            Quando <strong>ATIVADO</strong>, o operador pode editar o unitário na venda e o sistema atualiza automaticamente o preço no cadastro do produto (estoque).
+          </p>
+          <label class="form-label" for="cfgPdvEditarPrecoUnitario">Permitir editar unitário no PDV e atualizar cadastro</label>
+          <select class="form-select" id="cfgPdvEditarPrecoUnitario" data-cfg-search="editar preço unitário pdv cadastro produto estoque">
+            <option value="DESATIVADO">DESATIVADO</option>
+            <option value="ATIVADO">ATIVADO</option>
+          </select>
+          <div class="cds-cfg-actions mt-2">
+            <button type="button" class="btn btn-primary btn-sm" id="btnSalvarPdvEditarPrecoUnitario">
+              <i class="fas fa-save"></i> Salvar
+            </button>
+          </div>
+        `, 'editar preço unitário pdv cadastro produto estoque super usuário')}
       </div>
     `;
   }
@@ -752,6 +769,49 @@
           data.valor === 'ATIVADO'
             ? 'Transferência NF → Fiscal ATIVADA no PDV.'
             : 'Transferência NF → Fiscal DESATIVADA no PDV.',
+          'success'
+        );
+      }
+    } catch (err) {
+      if (typeof global.showNotification === 'function') {
+        global.showNotification(err.message || 'Erro ao salvar configuração.', 'danger');
+      }
+    }
+  }
+
+  function hidratarEditarPrecoUnitarioPdv() {
+    const sel = document.getElementById('cfgPdvEditarPrecoUnitario');
+    if (!sel) return;
+    const api = typeof API_URL !== 'undefined' ? API_URL : '/api';
+    fetch(`${api}/configuracoes/pdv_permitir_editar_preco_unitario`, {
+      headers: headersCfgApi()
+    }).then((r) => r.ok ? r.json() : { valor: 'DESATIVADO' }).then((data) => {
+      sel.value = data && data.valor === 'ATIVADO' ? 'ATIVADO' : 'DESATIVADO';
+    }).catch(() => {
+      sel.value = 'DESATIVADO';
+    });
+  }
+
+  async function salvarEditarPrecoUnitarioPdv() {
+    const sel = document.getElementById('cfgPdvEditarPrecoUnitario');
+    if (!sel) return;
+    const api = typeof API_URL !== 'undefined' ? API_URL : '/api';
+    try {
+      const resp = await fetch(`${api}/configuracoes/pdv_permitir_editar_preco_unitario`, {
+        method: 'PUT',
+        headers: headersCfgApi(),
+        body: JSON.stringify({ valor: sel.value })
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        throw new Error(data.error || data.erro || 'Não foi possível salvar.');
+      }
+      sel.value = data.valor === 'ATIVADO' ? 'ATIVADO' : 'DESATIVADO';
+      if (typeof global.showNotification === 'function') {
+        global.showNotification(
+          data.valor === 'ATIVADO'
+            ? 'Edição de unitário no PDV ATIVADA (atualiza cadastro).'
+            : 'Edição de unitário no PDV DESATIVADA.',
           'success'
         );
       }
@@ -1244,6 +1304,10 @@
     hidratarTransferenciaPdvNfFiscal();
     document.getElementById('btnSalvarPdvTransferenciaNfFiscal')?.addEventListener('click', () => {
       void salvarTransferenciaPdvNfFiscal();
+    });
+    hidratarEditarPrecoUnitarioPdv();
+    document.getElementById('btnSalvarPdvEditarPrecoUnitario')?.addEventListener('click', () => {
+      void salvarEditarPrecoUnitarioPdv();
     });
     hidratarEmpresaControlaValidade();
     document.getElementById('btnSalvarEmpresaControlaValidade')?.addEventListener('click', () => {

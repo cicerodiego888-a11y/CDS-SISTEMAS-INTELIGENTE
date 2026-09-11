@@ -383,6 +383,13 @@ function aplicarAlteracoesPosCriacao() {
   aplicarAlteracaoSegura('tef_pinpads', `ALTER TABLE tef_pinpads ADD COLUMN nome TEXT`);
   aplicarAlteracaoSegura('tef_pinpads', `ALTER TABLE tef_pinpads ADD COLUMN ativo INTEGER DEFAULT 1`);
 
+  // TEF-01 — campos de integração geral na fonte oficial (tef_configuracao)
+  aplicarAlteracaoSegura('tef_configuracao', `ALTER TABLE tef_configuracao ADD COLUMN tipo_integracao TEXT`);
+  aplicarAlteracaoSegura('tef_configuracao', `ALTER TABLE tef_configuracao ADD COLUMN sdk_path TEXT`);
+  aplicarAlteracaoSegura('tef_configuracao', `ALTER TABLE tef_configuracao ADD COLUMN exe_path TEXT`);
+  aplicarAlteracaoSegura('tef_configuracao', `ALTER TABLE tef_configuracao ADD COLUMN ip_tef TEXT`);
+  aplicarAlteracaoSegura('tef_configuracao', `ALTER TABLE tef_configuracao ADD COLUMN porta_tef INTEGER`);
+
   const alteracoesTefTransacoes = [
     `ALTER TABLE tef_transacoes ADD COLUMN idempotency_key TEXT`,
     `ALTER TABLE tef_transacoes ADD COLUMN payload_retorno TEXT`,
@@ -1030,6 +1037,11 @@ function criarTabelas() {
         pdv_codigo TEXT,
         terminal_codigo TEXT,
         caixa_codigo TEXT,
+        tipo_integracao TEXT,
+        sdk_path TEXT,
+        exe_path TEXT,
+        ip_tef TEXT,
+        porta_tef INTEGER,
         criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
         atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
       )
@@ -2940,6 +2952,7 @@ function inserirConfiguracoesPadrao() {
     ,['tef_ativo', 'true', 'boolean', 'TEF habilitado']
     ,['modo_dashboard_fiscal', '1', 'boolean', 'Modo fiscal ativo por padrão (F12) — ERP e PDV']
     ,['pdv_permitir_transferencia_nao_fiscal_fiscal', 'DESATIVADO', 'string', 'Permitir transferência de estoque não fiscal para fiscal no PDV']
+    ,['pdv_permitir_editar_preco_unitario', 'DESATIVADO', 'string', 'Permitir editar preço unitário no PDV e atualizar cadastro do produto']
     ,['empresa_controla_validade', 'ATIVADO', 'string', 'Empresa controla validade de produtos (lotes/FEFO/alertas)']
   ];
 
@@ -2960,6 +2973,12 @@ function inserirConfiguracoesPadrao() {
     cfgTransfPdv.hidratar(db);
   } catch (hidrErr) {
     console.warn('[PDV] Falha ao hidratar flag de transferência NF→F:', hidrErr && hidrErr.message);
+  }
+  try {
+    const cfgEditarPrecoUnitarioPdv = require('./services/estoque/pdvEditarPrecoUnitarioConfig');
+    cfgEditarPrecoUnitarioPdv.hidratar(db);
+  } catch (hidrPrecoErr) {
+    console.warn('[PDV] Falha ao hidratar flag editar preço unitário:', hidrPrecoErr && hidrPrecoErr.message);
   }
   try {
     const cfgValidadeEmpresa = require('./services/estoque/empresaControlaValidadeConfig');

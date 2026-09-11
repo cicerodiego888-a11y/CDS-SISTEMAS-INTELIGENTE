@@ -149,6 +149,35 @@ describe('CORREÇÃO-NF-MARGEM-01 — precedência do cadastro', () => {
     assert.equal(r.margem, 40);
   });
 
+  it('TESTE I — preço de venda editado manualmente não é sobrescrito pelo % do cadastro', () => {
+    assert.match(comprasJs, /function marcarPrecoVendaManualCompra/);
+    assert.match(comprasJs, /oninput="marcarPrecoVendaManualCompra\(\)"/);
+    assert.match(comprasJs, /margemManualCommit/);
+
+    const item = {
+      produto_id: 1,
+      preco_unitario: 10,
+      margem_lucro: 50,
+      preco_venda_sugerido: 15,
+      margem_editada_manual: 1,
+      margem_origem: 'manual',
+      atualizar_preco_venda: 1
+    };
+    const produto = { lucro_percentual: 35 };
+    assert.equal(deveReaplicarMargemCadastroItemCompra(item, true), false);
+    assert.equal(resolverMargemItem(item, produto, true).margem, 50);
+
+    // Simula sincronizarPrecosCadastroItemCompra com venda manual
+    const vendaManual = Number(item.margem_editada_manual) === 1 || item.margem_origem === 'manual';
+    let precoVenda = Number(item.preco_venda_sugerido);
+    if (vendaManual && precoVenda > 0) {
+      precoVenda = Number(precoVenda.toFixed(2));
+    } else {
+      precoVenda = Number((item.preco_unitario * (1 + 35 / 100)).toFixed(2));
+    }
+    assert.equal(precoVenda, 15);
+  });
+
   it('produto 25%', () => {
     assert.equal(
       resolverMargemItem({ produto_id: 1, margem_lucro: 30 }, { lucro_percentual: 25 }, true).margem,

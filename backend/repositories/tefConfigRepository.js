@@ -1,4 +1,19 @@
-const db = require('../database');
+let db = require('../database');
+
+/**
+ * Permite injetar conexão SQLite (testes TEF-01).
+ * Em produção permanece o singleton de database.js.
+ */
+function setDatabase(customDb) {
+  if (!customDb) {
+    throw new Error('setDatabase exige uma conexão SQLite válida');
+  }
+  db = customDb;
+}
+
+function getDatabase() {
+  return db;
+}
 
 function run(sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -147,8 +162,13 @@ async function criarConfiguracaoPrincipal(dados) {
       pdv_codigo,
       terminal_codigo,
       caixa_codigo,
+      tipo_integracao,
+      sdk_path,
+      exe_path,
+      ip_tef,
+      porta_tef,
       atualizado_em
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `, [
     boolToInt(dados.habilitado),
     dados.provedor || null,
@@ -159,7 +179,12 @@ async function criarConfiguracaoPrincipal(dados) {
     dados.loja_codigo || null,
     dados.pdv_codigo || null,
     dados.terminal_codigo || null,
-    dados.caixa_codigo || null
+    dados.caixa_codigo || null,
+    dados.tipo_integracao || null,
+    dados.sdk_path || null,
+    dados.exe_path || null,
+    dados.ip_tef || null,
+    dados.porta_tef ?? null
   ]);
 
   return resultado.lastID;
@@ -179,6 +204,11 @@ async function atualizarConfiguracaoPrincipal(id, dados) {
       pdv_codigo = ?,
       terminal_codigo = ?,
       caixa_codigo = ?,
+      tipo_integracao = ?,
+      sdk_path = ?,
+      exe_path = ?,
+      ip_tef = ?,
+      porta_tef = ?,
       atualizado_em = datetime('now')
     WHERE id = ?
   `, [
@@ -192,6 +222,11 @@ async function atualizarConfiguracaoPrincipal(id, dados) {
     dados.pdv_codigo || null,
     dados.terminal_codigo || null,
     dados.caixa_codigo || null,
+    dados.tipo_integracao || null,
+    dados.sdk_path || null,
+    dados.exe_path || null,
+    dados.ip_tef || null,
+    dados.porta_tef ?? null,
     id
   ]);
 }
@@ -439,13 +474,29 @@ async function atualizarStatusPinpad(configId, status, ultimaConexao = null) {
   return buscarPinpadPorConfigId(configId);
 }
 
+async function limparConfiguracaoCompleta() {
+  const principal = await buscarConfiguracaoPrincipal();
+  if (!principal) {
+    return false;
+  }
+
+  await run('DELETE FROM tef_operacoes WHERE tef_configuracao_id = ?', [principal.id]);
+  await run('DELETE FROM tef_pinpads WHERE tef_configuracao_id = ?', [principal.id]);
+  await run('DELETE FROM tef_servidores WHERE tef_configuracao_id = ?', [principal.id]);
+  await run('DELETE FROM tef_configuracao WHERE id = ?', [principal.id]);
+  return true;
+}
+
 module.exports = {
   boolToInt,
   intToBool,
+  setDatabase,
+  getDatabase,
   contarConfiguracoes,
   buscarConfiguracaoPrincipal,
   buscarConfiguracaoCompleta,
   listarConfiguracaoLegada,
   salvarConfiguracaoCompleta,
-  atualizarStatusPinpad
+  atualizarStatusPinpad,
+  limparConfiguracaoCompleta
 };

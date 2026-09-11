@@ -1,6 +1,30 @@
 const repository = require('../../repositories/tefConfigRepository');
 const pinpadCatalog = require('./pinpads/pinpadCatalog');
 
+const DEFAULTS_CONFIG = Object.freeze({
+  tefHabilitado: 'true',
+  tefProvedor: 'rede',
+  tefAmbiente: 'simulacao',
+  tefTimeout: 60,
+  tefTentativas: 3,
+  tipoIntegracao: '',
+  sdkPath: '',
+  exePath: '',
+  ipTef: '',
+  portaTef: ''
+});
+
+const CAMPOS_SECRETOS = new Set([
+  'clientSecret',
+  'accessToken',
+  'refreshToken',
+  'chaveComunicacao',
+  'client_secret',
+  'access_token',
+  'refresh_token',
+  'chave_comunicacao'
+]);
+
 function resolverPinpadPayload(payload = {}) {
   const codigo = normalizarTexto(payload.pinpadModelo || payload.pinpadCodigo) || null;
   const meta = pinpadCatalog.resolver({
@@ -15,7 +39,7 @@ function resolverPinpadPayload(payload = {}) {
     nome: meta?.nome || normalizarTexto(payload.pinpadNome) || null,
     fabricante: meta?.fabricante || normalizarTexto(payload.fabricante) || null,
     modelo: meta?.modelo || normalizarTexto(payload.modelo) || null,
-    tipo_conexao: inferirTipoConexaoPinpad(payload),
+    tipo_conexao: resolverTipoConexaoPinpad(payload),
     porta_com: normalizarTexto(payload.portaCom) || null,
     ip: normalizarTexto(payload.pinpadIp) || null,
     porta: normalizarNumero(payload.pinpadPorta),
@@ -43,29 +67,68 @@ function normalizarBoolean(valor) {
   return valor === true || valor === 'true' || valor === '1' || valor === 1;
 }
 
-function inferirTipoConexaoPinpad(dados) {
-  if (dados.pinpadIp || dados.ip) {
-    return 'ip';
+function campoDefinido(payload, chave) {
+  return Object.prototype.hasOwnProperty.call(payload, chave)
+    && payload[chave] !== undefined;
+}
+
+function resolverTipoConexaoPinpad(dados) {
+  const informado = normalizarTexto(dados.tipoConexao || dados.tipo_conexao).toLowerCase();
+  if (informado === 'serial' || informado === 'ip' || informado === 'usb') {
+    return informado;
   }
   if (dados.portaCom || dados.porta_com) {
     return 'serial';
   }
+  if (dados.pinpadIp || dados.ip) {
+    return 'ip';
+  }
   return '';
 }
 
-function mapearPayloadEntrada(payload = {}) {
+function resolverAmbiente(valor) {
+  const ambiente = normalizarTexto(valor).toLowerCase().trim();
+  if (!ambiente) {
+    return null;
+  }
+  if (ambiente === 'produção') {
+    return 'producao';
+  }
+  return ambiente;
+}
+
+function resolverModoAdapter(ambiente) {
+  const a = String(ambiente || 'simulacao').toLowerCase();
+  if (a === 'homologacao' || a === 'producao' || a === 'produção') {
+    return 'real';
+  }
+  return 'simulacao';
+}
+
+function mapearPayloadEntrada(payload = {}, existente = null) {
+  const opsExistentes = existente?.operacoes || null;
+
+  const confirmacaoManual = campoDefinido(payload, 'confirmacaoManual')
+    ? normalizarBoolean(payload.confirmacaoManual)
+    : repository.intToBool(opsExistentes?.confirmacao_manual);
+
   return {
     principal: {
       habilitado: normalizarBoolean(payload.tefHabilitado),
       provedor: normalizarTexto(payload.tefProvedor) || null,
-      ambiente: normalizarTexto(payload.tefAmbiente) || null,
+      ambiente: resolverAmbiente(payload.tefAmbiente),
       timeout: normalizarNumero(payload.tefTimeout),
       tentativas: normalizarNumero(payload.tefTentativas),
       empresa_codigo: normalizarTexto(payload.empresaCodigo) || null,
       loja_codigo: normalizarTexto(payload.lojaCodigo) || null,
       pdv_codigo: normalizarTexto(payload.pdvCodigo) || null,
       terminal_codigo: normalizarTexto(payload.terminalCodigo) || null,
-      caixa_codigo: normalizarTexto(payload.caixaCodigo) || null
+      caixa_codigo: normalizarTexto(payload.caixaCodigo) || null,
+      tipo_integracao: normalizarTexto(payload.tipoIntegracao) || null,
+      sdk_path: normalizarTexto(payload.sdkPath) || null,
+      exe_path: normalizarTexto(payload.exePath) || null,
+      ip_tef: normalizarTexto(payload.ipTef) || null,
+      porta_tef: normalizarNumero(payload.portaTef)
     },
     servidor: {
       base_url: normalizarTexto(payload.baseUrl) || null,
@@ -88,7 +151,7 @@ function mapearPayloadEntrada(payload = {}) {
       cancelamento: normalizarBoolean(payload.cancelamento),
       reimpressao: normalizarBoolean(payload.reimpressao),
       pre_autorizacao: normalizarBoolean(payload.preAutorizacao),
-      confirmacao_manual: normalizarBoolean(payload.confirmacaoManual)
+      confirmacao_manual: confirmacaoManual
     }
   };
 }
@@ -100,6 +163,11 @@ function mapearPayloadLegado(payload = {}) {
     tefAmbiente: payload.tefAmbiente,
     tefTimeout: payload.tefTimeout,
     tefTentativas: payload.tefTentativas,
+    tipoIntegracao: payload.tipoIntegracao,
+    sdkPath: payload.sdkPath,
+    exePath: payload.exePath,
+    ipTef: payload.ipTef,
+    portaTef: payload.portaTef,
     empresaCodigo: payload.empresaCodigo,
     lojaCodigo: payload.lojaCodigo,
     pdvCodigo: payload.pdvCodigo,
@@ -117,8 +185,10 @@ function mapearPayloadLegado(payload = {}) {
     pinpadHabilitado: payload.pinpadHabilitado,
     pinpadModelo: payload.pinpadModelo,
     pinpadCodigo: payload.pinpadCodigo,
+    pinpadNome: payload.pinpadNome,
     fabricante: payload.fabricante,
     modelo: payload.modelo,
+    tipoConexao: payload.tipoConexao,
     portaCom: payload.portaCom,
     pinpadIp: payload.pinpadIp,
     pinpadPorta: payload.pinpadPorta,
@@ -150,9 +220,14 @@ function mapearConfiguracaoSaida(registro) {
     id: principal.id,
     tefHabilitado: boolParaResposta(principal.habilitado),
     tefProvedor: principal.provedor || '',
-    tefAmbiente: principal.ambiente || '',
+    tefAmbiente: principal.ambiente || 'simulacao',
     tefTimeout: principal.timeout ?? '',
     tefTentativas: principal.tentativas ?? '',
+    tipoIntegracao: principal.tipo_integracao || '',
+    sdkPath: principal.sdk_path || '',
+    exePath: principal.exe_path || '',
+    ipTef: principal.ip_tef || '',
+    portaTef: principal.porta_tef ?? '',
     empresaCodigo: principal.empresa_codigo || '',
     lojaCodigo: principal.loja_codigo || '',
     pdvCodigo: principal.pdv_codigo || '',
@@ -193,6 +268,26 @@ function mapearConfiguracaoSaida(registro) {
   };
 }
 
+function montarResumoLogSeguro(config = {}) {
+  const resumo = {};
+  Object.keys(config).forEach((chave) => {
+    if (CAMPOS_SECRETOS.has(chave)) {
+      resumo[`${chave}Presente`] = Boolean(config[chave]);
+      return;
+    }
+    resumo[chave] = config[chave];
+  });
+  return resumo;
+}
+
+function logConfig(acao, config = {}) {
+  try {
+    console.log(`[TEF-CONFIG] ${acao}`, montarResumoLogSeguro(config));
+  } catch (error) {
+    console.log(`[TEF-CONFIG] ${acao} (log indisponível: ${error.message})`);
+  }
+}
+
 async function migrarConfiguracaoLegadaSeNecessario() {
   const total = await repository.contarConfiguracoes();
   if (total > 0) {
@@ -206,13 +301,63 @@ async function migrarConfiguracaoLegadaSeNecessario() {
 
   const dados = mapearPayloadLegado(legado);
   await repository.salvarConfiguracaoCompleta(dados, { atualizar: false });
+  logConfig('migracao_legada', mapearConfiguracaoSaida(await repository.buscarConfiguracaoCompleta()));
   return true;
+}
+
+function aplicarDefaultsSeVazio(config) {
+  if (config && Object.keys(config).length > 0) {
+    return config;
+  }
+
+  return {
+    ...DEFAULTS_CONFIG,
+    empresaCodigo: '',
+    lojaCodigo: '',
+    pdvCodigo: '',
+    terminalCodigo: '',
+    caixaCodigo: '',
+    baseUrl: '',
+    ipServidor: '',
+    portaServidor: '',
+    clientId: '',
+    clientSecret: '',
+    accessToken: '',
+    refreshToken: '',
+    chaveComunicacao: '',
+    operador: '',
+    pinpadHabilitado: 'false',
+    pinpadModelo: '',
+    pinpadCodigo: '',
+    pinpadNome: '',
+    pinpadNomeExibicao: '',
+    fabricante: '',
+    modelo: '',
+    tipoConexao: '',
+    portaCom: '',
+    pinpadIp: '',
+    pinpadPorta: '',
+    serial: '',
+    debito: 'false',
+    creditoAvista: 'false',
+    creditoParcelado: 'false',
+    voucher: 'false',
+    pix: 'false',
+    cancelamento: 'false',
+    reimpressao: 'false',
+    preAutorizacao: 'false',
+    confirmacaoManual: 'false',
+    _defaultsAplicados: true
+  };
 }
 
 async function obterConfiguracao() {
   await migrarConfiguracaoLegadaSeNecessario();
   const registro = await repository.buscarConfiguracaoCompleta();
-  return mapearConfiguracaoSaida(registro);
+  const config = mapearConfiguracaoSaida(registro);
+  const resultado = aplicarDefaultsSeVazio(config);
+  logConfig('carregada', resultado);
+  return resultado;
 }
 
 async function criarConfiguracao(payload) {
@@ -223,24 +368,63 @@ async function criarConfiguracao(payload) {
     throw erro;
   }
 
-  const dados = mapearPayloadEntrada(payload);
+  const payloadComDefaults = {
+    ...DEFAULTS_CONFIG,
+    ...payload,
+    tefHabilitado: campoDefinido(payload, 'tefHabilitado') ? payload.tefHabilitado : DEFAULTS_CONFIG.tefHabilitado,
+    tefProvedor: normalizarTexto(payload.tefProvedor) || DEFAULTS_CONFIG.tefProvedor,
+    tefAmbiente: resolverAmbiente(payload.tefAmbiente) || DEFAULTS_CONFIG.tefAmbiente,
+    tefTimeout: campoDefinido(payload, 'tefTimeout') && payload.tefTimeout !== ''
+      ? payload.tefTimeout
+      : DEFAULTS_CONFIG.tefTimeout,
+    tefTentativas: campoDefinido(payload, 'tefTentativas') && payload.tefTentativas !== ''
+      ? payload.tefTentativas
+      : DEFAULTS_CONFIG.tefTentativas
+  };
+
+  const dados = mapearPayloadEntrada(payloadComDefaults);
   const registro = await repository.salvarConfiguracaoCompleta(dados, { atualizar: false });
-  return mapearConfiguracaoSaida(registro);
+  const config = mapearConfiguracaoSaida(registro);
+  logConfig('salva', config);
+  return config;
 }
 
 async function atualizarConfiguracao(payload) {
-  const dados = mapearPayloadEntrada(payload);
+  const existente = await repository.buscarConfiguracaoCompleta();
+  const dados = mapearPayloadEntrada(payload, existente);
   const registro = await repository.salvarConfiguracaoCompleta(dados, { atualizar: true });
-  return mapearConfiguracaoSaida(registro);
+  const config = mapearConfiguracaoSaida(registro);
+  logConfig('atualizada', config);
+  return config;
 }
 
 async function salvarConfiguracao(payload) {
-  const existente = await repository.buscarConfiguracaoPrincipal();
-  const dados = mapearPayloadEntrada(payload);
+  const existente = await repository.buscarConfiguracaoCompleta();
+  const ehNovo = !existente?.principal;
+
+  const payloadFinal = ehNovo
+    ? {
+      ...DEFAULTS_CONFIG,
+      ...payload,
+      tefHabilitado: campoDefinido(payload, 'tefHabilitado') ? payload.tefHabilitado : DEFAULTS_CONFIG.tefHabilitado,
+      tefProvedor: normalizarTexto(payload.tefProvedor) || DEFAULTS_CONFIG.tefProvedor,
+      tefAmbiente: resolverAmbiente(payload.tefAmbiente) || DEFAULTS_CONFIG.tefAmbiente,
+      tefTimeout: campoDefinido(payload, 'tefTimeout') && payload.tefTimeout !== ''
+        ? payload.tefTimeout
+        : DEFAULTS_CONFIG.tefTimeout,
+      tefTentativas: campoDefinido(payload, 'tefTentativas') && payload.tefTentativas !== ''
+        ? payload.tefTentativas
+        : DEFAULTS_CONFIG.tefTentativas
+    }
+    : payload;
+
+  const dados = mapearPayloadEntrada(payloadFinal, existente);
   const registro = await repository.salvarConfiguracaoCompleta(dados, {
-    atualizar: Boolean(existente)
+    atualizar: Boolean(existente?.principal)
   });
-  return mapearConfiguracaoSaida(registro);
+  const config = mapearConfiguracaoSaida(registro);
+  logConfig('salva', config);
+  return config;
 }
 
 function validarServidorConfigurado(servidor) {
@@ -257,12 +441,138 @@ function validarPinpadConfigurado(pinpad) {
     return false;
   }
 
+  // serial físico é opcional — não exige pinpad.serial
   return Boolean(
     pinpad?.codigo ||
     pinpad?.porta_com ||
-    pinpad?.ip ||
-    pinpad?.serial
+    pinpad?.ip
   );
+}
+
+/**
+ * Validação contextual da configuração oficial.
+ * Ambiente (simulacao|homologacao|producao) ≠ modo do adapter (simulacao|real).
+ */
+function validarConfiguracao(config = {}, opcoes = {}) {
+  const pendencias = [];
+  const ambiente = String(config.tefAmbiente || '').toLowerCase() || 'simulacao';
+  const modoAdapter = opcoes.modoAdapter || resolverModoAdapter(ambiente);
+  const tefHabilitado = normalizarBoolean(config.tefHabilitado);
+
+  if (!tefHabilitado) {
+    pendencias.push('TEF desabilitado na configuração');
+  }
+
+  if (!config.tefProvedor) {
+    pendencias.push('Provedor TEF não informado');
+  }
+
+  if (!config.tefAmbiente) {
+    pendencias.push('Ambiente TEF não informado');
+  }
+
+  if (!normalizarTexto(config.empresaCodigo).trim()) {
+    pendencias.push('Código da empresa não configurado');
+  }
+
+  if (!normalizarTexto(config.lojaCodigo).trim()) {
+    pendencias.push('Código da loja não configurado');
+  }
+
+  if (!normalizarTexto(config.terminalCodigo).trim()) {
+    pendencias.push('Código do terminal não configurado');
+  }
+
+  const pinpadHabilitado = normalizarBoolean(config.pinpadHabilitado);
+  if (pinpadHabilitado) {
+    const temModelo = Boolean(config.pinpadModelo || config.pinpadCodigo);
+    const tipoConexao = String(config.tipoConexao || '').toLowerCase();
+
+    if (!temModelo) {
+      pendencias.push('Modelo do PinPad não configurado');
+    }
+
+    if (tipoConexao === 'serial' || config.portaCom) {
+      if (!normalizarTexto(config.portaCom).trim()) {
+        pendencias.push('Porta COM do PinPad não configurada');
+      }
+    } else if (tipoConexao === 'ip') {
+      if (!normalizarTexto(config.pinpadIp).trim()) {
+        pendencias.push('IP do PinPad não configurado');
+      }
+      if (config.pinpadPorta === '' || config.pinpadPorta == null) {
+        pendencias.push('Porta IP do PinPad não configurada');
+      }
+    } else if (temModelo && !config.portaCom && !config.pinpadIp) {
+      pendencias.push('PinPad habilitado sem parâmetros de conexão');
+    }
+  }
+
+  // Modo simulação: não exige SDK/DLL/credenciais reais
+  if (modoAdapter !== 'simulacao' && ambiente !== 'simulacao') {
+    const provedor = String(config.tefProvedor || '').toLowerCase();
+    if (['sitef', 'paygo'].includes(provedor)) {
+      if (!normalizarTexto(config.sdkPath).trim() && !normalizarTexto(config.exePath).trim()) {
+        pendencias.push('Caminho do SDK/EXE não configurado para modo real');
+      }
+    }
+  }
+
+  const resultado = {
+    valida: pendencias.length === 0,
+    pendencias,
+    ambiente,
+    modoAdapter
+  };
+
+  logConfig('validada', {
+    valida: resultado.valida,
+    ambiente,
+    modoAdapter,
+    pendenciasCount: pendencias.length
+  });
+
+  return resultado;
+}
+
+async function getPinPadConfig() {
+  const config = await obterConfiguracao();
+  return {
+    pinpadHabilitado: config.pinpadHabilitado,
+    pinpadModelo: config.pinpadModelo,
+    pinpadCodigo: config.pinpadCodigo,
+    pinpadNome: config.pinpadNome,
+    pinpadNomeExibicao: config.pinpadNomeExibicao,
+    fabricante: config.fabricante,
+    modelo: config.modelo,
+    tipoConexao: config.tipoConexao,
+    portaCom: config.portaCom,
+    pinpadIp: config.pinpadIp,
+    pinpadPorta: config.pinpadPorta,
+    serial: config.serial,
+    pinpadStatus: config.pinpadStatus,
+    pinpadUltimaConexao: config.pinpadUltimaConexao
+  };
+}
+
+async function getServerConfig() {
+  const config = await obterConfiguracao();
+  return {
+    baseUrl: config.baseUrl,
+    ipServidor: config.ipServidor,
+    portaServidor: config.portaServidor,
+    clientId: config.clientId,
+    clientSecret: config.clientSecret,
+    accessToken: config.accessToken,
+    refreshToken: config.refreshToken,
+    chaveComunicacao: config.chaveComunicacao,
+    operador: config.operador,
+    ipTef: config.ipTef,
+    portaTef: config.portaTef,
+    tipoIntegracao: config.tipoIntegracao,
+    sdkPath: config.sdkPath,
+    exePath: config.exePath
+  };
 }
 
 async function obterStatus() {
@@ -281,12 +591,15 @@ async function obterStatus() {
   const tefHabilitado = repository.intToBool(principal.habilitado);
   const servidorConfigurado = validarServidorConfigurado(servidor);
   const pinpadConfigurado = validarPinpadConfigurado(pinpad);
+  const ambiente = principal.ambiente || '';
+  const modoAdapter = resolverModoAdapter(ambiente);
 
   return {
     configurado: true,
     tefHabilitado,
     provedor: principal.provedor || '',
-    ambiente: principal.ambiente || '',
+    ambiente,
+    modoAdapter,
     servidor: {
       configurado: servidorConfigurado,
       conectado: false,
@@ -303,6 +616,8 @@ async function obterStatus() {
       status: pinpad?.status || 'desconhecido',
       fabricante: pinpad?.fabricante || '',
       modelo: pinpad?.modelo || '',
+      tipoConexao: pinpad?.tipo_conexao || '',
+      portaCom: pinpad?.porta_com || '',
       ultimaConexao: pinpad?.ultima_conexao || null
     },
     operacoes: {
@@ -332,6 +647,8 @@ async function testarConexao() {
   const { principal, servidor, pinpad } = registro;
   const testes = [];
   let sucessoGeral = true;
+  const ambiente = principal.ambiente || 'simulacao';
+  const modoAdapter = resolverModoAdapter(ambiente);
 
   if (!repository.intToBool(principal.habilitado)) {
     return {
@@ -346,16 +663,25 @@ async function testarConexao() {
   }
 
   const servidorConfigurado = validarServidorConfigurado(servidor);
-  testes.push({
-    tipo: 'servidor',
-    sucesso: servidorConfigurado,
-    mensagem: servidorConfigurado
-      ? 'Parâmetros de servidor encontrados.'
-      : 'Servidor TEF não configurado.'
-  });
-
-  if (!servidorConfigurado) {
-    sucessoGeral = false;
+  if (modoAdapter === 'simulacao') {
+    testes.push({
+      tipo: 'servidor',
+      sucesso: true,
+      mensagem: servidorConfigurado
+        ? 'Parâmetros de servidor encontrados (opcionais em simulação).'
+        : 'Servidor não configurado — OK em modo simulação.'
+    });
+  } else {
+    testes.push({
+      tipo: 'servidor',
+      sucesso: servidorConfigurado,
+      mensagem: servidorConfigurado
+        ? 'Parâmetros de servidor encontrados.'
+        : 'Servidor TEF não configurado.'
+    });
+    if (!servidorConfigurado) {
+      sucessoGeral = false;
+    }
   }
 
   const pinpadHabilitado = repository.intToBool(pinpad?.habilitado);
@@ -399,7 +725,8 @@ async function testarConexao() {
     mensagem: sucessoGeral
       ? 'Teste de configuração TEF concluído com sucesso.'
       : 'Teste de configuração TEF concluído com pendências.',
-    ambiente: principal.ambiente || '',
+    ambiente,
+    modoAdapter,
     provedor: principal.provedor || '',
     servidor: {
       baseUrl: servidor?.base_url || '',
@@ -417,5 +744,15 @@ module.exports = {
   salvarConfiguracao,
   obterStatus,
   testarConexao,
-  mapearConfiguracaoSaida
+  mapearConfiguracaoSaida,
+  mapearPayloadEntrada,
+  validarConfiguracao,
+  getConfig: obterConfiguracao,
+  saveConfig: salvarConfiguracao,
+  updateConfig: atualizarConfiguracao,
+  validateConfig: validarConfiguracao,
+  getPinPadConfig,
+  getServerConfig,
+  resolverModoAdapter,
+  DEFAULTS_CONFIG
 };

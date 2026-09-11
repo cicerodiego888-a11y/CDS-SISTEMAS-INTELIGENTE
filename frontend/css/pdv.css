@@ -587,7 +587,8 @@
 
 .pdv-itens .quantidade-item,
 .pdv-itens .percentual-item,
-.pdv-itens .desconto-valor-item {
+.pdv-itens .desconto-valor-item,
+.pdv-itens .valor-item {
   min-height: 38px;
   height: 38px;
   padding: 6px 8px;

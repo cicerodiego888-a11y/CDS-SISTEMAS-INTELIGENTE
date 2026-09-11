@@ -8,7 +8,7 @@
 
 const path = require('path');
 const dbModule = require('../../database');
-const { fazerBackupManual } = require('../backupManual');
+const { fazerBackupManual, obterPastaBackupPadrao } = require('../backupManual');
 const { aplicarAjusteEstoqueProduto } = require('../ajusteEstoqueService');
 const {
   STATUS,
@@ -367,7 +367,27 @@ async function jaProcessouAtualizacao(db, { produtoId, importId, codigoOrigem, o
 
 async function obterPastaBackupConfigurada(db) {
   const row = await dbGet(db, `SELECT valor FROM configuracoes WHERE chave = 'backup_path' LIMIT 1`);
-  return row?.valor || null;
+  const valor = row?.valor && String(row.valor).trim() ? String(row.valor).trim() : null;
+  return valor;
+}
+
+function montarErroFalhaBackup(e, caminhoDb, pasta) {
+  const motivo = e && (e.message || String(e));
+  const codigo = e && e.code ? ` [${e.code}]` : '';
+  const err = new Error(
+    `Não foi possível criar o backup. A importação foi cancelada.${motivo ? ` Motivo: ${motivo}${codigo}` : ''}`
+  );
+  err.status = 500;
+  err.cause = e;
+  err.detalhes = {
+    codigo: e?.code || null,
+    operacao: e?.operacao || null,
+    pasta: e?.pasta || pasta || null,
+    dbPath: e?.dbPath || caminhoDb || null,
+    destino: e?.destino || null
+  };
+  console.error('[BACKUP] Erro na atualização de quantidades:', err.message, err.detalhes);
+  return err;
 }
 
 async function executarAtualizacaoQuantidades(db, validacao, {
@@ -420,14 +440,15 @@ async function executarAtualizacaoQuantidades(db, validacao, {
 
   let backup;
   try {
-    const pasta = pastaBackup || await obterPastaBackupConfigurada(db);
+    const pastaCfg = pastaBackup || await obterPastaBackupConfigurada(db);
     const caminhoDb = dbPath || dbModule.dbPath || path.join(process.cwd(), 'database.db');
-    backup = fazerBackupManual(caminhoDb, pasta || undefined);
+    const pasta = pastaCfg || obterPastaBackupPadrao(caminhoDb);
+    console.log('[BACKUP] Banco utilizado:', caminhoDb);
+    console.log('[BACKUP] Pasta utilizada:', pasta);
+    backup = fazerBackupManual(caminhoDb, pasta);
   } catch (e) {
-    const err = new Error('Não foi possível criar o backup. A importação foi cancelada.');
-    err.status = 500;
-    err.cause = e;
-    throw err;
+    const caminhoDb = dbPath || dbModule.dbPath || null;
+    throw montarErroFalhaBackup(e, caminhoDb, pastaBackup);
   }
 
   const refImportacao = importId || validacao.arquivo || `qtd-${Date.now()}`;

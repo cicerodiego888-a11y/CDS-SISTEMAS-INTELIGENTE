@@ -1,6 +1,6 @@
 /**
  * Catálogo de modelos PinPad suportados pelo CDS.
- * Comunicação real via middleware (CliSiTef / PayGo).
+ * Comunicação física via adapter do provedor (arquitetura agnóstica).
  */
 
 const MODELOS = {

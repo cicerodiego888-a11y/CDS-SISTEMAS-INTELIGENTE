@@ -30,10 +30,20 @@ const upload = multer({
 
 function responderErro(res, err, fallback) {
   const status = err.status || 500;
-  return res.status(status).json({
+  const payload = {
     sucesso: false,
     error: err.message || fallback
-  });
+  };
+  if (err.detalhes) {
+    payload.detalhes = err.detalhes;
+  }
+  if (err.cause && err.cause.message) {
+    payload.causa = err.cause.message;
+  }
+  if (err.cause && err.cause.code) {
+    payload.codigo = err.cause.code;
+  }
+  return res.status(status).json(payload);
 }
 
 router.post('/validar', (req, res) => {

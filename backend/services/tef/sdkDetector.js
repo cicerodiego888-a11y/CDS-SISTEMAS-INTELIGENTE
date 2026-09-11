@@ -1,6 +1,12 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+const {
+  textoIndicaPpc930,
+  extrairPortaCom,
+  classificarDeteccaoPpc930,
+  STATUS_EVIDENCIA
+} = require('./pinpads/detectarPpc930');
 
 const SITEF_DLL_NAMES = [
   'Clisitef64I.dll',
@@ -183,28 +189,113 @@ class SDKDetector {
       return [];
     }
 
+    const porPorta = new Map();
+
+    const registrar = (item) => {
+      if (!item) return;
+      const porta = item.porta ? String(item.porta).toUpperCase() : extrairPortaCom(`${item.nome || ''} ${item.descricao || ''}`);
+      if (!porta) return;
+      const atual = porPorta.get(porta) || { porta, nome: '', descricao: '' };
+      // Prefere nome mais descritivo (ex.: PPC-920/930...) sobre genérico
+      if ((item.nome || '').length > (atual.nome || '').length) {
+        atual.nome = item.nome || '';
+      }
+      if ((item.descricao || '').length > (atual.descricao || '').length) {
+        atual.descricao = item.descricao || '';
+      }
+      if (!atual.nome) atual.nome = item.nome || '';
+      if (!atual.descricao) atual.descricao = item.descricao || atual.nome;
+      porPorta.set(porta, atual);
+    };
+
+    // 1) Win32_SerialPort
     try {
       const saida = execSync(
         'powershell -NoProfile -Command "Get-CimInstance Win32_SerialPort | Select-Object DeviceID,Name,Description | ConvertTo-Json -Compress"',
-        { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+        { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 15000 }
       );
       const parsed = JSON.parse(saida || '[]');
       const lista = Array.isArray(parsed) ? parsed : [parsed];
-      return lista
-        .filter(Boolean)
-        .map((item) => ({
+      lista.filter(Boolean).forEach((item) => {
+        registrar({
           porta: item.DeviceID || null,
           nome: item.Name || '',
           descricao: item.Description || ''
-        }));
+        });
+      });
     } catch {
-      return [];
+      // continua com fallback PnP
+    }
+
+    // 2) PnP Ports / nomes com (COMx) — captura CDC USB-to-Serial que às vezes não vem em Win32_SerialPort completo
+    try {
+      const script = [
+        "Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue |",
+        "Where-Object { $_.Name -match '\\(COM\\d+\\)' } |",
+        "Select-Object Name, DeviceID, Description, Manufacturer |",
+        "ConvertTo-Json -Compress"
+      ].join(' ');
+      const pnp = execSync(
+        `powershell -NoProfile -Command "${script}"`,
+        { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 20000 }
+      );
+      const dispositivos = JSON.parse(pnp || '[]');
+      const lista = Array.isArray(dispositivos) ? dispositivos : (dispositivos ? [dispositivos] : []);
+      lista.filter(Boolean).forEach((d) => {
+        const nome = d.Name || '';
+        registrar({
+          porta: extrairPortaCom(nome),
+          nome,
+          descricao: d.Description || nome,
+          manufacturer: d.Manufacturer || ''
+        });
+      });
+    } catch {
+      // ignore
+    }
+
+    return Array.from(porPorta.values());
+  }
+
+  _listarDispositivosPnpPpc() {
+    if (process.platform !== 'win32') {
+      return { verificado: false, dispositivos: [] };
+    }
+
+    try {
+      const script = [
+        "Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |",
+        "Where-Object {",
+        "  $_.FriendlyName -match 'Gertec|PPC[\\s\\-]?930|PPC[\\s\\-]?920\\s*/\\s*930|PPC920\\s*/\\s*930'",
+        "} |",
+        "Select-Object FriendlyName,Status,InstanceId,Manufacturer,Class |",
+        "ConvertTo-Json -Compress"
+      ].join(' ');
+      const pnp = execSync(
+        `powershell -NoProfile -Command "${script}"`,
+        { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 20000 }
+      );
+      const dispositivos = JSON.parse(pnp || '[]');
+      const lista = Array.isArray(dispositivos) ? dispositivos : (dispositivos ? [dispositivos] : []);
+      return {
+        verificado: true,
+        dispositivos: lista.filter(Boolean).map((d) => ({
+          FriendlyName: d.FriendlyName || '',
+          nome: d.FriendlyName || '',
+          Status: d.Status || '',
+          InstanceId: d.InstanceId || '',
+          Manufacturer: d.Manufacturer || '',
+          Class: d.Class || '',
+          porta: extrairPortaCom(d.FriendlyName || '')
+        }))
+      };
+    } catch {
+      return { verificado: false, dispositivos: [] };
     }
   }
 
   _verificarDriversGertec() {
     const encontrados = [];
-    let usbDetectado = false;
 
     for (const root of GERTEC_DRIVER_PATHS) {
       if (!fs.existsSync(root)) continue;
@@ -217,49 +308,62 @@ class SDKDetector {
       }
     }
 
-    if (process.platform === 'win32') {
-      try {
-        const pnp = execSync(
-          'powershell -NoProfile -Command "Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.FriendlyName -match \'Gertec|PPC930\' } | Select-Object FriendlyName,Status | ConvertTo-Json -Compress"',
-          { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
-        );
-        const dispositivos = JSON.parse(pnp || '[]');
-        const lista = Array.isArray(dispositivos) ? dispositivos : (dispositivos ? [dispositivos] : []);
-        usbDetectado = lista.some((d) => /gertec|ppc930/i.test(d.FriendlyName || ''));
-        lista.forEach((d) => {
-          if (d?.FriendlyName) {
-            encontrados.push({ tipo: 'usb', nome: d.FriendlyName, status: d.Status });
-          }
-        });
-      } catch {
-        // sem permissão ou cmdlet indisponível
-      }
-    }
+    const dllOuPastaGertec = encontrados.some((i) => i.tipo === 'dll' || i.tipo === 'pasta');
 
     return {
-      instalado: encontrados.length > 0,
-      usbDetectado,
+      // true somente com evidência positiva de driver/pasta Gertec
+      confirmado: dllOuPastaGertec,
+      // null = não confirmado (nunca false por ausência de pasta)
+      instalado: dllOuPastaGertec ? true : null,
       itens: encontrados
     };
   }
 
-  detectarGertecPPC930() {
-    const drivers = this._verificarDriversGertec();
+  /**
+   * Detecção física do Gertec PPC930 (TEF-02).
+   * Não altera configuração TEF; não exige middleware/SDK/DLL.
+   * @param {object} [opcoes]
+   * @param {string} [opcoes.portaConfigurada]
+   */
+  detectarGertecPPC930(opcoes = {}) {
     const portas = this._listarPortasCOM();
-    const portasGertec = portas.filter((p) => /gertec|ppc\s*930|ppc930/i.test(`${p.nome} ${p.descricao}`));
-    const porta = portasGertec[0]?.porta || portas[0]?.porta || null;
+    const pnp = this._listarDispositivosPnpPpc();
+    const drivers = this._verificarDriversGertec();
+
+    const usbConfirmado = pnp.verificado
+      ? pnp.dispositivos.some((d) => {
+        const id = String(d.InstanceId || '');
+        const classe = String(d.Class || '');
+        return textoIndicaPpc930(d.FriendlyName || d.nome) &&
+          (/USB\\VID_/i.test(id) || /usb/i.test(classe));
+      })
+      : null;
+
+    const resultado = classificarDeteccaoPpc930(portas, {
+      portaConfigurada: opcoes.portaConfigurada || null,
+      dispositivosPnp: pnp.dispositivos,
+      driverConfirmado: drivers.confirmado === true ? true : null,
+      usbConfirmado: usbConfirmado === true ? true : null,
+      verificacaoDriverDisponivel: true,
+      verificacaoUsbDisponivel: pnp.verificado
+    });
 
     return {
-      codigo: 'GERTEC_PPC930',
-      modelo: 'Gertec PPC930',
-      detectado: drivers.instalado || drivers.usbDetectado || portasGertec.length > 0,
-      porta,
-      driver: drivers.instalado,
-      usb: drivers.usbDetectado,
+      ...resultado,
+      // Compatibilidade com consumidores anteriores
+      driver: resultado.driver,
+      usb: resultado.usb,
       portasCOM: portas,
-      portasProvaveis: portasGertec,
       drivers: drivers.itens,
-      observacao: 'Detecção indicativa — operação via CliSiTef ou PayGo'
+      pnp: {
+        verificado: pnp.verificado,
+        dispositivos: pnp.dispositivos
+      },
+      statuses: {
+        driver: resultado.driverStatus || STATUS_EVIDENCIA.NAO_CONFIRMADO,
+        usb: resultado.usbStatus || STATUS_EVIDENCIA.NAO_CONFIRMADO,
+        deteccao: resultado.estado
+      }
     };
   }
 

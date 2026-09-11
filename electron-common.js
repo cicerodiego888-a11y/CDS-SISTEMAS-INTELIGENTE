@@ -64,10 +64,7 @@ ipcMain.handle('selecionar-pasta-backup', async (event) => {
   const { selecionarPastaBackup: abrirSeletorPasta } = require('./backend/services/electronDialogoService');
   console.log('[IPC] selecionar-pasta-backup invocado');
   const resultado = abrirSeletorPasta(event);
-  if (resultado.sucesso) {
-    return resultado.caminho;
-  }
-  return null;
+  return resultado || { sucesso: false, cancelado: true };
 });
 
 // RC3.5.1 — Portal Nacional da NF-e (handlers IPC centralizados)
@@ -360,10 +357,7 @@ function registrarHandlersIpc() {
   ipcMain.handle('selecionar-pasta-backup', async (event) => {
     const { selecionarPastaBackup: abrirSeletorPasta } = require('./backend/services/electronDialogoService');
     const resultado = abrirSeletorPasta(event);
-    if (resultado.sucesso) {
-      return resultado.caminho;
-    }
-    return null;
+    return resultado || { sucesso: false, cancelado: true };
   });
 }
 

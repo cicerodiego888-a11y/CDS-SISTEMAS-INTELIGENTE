@@ -68,10 +68,8 @@ ipcMain.handle('selecionar-pasta-backup', async (event) => {
   console.log('[IPC] selecionar-pasta-backup invocado');
   const resultado = abrirSeletorPasta(event);
   console.log('[IPC] selecionar-pasta-backup resultado:', resultado?.cancelado ? 'cancelado' : resultado?.caminho || resultado?.erro);
-  if (resultado.sucesso) {
-    return resultado.caminho;
-  }
-  return null;
+  // Contrato estável: { sucesso, caminho } | { sucesso:false, cancelado:true } | { sucesso:false, erro }
+  return resultado || { sucesso: false, cancelado: true };
 });
 
 ipcMain.removeHandler('rede-obter-modo-estacao');

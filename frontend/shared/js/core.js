@@ -758,7 +758,10 @@ async function alternarModoFiscalComPolitica() {
         const resolucao = await obterCaixaAtualParaF12();
         if (!resolucao.ok || !resolucao.caixaId) {
             console.warn('[F12]', resolucao.erro || 'Não foi possível identificar o caixa atual.');
-            showNotification('Não foi possível identificar o caixa atual.', 'error');
+            showNotification(
+                resolucao.erro || 'Terminal sem caixa vinculado. Vincule o terminal a um caixa para usar o F12.',
+                'error'
+            );
             return;
         }
         const caixaId = resolucao.caixaId;
@@ -773,10 +776,16 @@ async function alternarModoFiscalComPolitica() {
             : false;
 
         if (!podeAlterar) {
-            showNotification(
-                'O modo Fiscal / Não Fiscal deste caixa é controlado pelo administrador.',
-                'warning'
-            );
+            const controle = contexto && contexto.controle
+                ? String(contexto.controle).toUpperCase()
+                : '';
+            let msg = 'O modo Fiscal / Não Fiscal deste caixa é controlado pelo administrador.';
+            if (controle === 'OPERADOR') {
+                msg = 'Não foi possível alterar o modo Fiscal / Não Fiscal. Verifique se o terminal está vinculado a um caixa.';
+            } else if (!contexto) {
+                msg = 'Não foi possível consultar a política F12. Verifique a conexão com o servidor.';
+            }
+            showNotification(msg, 'warning');
             return;
         }
 

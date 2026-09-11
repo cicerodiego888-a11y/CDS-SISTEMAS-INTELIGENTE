@@ -4,11 +4,9 @@ const pinpadCatalog = require('./pinpadCatalog');
 /**
  * Gertec PPC930 — abstração estrutural (sem comunicação com hardware).
  *
- * IMPORTANTE — FASE 7 / CliSiTef & PayGo:
- * A PPC930 NÃO é controlada diretamente pelo CDS.
- * O middleware TEF (CliSiTef ou PayGo) gerencia o equipamento.
- * Este módulo apenas identifica o PinPad selecionado (GERTEC_PPC930)
- * para que os adapters reais repassem o controle ao SDK.
+ * A PPC930 NÃO é controlada diretamente pelo CDS neste sprint.
+ * Detecção física (TEF-02) apenas informa estado Windows/COM.
+ * Operação TEF real permanece no adapter do provedor (sprint futuro).
  */
 class GertecPPC930 extends BasePinpad {
   constructor(config = {}) {
@@ -27,7 +25,7 @@ class GertecPPC930 extends BasePinpad {
       conectado: false,
       codigo: this.codigo,
       modelo: this.nomeExibicao,
-      mensagem: 'PPC930 aguardando middleware TEF (CliSiTef/PayGo) — sem conexão direta CDS',
+      mensagem: 'PPC930: sem conexão direta CDS — operação via adapter do provedor',
       middleware: this._middlewareEsperado()
     };
   }
@@ -36,13 +34,14 @@ class GertecPPC930 extends BasePinpad {
     return {
       desconectado: true,
       codigo: this.codigo,
-      mensagem: 'Desconexão lógica PPC930 (hardware controlado pelo middleware)'
+      mensagem: 'Desconexão lógica PPC930'
     };
   }
 
   async diagnosticar() {
     const sdkDetector = require('../sdkDetector');
-    const deteccao = sdkDetector.detectarGertecPPC930();
+    const portaConfigurada = this.config.porta_com || this.config.portaCom || null;
+    const deteccao = sdkDetector.detectarGertecPPC930({ portaConfigurada });
 
     return {
       sucesso: true,
@@ -54,8 +53,8 @@ class GertecPPC930 extends BasePinpad {
       controleViaMiddleware: true,
       middleware: this._middlewareEsperado(),
       mensagem: deteccao.detectado
-        ? 'PPC930 detectada no sistema — aguardando middleware para operação'
-        : 'PPC930 configurada — driver/porta não detectados (normal sem hardware conectado)'
+        ? `PinPad detectado — ${deteccao.porta || portaConfigurada || 'porta desconhecida'}`
+        : 'PPC930 configurada — hardware não identificado no Windows neste momento'
     };
   }
 
@@ -72,7 +71,7 @@ class GertecPPC930 extends BasePinpad {
       ip: this.config.ip || this.config.pinpadIp || null,
       serial: this.config.serial || null,
       controleViaMiddleware: true,
-      observacao: 'Equipamento operado exclusivamente via CliSiTef ou PayGo',
+      observacao: 'Detecção física via Windows; operação TEF via adapter do provedor',
       diagnostico: diag
     };
   }
@@ -94,7 +93,7 @@ class GertecPPC930 extends BasePinpad {
 
   _middlewareEsperado() {
     return {
-      responsavel: 'CliSiTef ou PayGo',
+      responsavel: 'Adapter do provedor TEF',
       cdsControlaHardware: false,
       pinpadCodigo: this.codigo
     };

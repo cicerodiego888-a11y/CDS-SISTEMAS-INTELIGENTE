@@ -29,6 +29,21 @@ function obterJanelaAtiva(event) {
   return BrowserWindow.getAllWindows().find((win) => win && !win.isDestroyed()) || null;
 }
 
+/**
+ * Interpreta o retorno de dialog.showOpenDialogSync (string[] | undefined).
+ * Extraído para testes unitários sem depender do Electron.
+ */
+function interpretarRetornoShowOpenDialogSync(paths) {
+  if (!paths || !Array.isArray(paths) || paths.length === 0) {
+    return { sucesso: false, cancelado: true };
+  }
+  const caminho = String(paths[0] || '').trim();
+  if (!caminho) {
+    return { sucesso: false, cancelado: true };
+  }
+  return { sucesso: true, caminho };
+}
+
 function selecionarPastaBackup(event) {
   if (!isElectronRuntime()) {
     return { sucesso: false, erro: 'NOT_ELECTRON' };
@@ -49,17 +64,18 @@ function selecionarPastaBackup(event) {
     app.focus({ steal: true });
   }
 
-  const result = dialog.showOpenDialogSync(win || undefined, {
+  // showOpenDialogSync retorna string[] | undefined — NÃO { canceled, filePaths }
+  const paths = dialog.showOpenDialogSync(win || undefined, {
     properties: ['openDirectory', 'createDirectory'],
     title: 'Selecione a pasta de backup',
     buttonLabel: 'Selecionar pasta'
   });
 
-  if (!result || result.canceled || !result.filePaths?.length) {
-    return { sucesso: false, cancelado: true };
+  const resultado = interpretarRetornoShowOpenDialogSync(paths);
+  if (resultado.sucesso) {
+    console.log('[BACKUP CONFIG] Pasta selecionada:', resultado.caminho);
   }
-
-  return { sucesso: true, caminho: result.filePaths[0] };
+  return resultado;
 }
 
 /**
@@ -86,5 +102,6 @@ async function abrirCaminhoComShell(caminhoAbs) {
 module.exports = {
   isElectronRuntime,
   selecionarPastaBackup,
+  interpretarRetornoShowOpenDialogSync,
   abrirCaminhoComShell
 };

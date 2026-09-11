@@ -626,6 +626,7 @@ window.upsertProdutoNoCatalogoPdv = upsertProdutoNoCatalogoPdv;
 window.recarregarCatalogoPdv = recarregarCatalogoPdv;
 window.garantirProdutoNoCatalogoPdv = garantirProdutoNoCatalogoPdv;
 window.pdvPermitirTransferenciaNaoFiscalFiscal = pdvPermitirTransferenciaNaoFiscalFiscal;
+window.pdvPermitirEditarPrecoUnitario = pdvPermitirEditarPrecoUnitario;
 
 function loadPDV() {
     console.log('Carregando PDV...');
@@ -634,6 +635,7 @@ function loadPDV() {
     autoRegistrarTerminal();
     inicializarSincronizacaoCatalogoPdv();
     carregarFlagTransferenciaNaoFiscalFiscalPdv();
+    carregarFlagEditarPrecoUnitarioPdv();
 
     $.ajax({
         url: urlProdutosPdv(),
@@ -2208,9 +2210,14 @@ function pdvModoFiscalAtivo() {
 }
 
 let pdvFlagTransferenciaNaoFiscalFiscal = false;
+let pdvFlagEditarPrecoUnitario = false;
 
 function pdvPermitirTransferenciaNaoFiscalFiscal() {
     return pdvFlagTransferenciaNaoFiscalFiscal === true;
+}
+
+function pdvPermitirEditarPrecoUnitario() {
+    return pdvFlagEditarPrecoUnitario === true;
 }
 
 function carregarFlagTransferenciaNaoFiscalFiscalPdv() {
@@ -2230,6 +2237,30 @@ function carregarFlagTransferenciaNaoFiscalFiscalPdv() {
         pdvFlagTransferenciaNaoFiscalFiscal = data && data.permitido === true;
     }).catch(function () {
         pdvFlagTransferenciaNaoFiscalFiscal = false;
+    });
+}
+
+function carregarFlagEditarPrecoUnitarioPdv() {
+    const token = localStorage.getItem('token') || '';
+    if (!token || typeof API_URL === 'undefined') {
+        pdvFlagEditarPrecoUnitario = false;
+        return;
+    }
+    fetch(`${API_URL}/configuracoes/pdv_permitir_editar_preco_unitario`, {
+        method: 'GET',
+        cache: 'no-store',
+        headers: { Authorization: 'Bearer ' + token }
+    }).then(function (response) {
+        if (!response.ok) return { permitido: false };
+        return response.json();
+    }).then(function (data) {
+        const anterior = pdvFlagEditarPrecoUnitario;
+        pdvFlagEditarPrecoUnitario = data && data.permitido === true;
+        if (anterior !== pdvFlagEditarPrecoUnitario && typeof atualizarCarrinho === 'function') {
+            atualizarCarrinho();
+        }
+    }).catch(function () {
+        pdvFlagEditarPrecoUnitario = false;
     });
 }
 
@@ -3161,7 +3192,16 @@ function renderCarrinhoItens() {
                     </div>
                 </td>
                 <td class="col-unit">
-                    <span class="pdv-unitario-valor">${String(precoUnitarioExibicaoItemPdv(item)).replace('.', ',')}</span>
+                    ${pdvPermitirEditarPrecoUnitario()
+                        ? `<input type="number"
+                               class="form-control form-control-sm valor-item"
+                               value="${Number(precoUnitarioExibicaoItemPdv(item) || 0).toFixed(2)}"
+                               min="0.01"
+                               step="0.01"
+                               inputmode="decimal"
+                               title="Editar unitário e atualizar cadastro do produto"
+                               data-index="${index}">`
+                        : `<span class="pdv-unitario-valor">${String(precoUnitarioExibicaoItemPdv(item)).replace('.', ',')}</span>`}
                 </td>
                 <td class="col-desc-pct">
                     <input type="number"
@@ -4378,11 +4418,29 @@ function atualizarPrecoUnitario(index, valor) {
     if (!item) return;
 
     const produto = produtosDisponiveis.find(p => Number(p.id) === Number(item.id));
-    const precoBase = obterPrecoBaseItemPdv(item, produto);
-    if (precoBase <= 0) return;
-
     const precoUnitario = Number(valor || 0);
     if (precoUnitario <= 0) return;
+
+    // Flag SUPER_ADMIN: unitário vira novo preço de tabela (não desconto).
+    if (pdvPermitirEditarPrecoUnitario()) {
+        item.preco_unitario = Number(precoUnitario.toFixed(2));
+        item.preco_base = item.preco_unitario;
+        item.desconto_percentual = 0;
+        item.desconto_valor = 0;
+        item.desconto_manual = 0;
+        item.subtotal = Number((item.preco_unitario * Number(item.quantidade || 0)).toFixed(2));
+        if (item.subtotal_exibicao != null) {
+            item.subtotal_exibicao = item.subtotal;
+        }
+        animarTotalLinhaCarrinho(index);
+        atualizarCarrinho();
+        sincronizarPrecoCadastroProdutoPdv(item, produto, item.preco_unitario);
+        focarCampoCodigo({ limpar: true });
+        return;
+    }
+
+    const precoBase = obterPrecoBaseItemPdv(item, produto);
+    if (precoBase <= 0) return;
 
     if (motorPrecoAtacadoDisponivel()) {
         aplicarCalculoMotorItemPdv(item, {
@@ -4401,6 +4459,49 @@ function atualizarPrecoUnitario(index, valor) {
     animarTotalLinhaCarrinho(index);
     atualizarCarrinho();
     focarCampoCodigo({ limpar: true });
+}
+
+/**
+ * Quando a edição de unitário está liberada, grava o novo preço no cadastro do produto.
+ */
+function sincronizarPrecoCadastroProdutoPdv(item, produto, precoNovo) {
+    const produtoId = Number(item?.id || produto?.id || 0);
+    const preco = Number(precoNovo || 0);
+    if (!produtoId || !(preco > 0) || typeof API_URL === 'undefined') return;
+
+    const vendaUnidade = itemVendaPorUnidade(item);
+    const payload = vendaUnidade
+        ? { preco_unidade: Number(preco.toFixed(2)) }
+        : { preco_venda: Number(preco.toFixed(2)) };
+
+    const custo = Number(produto?.preco_compra || 0);
+    if (!vendaUnidade && custo > 0) {
+        payload.lucro_percentual = Number((((preco - custo) / custo) * 100).toFixed(2));
+    }
+
+    const token = localStorage.getItem('token') || '';
+    $.ajax({
+        url: `${API_URL}/produtos/${produtoId}`,
+        method: 'PUT',
+        contentType: 'application/json',
+        headers: { Authorization: 'Bearer ' + token },
+        data: JSON.stringify(payload)
+    }).done(function (atualizado) {
+        if (atualizado && atualizado.id != null) {
+            upsertProdutoNoCatalogoPdv(atualizado);
+        } else if (produto) {
+            upsertProdutoNoCatalogoPdv({
+                ...produto,
+                ...payload
+            });
+        }
+        showNotification('Preço unitário atualizado no cadastro do produto.', 'success');
+    }).fail(function (xhr) {
+        showNotification(
+            xhr.responseJSON?.error || 'Não foi possível atualizar o preço no cadastro.',
+            'danger'
+        );
+    });
 }
 
 function removerItemCarrinho(index) {
