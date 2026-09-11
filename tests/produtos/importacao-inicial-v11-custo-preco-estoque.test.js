@@ -780,7 +780,8 @@ describe('V1.1 — prévia UI', () => {
     assert.match(src, /EXISTENTE — ATUALIZAR/);
     assert.match(src, />NOVO</);
     assert.match(src, /não alterar/);
-    assert.match(src, /Qtd\. Origem/);
-    assert.match(src, /Estoque Inicial/);
+    assert.match(src, /Est\. Fiscal/);
+    assert.match(src, /Est\. Não Fiscal/);
+    assert.match(src, /Est\. Total/);
   });
 });

@@ -131,10 +131,10 @@ async function criarSchemaMinimo(db) {
 }
 
 describe('V1.0.18 — validação do modo fiscal', () => {
-  it('TESTE 7 — modo ausente rejeita', () => {
-    assert.throws(() => validarModoFiscalImportacao(undefined), /Fiscal ou Não Fiscal/);
-    assert.throws(() => validarModoFiscalImportacao(null), /Fiscal ou Não Fiscal/);
-    assert.throws(() => validarModoFiscalImportacao(''), /Fiscal ou Não Fiscal/);
+  it('TESTE 7 — modo ausente é opcional (V2)', () => {
+    assert.equal(validarModoFiscalImportacao(undefined), null);
+    assert.equal(validarModoFiscalImportacao(null), null);
+    assert.equal(validarModoFiscalImportacao(''), null);
   });
 
   it('TESTE 8 — modo inválido rejeita', () => {
@@ -385,10 +385,9 @@ describe('V1.0.18 — item_fiscal novos vs existentes', () => {
     assert.equal(Number(antigo.item_fiscal), 1);
   });
 
-  it('validarImportacao direto também exige modo', async () => {
-    await assert.rejects(
-      () => validarImportacao(db, { produtos: [], apresentacoes: [] }, { nomeArquivo: 'x.xlsx' }),
-      /Fiscal ou Não Fiscal/
-    );
+  it('validarImportacao direto aceita modo ausente (V2)', async () => {
+    const r = await validarImportacao(db, { produtos: [], apresentacoes: [] }, { nomeArquivo: 'x.xlsx' });
+    assert.equal(r.modo_fiscal_importacao, null);
+    assert.equal(r.resumo.produtos_encontrados, 0);
   });
 });

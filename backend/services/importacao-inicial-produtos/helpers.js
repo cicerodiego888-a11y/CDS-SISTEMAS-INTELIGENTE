@@ -15,26 +15,26 @@ const MODOS = Object.freeze({
   ATUALIZAR_QUANTIDADES: 'ATUALIZAR_QUANTIDADES'
 });
 
-/** V1.0.18 — tratamento fiscal da carga (somente produtos novos). */
+/** Legado V1.0.18 — opcional; não controla mais distribuição de estoque (V2). */
 const MODOS_FISCAIS_IMPORTACAO = Object.freeze({
   FISCAL: 'FISCAL',
   NAO_FISCAL: 'NAO_FISCAL'
 });
 
+/** CSOSN aceitos no cadastro / NFC-e Simples Nacional. */
+const CSOSN_ACEITOS_IMPORTACAO = Object.freeze([
+  '101', '102', '103', '300', '400', '500', '900'
+]);
+
 /**
- * Valida e normaliza modo_fiscal_importacao.
- * Não assume default — ausente/inválido lança erro.
- * @param {*} valor
- * @returns {'FISCAL'|'NAO_FISCAL'}
+ * Valida modo_fiscal_importacao (legado, opcional na V2).
+ * Ausente → null. Inválido → erro.
+ * @returns {'FISCAL'|'NAO_FISCAL'|null}
  */
 function validarModoFiscalImportacao(valor) {
   if (valor == null || valor === '') {
-    const err = new Error('Selecione se esta importação é Fiscal ou Não Fiscal.');
-    err.status = 400;
-    err.codigo = 'MODO_FISCAL_AUSENTE';
-    throw err;
+    return null;
   }
-  // Não aceitar boolean como representação principal
   if (typeof valor === 'boolean' || valor === 0 || valor === 1 || valor === '0' || valor === '1'
     || valor === true || valor === false) {
     const err = new Error('modo_fiscal_importacao inválido.');
@@ -65,9 +65,86 @@ function itemFiscalDeModoImportacao(modoFiscal) {
 }
 
 function rotuloModoFiscalImportacao(modoFiscal) {
+  if (!modoFiscal) return 'POR LINHA (Estoque Fiscal / Não Fiscal)';
   return modoFiscal === MODOS_FISCAIS_IMPORTACAO.NAO_FISCAL
     ? 'NÃO FISCAL — SEM NF'
     : 'FISCAL — COM NF';
+}
+
+/**
+ * Controla Estoque: SIM=true, NÃO=false. Vazio → true (compatível com cadastro).
+ */
+function normalizarControlaEstoque(valor) {
+  if (valor == null || String(valor).trim() === '') return true;
+  const t = String(valor)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toUpperCase();
+  if (['NAO', 'N', '0', 'FALSE', 'NAO CONTROLA', 'SEM CONTROLE'].includes(t)) return false;
+  if (['SIM', 'S', '1', 'TRUE', 'YES', 'CONTROLA'].includes(t)) return true;
+  const err = new Error('Controla Estoque inválido. Use SIM ou NÃO.');
+  err.status = 400;
+  err.codigo = 'CONTROLA_ESTOQUE_INVALIDO';
+  throw err;
+}
+
+function apenasDigitos(valor) {
+  return String(valor == null ? '' : valor).replace(/\D/g, '');
+}
+
+function validarNcmImportacao(valor) {
+  if (valor == null || String(valor).trim() === '') return { ok: true, valor: null };
+  const dig = apenasDigitos(valor);
+  if (dig.length !== 8) {
+    return { ok: false, erro: 'NCM deve possuir exatamente 8 dígitos.', valor: dig || null };
+  }
+  return { ok: true, valor: dig };
+}
+
+function validarCfopImportacao(valor) {
+  if (valor == null || String(valor).trim() === '') return { ok: true, valor: null };
+  const dig = apenasDigitos(valor);
+  if (dig.length !== 4) {
+    return { ok: false, erro: 'CFOP deve possuir 4 dígitos.', valor: dig || null };
+  }
+  return { ok: true, valor: dig };
+}
+
+function validarCsosnImportacao(valor) {
+  if (valor == null || String(valor).trim() === '') return { ok: true, valor: null };
+  const dig = apenasDigitos(valor).padStart(3, '0').slice(-3);
+  if (!CSOSN_ACEITOS_IMPORTACAO.includes(dig)) {
+    return {
+      ok: false,
+      erro: `CSOSN inválido. Use: ${CSOSN_ACEITOS_IMPORTACAO.join(', ')}.`,
+      valor: dig
+    };
+  }
+  return { ok: true, valor: dig };
+}
+
+function campoTextoFiscalPreenchido(valor) {
+  return valor != null && String(valor).trim() !== '';
+}
+
+/**
+ * item_fiscal para produto NOVO (V2): baseado nos saldos da planilha.
+ */
+function resolverItemFiscalProdutoNovo({
+  estoqueFiscal,
+  estoqueNaoFiscal,
+  controlaEstoque,
+  modoFiscalLegado
+} = {}) {
+  if (controlaEstoque === false) return 1;
+  const f = Number(estoqueFiscal) || 0;
+  const nf = Number(estoqueNaoFiscal) || 0;
+  if (f > 0 && nf <= 0) return 1;
+  if (nf > 0 && f <= 0) return 0;
+  if (f > 0 && nf > 0) return 1;
+  if (modoFiscalLegado === MODOS_FISCAIS_IMPORTACAO.NAO_FISCAL) return 0;
+  return 1;
 }
 const STATUS = Object.freeze({
   PRONTO: 'PRONTO',
@@ -586,7 +663,8 @@ function resolverFatorConversao(apresentacoes) {
 }
 
 /**
- * ESTOQUE INICIAL = Qtd documento × fator de conversão (unidade base).
+ * ESTOQUE INICIAL legado = Qtd documento × fator de conversão (unidade base).
+ * V2: Estoque Fiscal / Não Fiscal já vêm em unidade base (não recalcular).
  */
 function calcularEstoqueInicial({ quantidadeDocumento, fatorConversao }) {
   const origemRaw = Number(quantidadeDocumento);
@@ -597,6 +675,88 @@ function calcularEstoqueInicial({ quantidadeDocumento, fatorConversao }) {
     quantidade_origem,
     fator_conversao,
     estoque_inicial: arredondarCasas(quantidade_origem * fator_conversao, 3)
+  };
+}
+
+/**
+ * Monta saldos V2 a partir das colunas oficiais (UN base) ou legado Estoque Inicial.
+ * @returns {{
+ *   modo: 'V2'|'LEGADO'|'ZERO',
+ *   estoque_fiscal: number,
+ *   estoque_nao_fiscal: number,
+ *   estoque_total: number,
+ *   estoque_inicial: number,
+ *   erro?: string
+ * }}
+ */
+function resolverEstoquesImportacaoLinha(produto, { itemFiscalBucket = 1 } = {}) {
+  const fiscalInf = campoNumericoInformado(produto.estoque_fiscal);
+  const naoFiscalInf = campoNumericoInformado(produto.estoque_nao_fiscal);
+  const temV2 = fiscalInf || naoFiscalInf;
+
+  const apresentacoes = Array.isArray(produto._apresentacoes_pricing)
+    ? produto._apresentacoes_pricing
+    : [];
+  const fatorInfo = resolverFatorConversao(apresentacoes);
+  const fatorUsar = campoNumericoInformado(produto.fator_conversao)
+    && Number(produto.fator_conversao) > 0
+    ? Number(produto.fator_conversao)
+    : fatorInfo.fator;
+  const calcLegado = calcularEstoqueInicial({
+    quantidadeDocumento: produto.quantidade_documento,
+    fatorConversao: fatorUsar
+  });
+  const legadoPositivo = Number(calcLegado.estoque_inicial) > 0;
+
+  if (temV2 && legadoPositivo) {
+    return {
+      modo: 'CONFLITO',
+      estoque_fiscal: 0,
+      estoque_nao_fiscal: 0,
+      estoque_total: 0,
+      estoque_inicial: 0,
+      erro: 'Não utilize Estoque Inicial (Qtd. Origem/Conversão) junto com Estoque Fiscal / Estoque Não Fiscal.'
+    };
+  }
+
+  if (temV2) {
+    const f = fiscalInf ? Math.max(0, Number(produto.estoque_fiscal) || 0) : 0;
+    const nf = naoFiscalInf ? Math.max(0, Number(produto.estoque_nao_fiscal) || 0) : 0;
+    const total = arredondarCasas(f + nf, 3);
+    return {
+      modo: 'V2',
+      estoque_fiscal: arredondarCasas(f, 3),
+      estoque_nao_fiscal: arredondarCasas(nf, 3),
+      estoque_total: total,
+      estoque_inicial: total,
+      quantidade_origem: calcLegado.quantidade_origem,
+      fator_conversao: calcLegado.fator_conversao
+    };
+  }
+
+  if (legadoPositivo) {
+    const q = Number(calcLegado.estoque_inicial) || 0;
+    const fiscal = itemFiscalBucket === 0 ? 0 : q;
+    const naoFiscal = itemFiscalBucket === 0 ? q : 0;
+    return {
+      modo: 'LEGADO',
+      estoque_fiscal: arredondarCasas(fiscal, 3),
+      estoque_nao_fiscal: arredondarCasas(naoFiscal, 3),
+      estoque_total: arredondarCasas(q, 3),
+      estoque_inicial: arredondarCasas(q, 3),
+      quantidade_origem: calcLegado.quantidade_origem,
+      fator_conversao: calcLegado.fator_conversao
+    };
+  }
+
+  return {
+    modo: 'ZERO',
+    estoque_fiscal: 0,
+    estoque_nao_fiscal: 0,
+    estoque_total: 0,
+    estoque_inicial: 0,
+    quantidade_origem: calcLegado.quantidade_origem,
+    fator_conversao: calcLegado.fator_conversao
   };
 }
 
@@ -782,7 +942,22 @@ function mapearLinhaProduto(row) {
       texto(get('unidade_base', 'unidade', 'un')) || 'UN'
     ),
     unidade_origem: texto(get('unidade_origem')),
-    quantidade_documento: numero(get('quantidade_documento', 'qtd_documento', 'qtd', 'quantidade')),
+    quantidade_documento: numero(get('quantidade_documento', 'qtd_documento', 'qtd', 'quantidade', 'qtd_origem')),
+    fator_conversao: numero(get('fator_conversao', 'fator', 'conversao', 'quantidade_conversao')),
+    estoque_fiscal: numero(get(
+      'estoque_fiscal',
+      'qtd_fiscal',
+      'quantidade_fiscal',
+      'saldo_fiscal'
+    )),
+    estoque_nao_fiscal: numero(get(
+      'estoque_nao_fiscal',
+      'qtd_nao_fiscal',
+      'quantidade_nao_fiscal',
+      'saldo_nao_fiscal'
+    )),
+    controla_estoque_bruto: get('controla_estoque', 'controla_est', 'controla'),
+    fornecedor: texto(get('fornecedor', 'fornecedor_nome', 'nome_fornecedor')),
     custo_informado: custoInformado,
     custo_apresentacao: custoApresentacao,
     markup,
@@ -790,11 +965,13 @@ function mapearLinhaProduto(row) {
     preco_informado: precoInformado,
     total_documento: numero(get('total_documento')),
     referencia_fabricante: texto(get('referencia_fabricante', 'referencia', 'ref')),
-    codigo_barras: texto(get('codigo_barras', 'ean', 'gtin', 'barras', 'gtin_ean')),
+    codigo_barras: texto(get('codigo_barras', 'ean', 'gtin', 'barras', 'gtin_ean', 'codbarra')),
     ncm: texto(get('ncm')),
+    cfop: texto(get('cfop')),
+    csosn: texto(get('csosn')),
     cest: texto(get('cest')),
     observacoes: texto(get('observacoes', 'observacao', 'obs')),
-    // fiscal_rotulo é informativo do XLSX; item_fiscal efetivo vem do validator (modo ou banco)
+    // Legado: informativo apenas — NÃO decide estoque nem item_fiscal efetivo (V2)
     fiscal_rotulo: texto(get('fiscal', 'classificacao')),
     fiscal: true,
     item_fiscal: 1
@@ -868,9 +1045,17 @@ module.exports = {
   MARKUP_PADRAO,
   MODOS,
   MODOS_FISCAIS_IMPORTACAO,
+  CSOSN_ACEITOS_IMPORTACAO,
   validarModoFiscalImportacao,
   itemFiscalDeModoImportacao,
   rotuloModoFiscalImportacao,
+  normalizarControlaEstoque,
+  validarNcmImportacao,
+  validarCfopImportacao,
+  validarCsosnImportacao,
+  campoTextoFiscalPreenchido,
+  resolverItemFiscalProdutoNovo,
+  resolverEstoquesImportacaoLinha,
   STATUS,
   linhaBloqueiaPorClassificacao,
   linhaAtencaoPermiteImportar,

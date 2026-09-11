@@ -22,13 +22,22 @@ const {
   validarModoFiscalImportacao,
   itemFiscalDeModoImportacao,
   rotuloModoFiscalImportacao,
+  MODOS_FISCAIS_IMPORTACAO,
   campoNumericoInformado,
   valoresNumericosDivergem,
   LABEL_NAO_ALTERAR,
   LABEL_SEM_ALTERACAO,
-  rotuloCampoMoedaExistente
+  rotuloCampoMoedaExistente,
+  normalizarControlaEstoque,
+  validarNcmImportacao,
+  validarCfopImportacao,
+  validarCsosnImportacao,
+  campoTextoFiscalPreenchido,
+  resolverItemFiscalProdutoNovo,
+  resolverEstoquesImportacaoLinha
 } = require('./helpers');
 const { classificarProduto, resolverClassificacaoExistente, STATUS_CLASSIFICACAO, chaveCategoriaEquivalente } = require('./classificadorCategoria');
+const configuracaoService = require('../configuracaoService');
 
 function dbAll(db, sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -181,12 +190,8 @@ function resolverCustosEPrecos(produto, apresentacoesDoProduto) {
   };
 }
 
-function montarEstoquePreview(produto, pricing) {
+function montarEstoquePreview(produto, pricing, { itemFiscalBucket = 1 } = {}) {
   const fatorInfo = resolverFatorConversao(pricing.apresentacoes);
-  const calc = calcularEstoqueInicial({
-    quantidadeDocumento: produto.quantidade_documento,
-    fatorConversao: fatorInfo.fator
-  });
   const unidadeBase = String(
     normalizarUnidadeBaseCadastro(produto.unidade_base || 'UN')
   ).toUpperCase();
@@ -195,23 +200,151 @@ function montarEstoquePreview(produto, pricing) {
     || fatorInfo.tipo
     || unidadeBase
   ).toUpperCase();
+
+  const produtoComApr = {
+    ...produto,
+    _apresentacoes_pricing: pricing.apresentacoes,
+    fator_conversao: produto.fator_conversao != null ? produto.fator_conversao : fatorInfo.fator
+  };
+  const resolvido = resolverEstoquesImportacaoLinha(produtoComApr, { itemFiscalBucket });
+
+  const qtdParaCusto = Number(resolvido.quantidade_origem) > 0
+    ? Number(resolvido.quantidade_origem)
+    : Number(resolvido.estoque_total) || 0;
   const custoTotal = calcularCustoTotalEstoqueInicial({
-    quantidadeOrigem: calc.quantidade_origem,
+    quantidadeOrigem: qtdParaCusto,
     custoUnitario: pricing.custo_unitario,
     apresentacao: pricing.apresentacao_principal
   });
 
+  const total = Number(resolvido.estoque_total) || 0;
   return {
-    quantidade_origem: calc.quantidade_origem,
+    modo_estoque: resolvido.modo,
+    erro_estoque: resolvido.erro || null,
+    quantidade_origem: resolvido.quantidade_origem != null
+      ? resolvido.quantidade_origem
+      : calcularEstoqueInicial({
+        quantidadeDocumento: produto.quantidade_documento,
+        fatorConversao: fatorInfo.fator
+      }).quantidade_origem,
     unidade_origem: unidadeOrigem,
-    qtd_origem_label: `${calc.quantidade_origem} ${unidadeOrigem}`,
-    fator_conversao: calc.fator_conversao,
+    qtd_origem_label: `${produto.quantidade_documento != null ? produto.quantidade_documento : 0} ${unidadeOrigem}`,
+    fator_conversao: resolvido.fator_conversao != null ? resolvido.fator_conversao : fatorInfo.fator,
     conversao_label: fatorInfo.label,
-    estoque_inicial: calc.estoque_inicial,
-    estoque_inicial_label: `${calc.estoque_inicial} ${unidadeBase}`,
+    estoque_fiscal: Number(resolvido.estoque_fiscal) || 0,
+    estoque_nao_fiscal: Number(resolvido.estoque_nao_fiscal) || 0,
+    estoque_total: total,
+    estoque_inicial: total,
+    estoque_inicial_label: `${total} ${unidadeBase}`,
+    estoque_fiscal_label: `${Number(resolvido.estoque_fiscal) || 0} ${unidadeBase}`,
+    estoque_nao_fiscal_label: `${Number(resolvido.estoque_nao_fiscal) || 0} ${unidadeBase}`,
+    estoque_total_label: `${total} ${unidadeBase}`,
     unidade_base: unidadeBase,
     custo_total_estoque: custoTotal
   };
+}
+
+function montarDivergenciaFiscalClassificacao(produtoDb, produtoRaw) {
+  const avisos = [];
+  const campos = [
+    { chave: 'ncm', label: 'NCM', planilha: produtoRaw.ncm_normalizado, banco: produtoDb?.ncm },
+    { chave: 'cfop', label: 'CFOP', planilha: produtoRaw.cfop_normalizado, banco: produtoDb?.cfop },
+    { chave: 'csosn', label: 'CSOSN', planilha: produtoRaw.csosn_normalizado, banco: produtoDb?.csosn }
+  ];
+  for (const c of campos) {
+    const banco = String(c.banco || '').trim();
+    const planilha = String(c.planilha || '').trim();
+    if (banco && planilha && banco !== planilha) {
+      avisos.push({
+        campo: c.chave,
+        label: c.label,
+        cadastro: banco,
+        planilha,
+        acao: 'Cadastro existente será preservado.'
+      });
+    }
+  }
+  return avisos;
+}
+
+function resolverClassificacaoFiscalLinha({
+  produtoRaw,
+  produtoDb,
+  padraoFiscal,
+  isNovo
+}) {
+  const ncmVal = validarNcmImportacao(produtoRaw.ncm);
+  const cfopVal = validarCfopImportacao(produtoRaw.cfop);
+  const csosnVal = validarCsosnImportacao(produtoRaw.csosn);
+  const erros = [];
+  if (!ncmVal.ok) erros.push(ncmVal.erro);
+  if (!cfopVal.ok) erros.push(cfopVal.erro);
+  if (!csosnVal.ok) erros.push(csosnVal.erro);
+
+  produtoRaw.ncm_normalizado = ncmVal.valor;
+  produtoRaw.cfop_normalizado = cfopVal.valor;
+  produtoRaw.csosn_normalizado = csosnVal.valor;
+
+  const resultado = {
+    ncm: null,
+    cfop: null,
+    csosn: null,
+    ncm_acao: 'nenhuma',
+    cfop_acao: 'nenhuma',
+    csosn_acao: 'nenhuma',
+    divergencias: [],
+    erros
+  };
+
+  if (isNovo) {
+    resultado.ncm = ncmVal.valor;
+    resultado.ncm_acao = ncmVal.valor ? 'aplicar_planilha' : 'nenhuma';
+    resultado.cfop = cfopVal.valor || (padraoFiscal?.cfop_padrao
+      ? validarCfopImportacao(padraoFiscal.cfop_padrao).valor
+      : null);
+    resultado.cfop_acao = cfopVal.valor
+      ? 'aplicar_planilha'
+      : (resultado.cfop ? 'aplicar_padrao_empresa' : 'nenhuma');
+    resultado.csosn = csosnVal.valor || (padraoFiscal?.csosn_padrao
+      ? validarCsosnImportacao(padraoFiscal.csosn_padrao).valor
+      : null);
+    resultado.csosn_acao = csosnVal.valor
+      ? 'aplicar_planilha'
+      : (resultado.csosn ? 'aplicar_padrao_empresa' : 'nenhuma');
+    return resultado;
+  }
+
+  // Existente: completar só ausentes; nunca sobrescrever
+  const ncmDb = String(produtoDb?.ncm || '').trim();
+  const cfopDb = String(produtoDb?.cfop || '').trim();
+  const csosnDb = String(produtoDb?.csosn || '').trim();
+
+  if (ncmDb) {
+    resultado.ncm = ncmDb;
+    resultado.ncm_acao = 'preservar';
+  } else if (ncmVal.valor) {
+    resultado.ncm = ncmVal.valor;
+    resultado.ncm_acao = 'completar';
+  }
+
+  if (cfopDb) {
+    resultado.cfop = cfopDb;
+    resultado.cfop_acao = 'preservar';
+  } else if (cfopVal.valor) {
+    resultado.cfop = cfopVal.valor;
+    resultado.cfop_acao = 'completar';
+  }
+
+  if (csosnDb) {
+    resultado.csosn = csosnDb;
+    resultado.csosn_acao = 'preservar';
+  } else if (csosnVal.valor) {
+    resultado.csosn = csosnVal.valor;
+    resultado.csosn_acao = 'completar';
+  }
+
+  resultado.divergencias = montarDivergenciaFiscalClassificacao(produtoDb, produtoRaw);
+  return resultado;
 }
 
 function deveAtualizarCustoExistente(produtoRaw, pricing, produtoDb) {
@@ -234,7 +367,9 @@ function montarPreviewAtualizacao({
   alterarSubcategoria = false
 }) {
   const estoqueAtual = Number(produtoDb?.estoque_atual || 0);
-  const qtdArquivo = Number(estoque?.estoque_inicial || 0);
+  const qtdArquivo = Number(estoque?.estoque_total != null
+    ? estoque.estoque_total
+    : estoque?.estoque_inicial || 0);
   const qtdSomar = precisaStock && Number.isFinite(qtdArquivo) && qtdArquivo > 0 ? qtdArquivo : 0;
   const alteraCusto = deveAtualizarCustoExistente(produtoRaw, pricing, produtoDb);
   const alteraPreco = deveAtualizarPrecoExistente(produtoRaw, pricing, produtoDb);
@@ -260,6 +395,8 @@ function montarPreviewAtualizacao({
     alterar_custo: alteraCusto,
     alterar_preco: alteraPreco,
     alterar_estoque: qtdSomar > 0,
+    estoque_fiscal_lancar: precisaStock ? Number(estoque?.estoque_fiscal || 0) : 0,
+    estoque_nao_fiscal_lancar: precisaStock ? Number(estoque?.estoque_nao_fiscal || 0) : 0,
     alterar_categoria: alterarCategoria === true,
     alterar_subcategoria: alterarSubcategoria === true,
     custo_exibicao: rotuloCampoMoedaExistente({
@@ -278,7 +415,7 @@ async function carregarIndicesExistentes(db) {
   const produtos = await dbAll(db, `
     SELECT p.id, p.codigo, p.nome, p.codigo_barras, p.marca_id, p.preco_compra, p.preco_venda,
            p.unidade, p.estoque_atual, p.saldo_fiscal, p.saldo_nao_fiscal, p.item_fiscal,
-           p.categoria_id, p.subcategoria_id,
+           p.categoria_id, p.subcategoria_id, p.ncm, p.cfop, p.csosn, p.controla_estoque,
            m.nome AS marca_nome,
            c.nome AS categoria_nome,
            s.nome AS subcategoria_nome
@@ -442,8 +579,13 @@ function contarEstruturasNovas(linhas) {
 }
 
 async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_importacao } = {}) {
+  // V2: modo fiscal global é opcional (legado); estoque vem das colunas F/NF
   const modoFiscal = validarModoFiscalImportacao(modo_fiscal_importacao);
-  const itemFiscalNovos = itemFiscalDeModoImportacao(modoFiscal);
+  let padraoFiscal = { cfop_padrao: '', csosn_padrao: '' };
+  try {
+    padraoFiscal = configuracaoService.getPadraoFiscal() || padraoFiscal;
+  } catch (_) { /* ignore */ }
+
   const indices = await carregarIndicesExistentes(db);
   const catalogoClassificacao = await carregarCatalogoClassificacao(db);
   const duplicidadesArquivo = mapearDuplicidadesCodigoArquivo(dadosExtraidos.produtos);
@@ -468,16 +610,13 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_
     const produtoRaw = dadosExtraidos.produtos[idx];
     const apresentacoes = vincularApresentacoes(produtoRaw, dadosExtraidos.apresentacoes);
     const pricing = resolverCustosEPrecos(produtoRaw, apresentacoes);
-    const estoque = montarEstoquePreview(produtoRaw, pricing);
-    quantidadePlanilhaTotal = arredondarCasas(
-      quantidadePlanilhaTotal + Number(estoque.estoque_inicial || 0),
-      3
-    );
     const mensagens = [];
     let status = STATUS.PRONTO;
     let enriquecimento = null;
     let previewAtualizacao = null;
     let classificacao = null;
+    let classificacaoFiscal = null;
+    let divergenciasFiscais = [];
     const chaveCodigo = chaveNomeCadastroSimples(produtoRaw.codigo_origem);
     const duplicidadeArquivo = chaveCodigo ? duplicidadesArquivo.get(chaveCodigo) || null : null;
 
@@ -485,6 +624,16 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_
       status = STATUS.ERRO;
       mensagens.push('Nome obrigatório');
     }
+
+    // Controla Estoque
+    let controlaEstoque = true;
+    try {
+      controlaEstoque = normalizarControlaEstoque(produtoRaw.controla_estoque_bruto);
+    } catch (e) {
+      status = STATUS.ERRO;
+      mensagens.push(e.message || 'Controla Estoque inválido. Use SIM ou NÃO.');
+    }
+    produtoRaw.controla_estoque = controlaEstoque ? 1 : 0;
 
     // V1.0.14 — duplicidade no XLSX tem prioridade (bloqueia antes do INSERT/UNIQUE)
     if (duplicidadeArquivo) {
@@ -496,6 +645,80 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_
       ? null
       : encontrarCorrespondencia(produtoRaw, indices);
     if (match?.produto) existentesEncontrados += 1;
+
+    // item_fiscal: existente preserva; novo por heurística V2 (saldos) / legado modo
+    let itemFiscalLinha;
+    let fiscalFonte;
+    if (match?.produto) {
+      itemFiscalLinha = Number(match.produto.item_fiscal) === 0 ? 0 : 1;
+      fiscalFonte = 'EXISTENTE';
+    } else {
+      // Legado: bucket inicial segue modo fiscal opcional; V2 ignora o radio
+      const bucketLegado = modoFiscal === MODOS_FISCAIS_IMPORTACAO.NAO_FISCAL ? 0 : 1;
+      const preEstoque = montarEstoquePreview(produtoRaw, pricing, { itemFiscalBucket: bucketLegado });
+      itemFiscalLinha = resolverItemFiscalProdutoNovo({
+        estoqueFiscal: preEstoque.estoque_fiscal,
+        estoqueNaoFiscal: preEstoque.estoque_nao_fiscal,
+        controlaEstoque,
+        modoFiscalLegado: preEstoque.modo_estoque === 'LEGADO' ? modoFiscal : null
+      });
+      fiscalFonte = 'HEURISTICA_ESTOQUE';
+    }
+
+    const estoque = montarEstoquePreview(produtoRaw, pricing, {
+      itemFiscalBucket: itemFiscalLinha
+    });
+    // Re-resolve item_fiscal novo com estoque final (V2)
+    if (!match?.produto) {
+      itemFiscalLinha = resolverItemFiscalProdutoNovo({
+        estoqueFiscal: estoque.estoque_fiscal,
+        estoqueNaoFiscal: estoque.estoque_nao_fiscal,
+        controlaEstoque,
+        modoFiscalLegado: estoque.modo_estoque === 'LEGADO' ? modoFiscal : null
+      });
+      // Se bucket mudou no legado, remontar
+      if (estoque.modo_estoque === 'LEGADO') {
+        Object.assign(estoque, montarEstoquePreview(produtoRaw, pricing, {
+          itemFiscalBucket: itemFiscalLinha
+        }));
+      }
+    }
+
+    quantidadePlanilhaTotal = arredondarCasas(
+      quantidadePlanilhaTotal + Number(estoque.estoque_total || estoque.estoque_inicial || 0),
+      3
+    );
+
+    if (estoque.erro_estoque) {
+      status = STATUS.ERRO;
+      mensagens.push(estoque.erro_estoque);
+    }
+
+    if (!controlaEstoque
+      && (Number(estoque.estoque_fiscal) > 0 || Number(estoque.estoque_nao_fiscal) > 0)) {
+      status = STATUS.ERRO;
+      mensagens.push(
+        'Produto configurado para não controlar estoque não pode possuir Estoque Fiscal ou Estoque Não Fiscal na importação.'
+      );
+    }
+    if (!controlaEstoque) {
+      estoque.estoque_fiscal = 0;
+      estoque.estoque_nao_fiscal = 0;
+      estoque.estoque_total = 0;
+      estoque.estoque_inicial = 0;
+    }
+
+    classificacaoFiscal = resolverClassificacaoFiscalLinha({
+      produtoRaw,
+      produtoDb: match?.produto || null,
+      padraoFiscal,
+      isNovo: !match?.produto
+    });
+    divergenciasFiscais = classificacaoFiscal.divergencias || [];
+    for (const e of classificacaoFiscal.erros || []) {
+      status = STATUS.ERRO;
+      mensagens.push(e);
+    }
 
     // Produto novo: exige custo/preço válidos
     if (!match && !statusBloqueiaImportacao(status)) {
@@ -546,7 +769,7 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_
         const embDb = await carregarEmbalagensProduto(db, match.produto.id);
         const classif = classificarApresentacoesArquivo(pricing.apresentacoes, embDb);
         const jaEstoque = await jaTemEstoqueInicialImportacao(db, match.produto.id);
-        const precisaStock = Number(estoque.estoque_inicial || 0) > 0 && !jaEstoque;
+        const precisaStock = Number(estoque.estoque_total || estoque.estoque_inicial || 0) > 0 && !jaEstoque;
         const corrigeUnidade = precisaCorrigirUnidadeBase(
           match.produto,
           produtoRaw.unidade_base,
@@ -613,7 +836,7 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_
           mensagens.push(classificacaoExistente.motivo || 'Revisão de classificação necessária');
           if (precisaStock) {
             estoqueInicialTotal = arredondarCasas(
-              estoqueInicialTotal + Number(estoque.estoque_inicial || 0),
+              estoqueInicialTotal + Number(estoque.estoque_total || estoque.estoque_inicial || 0),
               3
             );
           }
@@ -633,7 +856,7 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_
           enriquecimentos += 1;
           apresentacoesNovasTotal += classif.novas.length;
           estoqueInicialTotal = arredondarCasas(
-            estoqueInicialTotal + (precisaStock ? Number(estoque.estoque_inicial || 0) : 0),
+            estoqueInicialTotal + (precisaStock ? Number(estoque.estoque_total || estoque.estoque_inicial || 0) : 0),
             3
           );
           enriquecimento = {
@@ -659,7 +882,7 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_
           );
           atualizacoes += 1;
           estoqueInicialTotal = arredondarCasas(
-            estoqueInicialTotal + (precisaStock ? Number(estoque.estoque_inicial || 0) : 0),
+            estoqueInicialTotal + (precisaStock ? Number(estoque.estoque_total || estoque.estoque_inicial || 0) : 0),
             3
           );
         } else {
@@ -711,24 +934,17 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_
 
     if (!match && status === STATUS.PRONTO) {
       prontos += 1;
-      estoqueInicialTotal = arredondarCasas(estoqueInicialTotal + Number(estoque.estoque_inicial || 0), 3);
+      estoqueInicialTotal = arredondarCasas(
+        estoqueInicialTotal + Number(estoque.estoque_total || estoque.estoque_inicial || 0),
+        3
+      );
+      if (itemFiscalLinha === 1) novosFiscais += 1;
+      else novosNaoFiscais += 1;
     }
 
     if (statusBloqueiaImportacao(status)) erros += 1;
-
-    // V1.0.18 — item_fiscal: novos seguem o modo; existentes preservam o banco
-    let itemFiscalLinha;
-    let fiscalFonte;
-    if (match?.produto) {
-      itemFiscalLinha = Number(match.produto.item_fiscal) === 0 ? 0 : 1;
-      fiscalFonte = 'EXISTENTE';
-    } else {
-      itemFiscalLinha = itemFiscalNovos;
-      fiscalFonte = 'MODO_IMPORTACAO';
-      if (!match && status === STATUS.PRONTO) {
-        if (itemFiscalLinha === 1) novosFiscais += 1;
-        else novosNaoFiscais += 1;
-      }
+    if (status === STATUS.PENDENTE_CLASSIFICACAO || linhaBloqueiaPorClassificacao({ status, classificacao })) {
+      /* contagem de pendentes já tratada abaixo se necessário */
     }
 
     const apresentacaoLabel = pricing.apresentacao_principal
@@ -744,6 +960,13 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_
         item_fiscal: itemFiscalLinha,
         fiscal: itemFiscalLinha === 1,
         fiscal_fonte: fiscalFonte,
+        controla_estoque: controlaEstoque ? 1 : 0,
+        ncm: classificacaoFiscal?.ncm || null,
+        cfop: classificacaoFiscal?.cfop || null,
+        csosn: classificacaoFiscal?.csosn || null,
+        ncm_acao: classificacaoFiscal?.ncm_acao || null,
+        cfop_acao: classificacaoFiscal?.cfop_acao || null,
+        csosn_acao: classificacaoFiscal?.csosn_acao || null,
         markup: pricing.markup,
         custo_unitario: pricing.custo_unitario,
         preco_venda: pricing.preco_venda,
@@ -757,6 +980,8 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_
       enriquecimento,
       preview_atualizacao: previewAtualizacao,
       classificacao,
+      classificacao_fiscal: classificacaoFiscal,
+      divergencias_fiscais: divergenciasFiscais,
       duplicidade_arquivo: duplicidadeArquivo
     });
   }
@@ -770,6 +995,7 @@ async function validarImportacao(db, dadosExtraidos, { nomeArquivo, modo_fiscal_
     arquivo: nomeArquivo || null,
     modo_fiscal_importacao: modoFiscal,
     tratamento_fiscal: rotuloModoFiscalImportacao(modoFiscal),
+    versao_importador: 'V2_ESTOQUE_DUAL',
     resumo: {
       produtos_encontrados: linhas.length,
       produtos_validos: prontos + existentes + enriquecimentos + atualizacoes + atencao,

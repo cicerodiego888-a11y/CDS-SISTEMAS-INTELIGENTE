@@ -68,7 +68,7 @@ async function validarArquivoBuffer(db, buffer, {
     };
   }
 
-  // V1.0.18 — obrigatório no cadastro inicial (autoridade no backend)
+  // V2 — modo fiscal global opcional (legado); estoque vem das colunas F/NF
   const modoFiscal = validarModoFiscalImportacao(modo_fiscal_importacao);
 
   const dados = extrairDadosImportacao(buffer);

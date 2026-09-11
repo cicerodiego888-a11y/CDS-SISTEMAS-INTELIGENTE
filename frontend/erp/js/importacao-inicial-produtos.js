@@ -324,14 +324,18 @@ function renderCabecalhoPreviewImportacao() {
         <th>Markup</th>
         <th>Venda</th>
         <th>Apresentação</th>
-        <th>Qtd. Origem</th>
-        <th>Conversão</th>
-        <th>Estoque Inicial</th>
+        <th>Controla</th>
+        <th>Est. Fiscal</th>
+        <th>Est. Não Fiscal</th>
+        <th>Est. Total</th>
+        <th>NCM</th>
+        <th>CFOP</th>
+        <th>CSOSN</th>
         <th>Categoria</th>
         <th>Subcategoria</th>
         <th>Classificação</th>
         <th>Ação</th>
-        <th>Fiscal</th>
+        <th>item_fiscal</th>
         <th></th>
       </tr>
     `);
@@ -512,21 +516,24 @@ function loadImportacaoInicialProdutos() {
     </div>
 
     <div class="card mb-3" id="cardTratamentoFiscalImportacao">
-      <div class="card-header"><i class="fas fa-balance-scale"></i> Tratamento fiscal da importação</div>
+      <div class="card-header"><i class="fas fa-balance-scale"></i> Estoque fiscal na planilha (V2)</div>
       <div class="card-body">
+        <p class="text-muted small mb-2">
+          A distribuição do estoque vem das colunas <strong>Estoque Fiscal</strong> e
+          <strong>Estoque Não Fiscal</strong> de cada linha. Não é obrigatório escolher Fiscal/Não Fiscal globalmente.
+        </p>
         <p class="text-muted small mb-3">
-          Define o tratamento fiscal dos produtos NOVOS desta importação.
-          Produtos já cadastrados preservam sua classificação fiscal atual.
+          Opção legado (somente produtos NOVOS sem colunas F/NF): se informar abaixo, o estoque legado (Qtd. Origem × Conversão) vai para o bucket escolhido.
         </p>
         <div class="form-check mb-2">
           <input class="form-check-input" type="radio" name="modoFiscalImportacao" id="modoFiscalImportacaoFiscal" value="FISCAL">
-          <label class="form-check-label fw-semibold" for="modoFiscalImportacaoFiscal">FISCAL — COM NF</label>
+          <label class="form-check-label" for="modoFiscalImportacaoFiscal">Legado: FISCAL — COM NF</label>
         </div>
         <div class="form-check">
           <input class="form-check-input" type="radio" name="modoFiscalImportacao" id="modoFiscalImportacaoNaoFiscal" value="NAO_FISCAL">
-          <label class="form-check-label fw-semibold" for="modoFiscalImportacaoNaoFiscal">NÃO FISCAL — SEM NF</label>
+          <label class="form-check-label" for="modoFiscalImportacaoNaoFiscal">Legado: NÃO FISCAL — SEM NF</label>
         </div>
-        <div class="text-danger small mt-2 d-none" id="avisoModoFiscalImportacao"></div>
+        <div class="text-muted small mt-2" id="avisoModoFiscalImportacao"></div>
       </div>
     </div>
 
@@ -593,14 +600,18 @@ function loadImportacaoInicialProdutos() {
                 <th>Markup</th>
                 <th>Venda</th>
                 <th>Apresentação</th>
-                <th>Qtd. Origem</th>
-                <th>Conversão</th>
-                <th>Estoque Inicial</th>
+                <th>Controla</th>
+                <th>Est. Fiscal</th>
+                <th>Est. Não Fiscal</th>
+                <th>Est. Total</th>
+                <th>NCM</th>
+                <th>CFOP</th>
+                <th>CSOSN</th>
                 <th>Categoria</th>
                 <th>Subcategoria</th>
                 <th>Classificação</th>
                 <th>Ação</th>
-                <th>Fiscal</th>
+                <th>item_fiscal</th>
                 <th></th>
               </tr>
             </thead>
@@ -730,15 +741,10 @@ async function validarArquivoImportacaoInicial() {
   let modoFiscal = null;
   if (!isModoQuantidades()) {
     modoFiscal = obterModoFiscalSelecionadoUi();
-    if (!modoFiscal || (modoFiscal !== MODO_FISCAL && modoFiscal !== MODO_NAO_FISCAL)) {
-      $('#avisoModoFiscalImportacao')
-        .removeClass('d-none')
-        .text('Selecione se esta importação é Fiscal ou Não Fiscal.');
-      showNotification('Selecione se esta importação é Fiscal ou Não Fiscal.', 'warning');
-      return;
+    if (modoFiscal && modoFiscal !== MODO_FISCAL && modoFiscal !== MODO_NAO_FISCAL) {
+      modoFiscal = null;
     }
     importacaoInicialState.modo_fiscal_importacao = modoFiscal;
-    $('#avisoModoFiscalImportacao').addClass('d-none').text('');
   }
 
   const form = new FormData();
@@ -884,8 +890,15 @@ function renderPreviewImportacaoInicial() {
     const e = l.estoque || {};
     const isFiscal = Number(p.item_fiscal) !== 0;
     const badgeFiscal = isFiscal
-      ? '<span class="badge bg-primary">Fiscal</span>'
-      : '<span class="badge bg-secondary">Não Fiscal</span>';
+      ? '<span class="badge bg-primary">item_fiscal=1</span>'
+      : '<span class="badge bg-secondary">item_fiscal=0</span>';
+    const controla = Number(p.controla_estoque) !== 0
+      ? '<span class="badge bg-success">SIM</span>'
+      : '<span class="badge bg-dark">NÃO</span>';
+    const divs = Array.isArray(l.divergencias_fiscais) ? l.divergencias_fiscais : [];
+    const avisoDiv = divs.length
+      ? `<div class="small text-warning mt-1">⚠ ${divs.map((d) => escapeHtmlImport(d.label || d.campo)).join(', ')} divergente</div>`
+      : '';
     const isExistente = l.status === 'EXISTENTE' || l.status === 'EXISTENTE_ATUALIZAR';
     const prev = l.preview_atualizacao || {};
     const custoCel = isExistente && prev
@@ -896,16 +909,20 @@ function renderPreviewImportacaoInicial() {
       : moedaImport(p.preco_venda);
     return `<tr>
       <td>${badgeStatusImport(l.status)}</td>
-      <td>${escapeHtmlImport(p.nome)}</td>
+      <td>${escapeHtmlImport(p.nome)}${avisoDiv}</td>
       <td>${escapeHtmlImport(p.marca || '—')}</td>
       <td>${escapeHtmlImport(p.unidade_base || 'UN')}</td>
       <td>${custoCel}</td>
       <td>${Number(p.markup || 0).toFixed(2).replace('.', ',')}%</td>
       <td>${vendaCel}</td>
       <td>${escapeHtmlImport(l.apresentacao_label || '—')}</td>
-      <td>${escapeHtmlImport(e.qtd_origem_label || '—')}</td>
-      <td>${escapeHtmlImport(e.conversao_label || '—')}</td>
-      <td>${escapeHtmlImport(e.estoque_inicial_label || '—')}</td>
+      <td>${controla}</td>
+      <td>${escapeHtmlImport(e.estoque_fiscal_label || String(e.estoque_fiscal ?? '—'))}</td>
+      <td>${escapeHtmlImport(e.estoque_nao_fiscal_label || String(e.estoque_nao_fiscal ?? '—'))}</td>
+      <td>${escapeHtmlImport(e.estoque_total_label || e.estoque_inicial_label || '—')}</td>
+      <td>${escapeHtmlImport(p.ncm || '—')}</td>
+      <td>${escapeHtmlImport(p.cfop || '—')}</td>
+      <td>${escapeHtmlImport(p.csosn || '—')}</td>
       <td>${escapeHtmlImport(nomeCategoriaPreview(l))}</td>
       <td>${escapeHtmlImport(nomeSubcategoriaPreview(l) === '—' ? '—' : nomeSubcategoriaPreview(l))}</td>
       <td>${escapeHtmlImport(rotuloClassificacaoImport(l))}</td>
@@ -914,7 +931,7 @@ function renderPreviewImportacaoInicial() {
       <td><button type="button" class="btn btn-outline-secondary btn-sm" data-idx="${idx}" onclick="verDetalheImportacaoInicial(${idx})">Ver detalhes</button></td>
     </tr>`;
   }).join('');
-  $('#tbodyPreviewImportacao').html(html || '<tr><td colspan="17" class="text-center text-muted py-4">Nenhuma linha</td></tr>');
+  $('#tbodyPreviewImportacao').html(html || '<tr><td colspan="21" class="text-center text-muted py-4">Nenhuma linha</td></tr>');
 }
 
 function verDetalheImportacaoInicial(idx) {
@@ -1025,15 +1042,21 @@ function verDetalheImportacaoInicial(idx) {
               <dt class="col-sm-4">Unidade base</dt><dd class="col-sm-8">${escapeHtmlImport(p.unidade_base || 'UN')}</dd>
               <dt class="col-sm-4">Qtd. origem</dt><dd class="col-sm-8">${escapeHtmlImport((l.estoque && l.estoque.qtd_origem_label) || '—')}</dd>
               <dt class="col-sm-4">Conversão</dt><dd class="col-sm-8">${escapeHtmlImport((l.estoque && l.estoque.conversao_label) || '—')}</dd>
-              <dt class="col-sm-4">Estoque inicial</dt><dd class="col-sm-8">${escapeHtmlImport((l.estoque && l.estoque.estoque_inicial_label) || '—')}</dd>
+              <dt class="col-sm-4">Estoque fiscal</dt><dd class="col-sm-8">${escapeHtmlImport((l.estoque && l.estoque.estoque_fiscal_label) || '—')}</dd>
+              <dt class="col-sm-4">Estoque não fiscal</dt><dd class="col-sm-8">${escapeHtmlImport((l.estoque && l.estoque.estoque_nao_fiscal_label) || '—')}</dd>
+              <dt class="col-sm-4">Estoque total</dt><dd class="col-sm-8">${escapeHtmlImport((l.estoque && (l.estoque.estoque_total_label || l.estoque.estoque_inicial_label)) || '—')}</dd>
+              <dt class="col-sm-4">Controla estoque</dt><dd class="col-sm-8">${Number(p.controla_estoque) !== 0 ? 'SIM' : 'NÃO'}</dd>
+              <dt class="col-sm-4">NCM</dt><dd class="col-sm-8">${escapeHtmlImport(p.ncm || '—')}</dd>
+              <dt class="col-sm-4">CFOP</dt><dd class="col-sm-8">${escapeHtmlImport(p.cfop || '—')}</dd>
+              <dt class="col-sm-4">CSOSN</dt><dd class="col-sm-8">${escapeHtmlImport(p.csosn || '—')}</dd>
               <dt class="col-sm-4">Custo</dt><dd class="col-sm-8">${moedaImport(p.custo_unitario)}</dd>
               <dt class="col-sm-4">Markup</dt><dd class="col-sm-8">${Number(p.markup || 0).toFixed(2)}%</dd>
               <dt class="col-sm-4">Preço</dt><dd class="col-sm-8">${moedaImport(p.preco_venda)}</dd>
-              <dt class="col-sm-4">Fiscal</dt><dd class="col-sm-8">${Number(p.item_fiscal) === 0
-                ? 'NÃO FISCAL (item_fiscal = 0)'
-                : 'FISCAL (item_fiscal = 1)'}${p.fiscal_fonte === 'EXISTENTE'
+              <dt class="col-sm-4">item_fiscal</dt><dd class="col-sm-8">${Number(p.item_fiscal) === 0
+                ? '0 (não fiscal)'
+                : '1 (fiscal)'}${p.fiscal_fonte === 'EXISTENTE'
                 ? ' — classificação do banco'
-                : ' — modo desta importação'}</dd>
+                : ' — heurística da planilha'}</dd>
               <dt class="col-sm-4">Referência</dt><dd class="col-sm-8">${escapeHtmlImport(p.referencia_fabricante || '—')}</dd>
               <dt class="col-sm-4">Código origem</dt><dd class="col-sm-8">${escapeHtmlImport(p.codigo_origem || '—')}</dd>
               <dt class="col-sm-4">Observações</dt><dd class="col-sm-8">${escapeHtmlImport(p.observacoes || '—')}</dd>
@@ -1043,6 +1066,14 @@ function verDetalheImportacaoInicial(idx) {
             ${blocoNovo}
             ${blocoAtualizar}
             ${blocoEnriquecimento}
+            ${(Array.isArray(l.divergencias_fiscais) && l.divergencias_fiscais.length)
+              ? `<hr><h6 class="text-warning">⚠ Classificação fiscal divergente</h6>
+                 <p class="small text-muted">Cadastro existente será preservado.</p>
+                 <ul>${l.divergencias_fiscais.map((d) =>
+                   `<li><strong>${escapeHtmlImport(d.label || d.campo)}</strong>
+                    — Cadastro: ${escapeHtmlImport(d.cadastro)} | Planilha: ${escapeHtmlImport(d.planilha)}</li>`
+                 ).join('')}</ul>`
+              : ''}
             <hr>
             <h6>Apresentações / conversões</h6>
             <ul>${apr}</ul>
@@ -1119,20 +1150,13 @@ function confirmarImportacaoInicialProdutos() {
     const politica = obterPoliticaPendentesUi();
     const modoFiscal = importacaoInicialState.modo_fiscal_importacao
       || r.modo_fiscal_importacao
-      || MODO_FISCAL;
-    const tratamento = rotuloModoFiscalImportacaoUi(modoFiscal);
-    const avisoFiscal = modoFiscal === MODO_NAO_FISCAL
-      ? `<div class="alert alert-secondary py-2">
-           <p class="mb-1"><strong>Tratamento fiscal desta importação:</strong></p>
-           <p class="mb-1">${escapeHtmlImport(tratamento)}</p>
-           <p class="mb-1">Produtos NOVOS serão cadastrados como NÃO FISCAL.</p>
-           <p class="mb-0">Produtos EXISTENTES manterão sua classificação fiscal atual.</p>
-         </div>`
-      : `<div class="alert alert-primary py-2">
-           <p class="mb-1"><strong>Tratamento fiscal desta importação:</strong></p>
-           <p class="mb-1">${escapeHtmlImport(tratamento)}</p>
-           <p class="mb-1">Produtos NOVOS serão cadastrados como FISCAL.</p>
-           <p class="mb-0">Produtos EXISTENTES manterão sua classificação fiscal atual.</p>
+      || null;
+    const tratamento = modoFiscal
+      ? rotuloModoFiscalImportacaoUi(modoFiscal)
+      : 'POR LINHA (Estoque Fiscal / Não Fiscal)';
+    const avisoFiscal = `<div class="alert alert-light border py-2">
+           <p class="mb-1"><strong>Distribuição de estoque:</strong> colunas Estoque Fiscal / Estoque Não Fiscal da planilha.</p>
+           <p class="mb-0"><strong>Modo legado (opcional):</strong> ${escapeHtmlImport(tratamento)}</p>
          </div>`;
     const avisoEnriquecimento = enriquecimentos > 0
       ? `<p class="mb-2 text-primary">Existem produtos já cadastrados que receberão apresentações comerciais novas.</p>

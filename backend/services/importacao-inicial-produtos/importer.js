@@ -28,7 +28,9 @@ const {
   texto,
   campoNumericoInformado,
   valoresNumericosDivergem,
-  resolverLucroPercentualPersistido
+  resolverLucroPercentualPersistido,
+  arredondarCasas,
+  campoTextoFiscalPreenchido
 } = require('./helpers');
 const { chaveCategoriaEquivalente } = require('./classificadorCategoria');
 
@@ -237,7 +239,15 @@ async function registrarEstoqueInicial(db, {
   forcarFalhaEstoque
 }) {
   const estoque = linha.estoque || {};
-  const qtd = Number(estoque.estoque_inicial || 0);
+  const controla = Number(linha.produto?.controla_estoque) !== 0
+    && linha.produto?.controla_estoque !== false;
+  if (!controla) {
+    return { lancado: 0, movimentado: false };
+  }
+
+  const ajusteFiscal = Math.max(0, Number(estoque.estoque_fiscal) || 0);
+  const ajusteNaoFiscal = Math.max(0, Number(estoque.estoque_nao_fiscal) || 0);
+  const qtd = arredondarCasas(ajusteFiscal + ajusteNaoFiscal, 3);
   if (!Number.isFinite(qtd) || qtd <= 0) {
     return { lancado: 0, movimentado: false };
   }
@@ -254,7 +264,7 @@ async function registrarEstoqueInicial(db, {
   const custoTotal = Number.isFinite(Number(estoque.custo_total_estoque))
     ? Number(estoque.custo_total_estoque)
     : calcularCustoTotalEstoqueInicial({
-      quantidadeOrigem: estoque.quantidade_origem,
+      quantidadeOrigem: estoque.quantidade_origem || qtd,
       custoUnitario: p.custo_unitario,
       apresentacao: linha.apresentacoes?.find((a) => a.tipo !== 'UN' && Number(a.quantidade) > 1)
         || linha.apresentacoes?.[0]
@@ -268,18 +278,63 @@ async function registrarEstoqueInicial(db, {
     custoTotal
   });
 
-  // Estoque inicial segue o item_fiscal da linha (novo=modo; existente=banco)
-  const itemFiscal = Number(p.item_fiscal) === 0 ? 0 : 1;
+  // V2: distribuição explícita por colunas Estoque Fiscal / Não Fiscal
   await aplicarAjusteAsync(db, {
     produtoId,
-    ajusteFiscal: itemFiscal === 1 ? qtd : 0,
-    ajusteNaoFiscal: itemFiscal === 0 ? qtd : 0,
+    ajusteFiscal,
+    ajusteNaoFiscal,
     motivo,
     usuarioId: usuarioId || null,
     usuarioNome: usuarioNome || 'Importação Inicial'
   });
 
   return { lancado: qtd, movimentado: true };
+}
+
+/**
+ * Completa NCM/CFOP/CSOSN apenas quando o cadastro está vazio.
+ * Nunca sobrescreve classificação já preenchida.
+ */
+async function completarClassificacaoFiscalProdutoExistente(db, produtoId, linha) {
+  const p = linha.produto || {};
+  const atual = await dbGet(
+    db,
+    `SELECT ncm, cfop, csosn FROM produtos WHERE id = ?`,
+    [produtoId]
+  );
+  if (!atual) return { ncm: false, cfop: false, csosn: false };
+
+  const sets = [];
+  const params = [];
+  const resultado = { ncm: false, cfop: false, csosn: false };
+
+  const ncmDb = String(atual.ncm || '').trim();
+  const cfopDb = String(atual.cfop || '').trim();
+  const csosnDb = String(atual.csosn || '').trim();
+  const ncmNovo = String(p.ncm || '').trim();
+  const cfopNovo = String(p.cfop || '').trim();
+  const csosnNovo = String(p.csosn || '').trim();
+
+  if (!ncmDb && ncmNovo && (p.ncm_acao === 'completar' || !p.ncm_acao)) {
+    sets.push('ncm = ?');
+    params.push(ncmNovo);
+    resultado.ncm = true;
+  }
+  if (!cfopDb && cfopNovo && (p.cfop_acao === 'completar' || !p.cfop_acao)) {
+    sets.push('cfop = ?');
+    params.push(cfopNovo);
+    resultado.cfop = true;
+  }
+  if (!csosnDb && csosnNovo && (p.csosn_acao === 'completar' || !p.csosn_acao)) {
+    sets.push('csosn = ?');
+    params.push(csosnNovo);
+    resultado.csosn = true;
+  }
+
+  if (!sets.length) return resultado;
+  params.push(produtoId);
+  await dbRun(db, `UPDATE produtos SET ${sets.join(', ')} WHERE id = ?`, params);
+  return resultado;
 }
 
 /**
@@ -426,6 +481,7 @@ async function atualizarProdutoExistente(db, linha, {
     const classif = await garantirEstruturaClassificacao(db, linha, cache);
     await aplicarClassificacaoProdutoExistente(db, produtoId, classif || linha.classificacao);
   }
+  await completarClassificacaoFiscalProdutoExistente(db, produtoId, linha);
 
   const mov = await registrarEstoqueInicial(db, {
     produtoId,
@@ -496,10 +552,10 @@ async function inserirProduto(db, linha, cache, usuarioId) {
       Number(p.preco_venda) || 0,
       0,
       0,
-      null,
+      p.fornecedor || null,
       p.ncm || null,
-      null,
-      null,
+      p.cfop || null,
+      p.csosn || null,
       0,
       p.cest || null,
       p.codigo_barras || null,
@@ -507,7 +563,7 @@ async function inserirProduto(db, linha, cache, usuarioId) {
       0,
       0,
       0,
-      1,
+      (p.controla_estoque === 0 || p.controla_estoque === false) ? 0 : 1,
       0,
       0,
       0,
@@ -566,6 +622,7 @@ async function enriquecerProdutoExistente(db, linha, {
 
   await garantirEstruturaClassificacao(db, linha, cache);
   await aplicarClassificacaoProdutoExistente(db, produtoId, linha.classificacao);
+  await completarClassificacaoFiscalProdutoExistente(db, produtoId, linha);
 
   const enr = linha.enriquecimento || {};
   let codigoBarrasAtualizado = false;
